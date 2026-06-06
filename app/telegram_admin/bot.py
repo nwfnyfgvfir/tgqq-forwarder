@@ -10,6 +10,7 @@ from app.config import Settings
 from app.rules.service import ForwardRuleService
 from app.telegram_admin.auth import AdminAuth
 from app.telegram_admin.commands import AdminCommands
+from app.qq_official.client import QQTargetInfo
 from app.telegram_user.client import TelegramUserListener
 
 logger = logging.getLogger(__name__)
@@ -22,11 +23,13 @@ class TelegramAdminBot:
         service: ForwardRuleService,
         telegram_listener_getter: Callable[[], TelegramUserListener | None],
         qq_status_getter: Callable[[], str],
+        qq_targets_getter: Callable[[], list[QQTargetInfo]],
     ) -> None:
         self.settings = settings
         self.service = service
         self.telegram_listener_getter = telegram_listener_getter
         self.qq_status_getter = qq_status_getter
+        self.qq_targets_getter = qq_targets_getter
         self.application: Application | None = None
 
     async def start(self) -> None:
@@ -44,12 +47,14 @@ class TelegramAdminBot:
             auth,
             self.telegram_listener_getter,
             self.qq_status_getter,
+            self.qq_targets_getter,
         )
         app = Application.builder().token(self.settings.tg_admin_bot_token).build()
         app.add_handler(CommandHandler(["start", "help"], commands.start))
         app.add_handler(CommandHandler("status", commands.status))
         app.add_handler(CommandHandler("dialogs", commands.dialogs))
         app.add_handler(CommandHandler("rules", commands.rules))
+        app.add_handler(CommandHandler("qq_targets", commands.qq_targets))
         app.add_handler(CommandHandler("add_rule", commands.add_rule))
         app.add_handler(CommandHandler("del_rule", commands.del_rule))
         app.add_handler(CommandHandler("enable_rule", commands.enable_rule))
@@ -73,6 +78,7 @@ class TelegramAdminBot:
                 BotCommand("status", "查看运行状态"),
                 BotCommand("dialogs", "查看或搜索 Telegram 会话"),
                 BotCommand("rules", "查看转发规则"),
+                BotCommand("qq_targets", "查看已缓存的 QQ 目标 ID"),
                 BotCommand("add_rule", "新增转发规则"),
                 BotCommand("del_rule", "删除转发规则"),
                 BotCommand("enable_rule", "启用转发规则"),

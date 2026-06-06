@@ -16,7 +16,7 @@ from botpy.types.message import MarkdownPayload, Media
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from app.config import Settings
-from app.qq_official.client import ForwarderQQClient
+from app.qq_official.client import ForwarderQQClient, QQTargetInfo
 from app.qq_official.models import QQOutboundMessage
 from app.storage.models import QQTargetType
 
@@ -67,6 +67,9 @@ class QQOfficialSender:
         self.client = ForwarderQQClient(intents=intents, bot_log=False, timeout=20)
         self._task: asyncio.Task | None = None
         self._started = asyncio.Event()
+
+    def list_cached_targets(self) -> list[QQTargetInfo]:
+        return self.client.list_cached_targets()
 
     @property
     def status(self) -> str:

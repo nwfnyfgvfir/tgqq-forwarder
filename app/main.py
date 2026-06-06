@@ -31,6 +31,7 @@ class ApplicationRuntime:
             self.rule_service,
             lambda: self.telegram_listener,
             lambda: self.qq_sender.status,
+            self.qq_sender.list_cached_targets,
         )
         self.stop_event = asyncio.Event()
 

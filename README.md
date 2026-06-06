@@ -210,6 +210,7 @@ FORWARD_QUEUE_SIZE=1000
 | `/status` | 查看运行状态 |
 | `/dialogs [关键词]` | 查看或搜索 Telegram 会话 |
 | `/rules` | 查看转发规则 |
+| `/qq_targets` | 查看已缓存的 QQ 目标 ID |
 | `/add_rule <名称> <TG会话ID|*> <TG发送者ID|*> <QQ目标类型> <QQ目标ID>` | 新增规则 |
 | `/del_rule <ID>` | 删除规则 |
 | `/enable_rule <ID>` | 启用规则 |
@@ -233,6 +234,41 @@ channel | -1001234567890 | 某频道
 group | -1009876543210 | 某群组
 private | 123456789 | 某用户
 ```
+
+### 查询 QQ 目标 ID
+
+QQ 官方机器人使用的目标 ID 不是普通 QQ 群号或 QQ 号：
+
+| QQ目标类型 | 需要的目标 ID |
+|---|---|
+| `group` | QQ 官方机器人事件中的 `group_openid` |
+| `c2c` | QQ 官方机器人事件中的用户 `openid` |
+| `channel` | QQ 频道 ID |
+| `dms` | QQ 频道私信对应的 guild ID |
+
+查询方式：
+
+1. 确保服务已经启动，QQ 官方机器人 WebSocket 已连接。
+2. 在目标 QQ 群、C2C、频道里给机器人发一条消息，或在群/频道中 @ 机器人。
+3. 回到 Telegram 管理 Bot，执行：
+
+```text
+/qq_targets
+```
+
+返回示例：
+
+```text
+已缓存的 QQ 目标 ID：
+格式：类型 | 目标ID | 最近消息ID | 说明
+group | GROUP_OPENID_xxx | msg_xxx | QQ群
+c2c | USER_OPENID_xxx | msg_xxx | QQ用户
+channel | 123456789 | msg_xxx | 频道 123456789
+```
+
+复制 `目标ID` 一列，用在 `/add_rule` 的最后一个参数。
+
+注意：缓存只保存在当前进程内。程序重启后需要目标 QQ 会话再次给机器人发消息，才能重新出现在 `/qq_targets` 中。
 
 ### 添加规则示例
 

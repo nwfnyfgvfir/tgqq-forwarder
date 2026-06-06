@@ -9,6 +9,7 @@ from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
 from app.config import Settings
+from app.qq_official.client import QQTargetInfo
 from app.rules.service import ForwardRuleService
 from app.storage.models import ForwardRule, QQTargetType
 from app.telegram_admin.auth import AdminAuth
@@ -29,12 +30,14 @@ class AdminCommands:
         auth: AdminAuth,
         telegram_listener_getter: Callable[[], TelegramUserListener | None],
         qq_status_getter: Callable[[], str],
+        qq_targets_getter: Callable[[], list[QQTargetInfo]],
     ) -> None:
         self.settings = settings
         self.service = service
         self.auth = auth
         self.telegram_listener_getter = telegram_listener_getter
         self.qq_status_getter = qq_status_getter
+        self.qq_targets_getter = qq_targets_getter
 
     async def _deny_if_needed(self, update: Update) -> bool:
         if self.auth.is_allowed(update):
@@ -51,6 +54,7 @@ class AdminCommands:
             "/status - 查看运行状态\n"
             "/dialogs [关键词] - 查看或搜索 Telegram 会话\n"
             "/rules - 查看转发规则\n"
+            "/qq_targets - 查看已缓存的 QQ 目标 ID\n"
             "/add_rule <名称> <TG会话ID|*> <TG发送者ID|*> <QQ目标类型> <QQ目标ID> - 新增规则\n"
             "/del_rule <ID> - 删除规则\n"
             "/enable_rule <ID> - 启用规则\n"
@@ -112,6 +116,38 @@ class AdminCommands:
                 f"{_escape(rule.qq_target_type)}:{_escape(rule.qq_target_id)}"
             )
         await update.effective_message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+
+    async def qq_targets(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if await self._deny_if_needed(update):
+            return
+        targets = self.qq_targets_getter()
+        if not targets:
+            await update.effective_message.reply_text(
+                "还没有缓存到 QQ 目标 ID。\n"
+                "请先在目标 QQ 群/C2C/频道里给机器人发一条消息或 @ 机器人，"
+                "然后再执行 /qq_targets。"
+            )
+            return
+
+        lines = [
+            "已缓存的 QQ 目标 ID：",
+            "格式：类型 | 目标ID | 最近消息ID | 说明",
+        ]
+        for target in targets[:50]:
+            lines.append(
+                f"{_escape(target.target_type)} | "
+                f"<code>{_escape(target.target_id)}</code> | "
+                f"{_escape(target.last_message_id or '-')} | "
+                f"{_escape(target.display_name or '-')}"
+            )
+        lines.append(
+            "\n添加规则示例：\n"
+            "/add_rule qq_to_group -1001234567890 * group 上面查到的目标ID"
+        )
+        await update.effective_message.reply_text(
+            "\n".join(lines)[:3900],
+            parse_mode=ParseMode.HTML,
+        )
 
     async def add_rule(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if await self._deny_if_needed(update):
