@@ -1,0 +1,15 @@
+services:
+  tgqq-forwarder:
+    image: ${TGQQ_IMAGE:?请在 .env 中设置 TGQQ_IMAGE，例如 ghcr.io/你的GitHub用户名/你的仓库名:latest}
+    container_name: tgqq-forwarder
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - ./data:/app/data
+    command:
+      - python
+      - -m
+      - app.main

@@ -1,0 +1,16 @@
+services:
+  tgqq-forwarder:
+    build: .
+    image: tgqq-forwarder-dev
+    container_name: tgqq-forwarder
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - ./data:/app/data
+    command:
+      - python
+      - -m
+      - app.main

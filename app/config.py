@@ -1,0 +1,91 @@
+from __future__ import annotations
+
+from functools import lru_cache
+from pathlib import Path
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
+
+    app_env: str = "production"
+    log_level: str = "INFO"
+    data_dir: Path = Path("data")
+    log_dir: Path = Path("data/logs")
+    media_dir: Path = Path("data/media")
+    database_url: str = "sqlite+aiosqlite:///./data/app.db"
+
+    telegram_api_id: int = 0
+    telegram_api_hash: str = ""
+    telegram_session_path: Path = Path("data/sessions/user.session")
+    telegram_phone: str | None = None
+    telegram_download_media: bool = True
+    telegram_max_media_mb: int = 20
+
+    tg_admin_bot_token: str | None = None
+    admin_telegram_user_ids: list[int] = []
+
+    qq_bot_appid: str = ""
+    qq_bot_secret: str = ""
+    qq_enable_group_c2c: bool = True
+    qq_enable_guild_direct_message: bool = False
+    qq_allow_send_without_cached_msg_id: bool = True
+    qq_use_markdown: bool = False
+
+    forward_queue_size: int = 1000
+    default_message_template: str = (
+        "[Telegram: {chat_title}]\n"
+        "{sender_name}: {text}\n"
+        "{media_note}"
+    )
+
+    @field_validator("admin_telegram_user_ids", mode="before")
+    @classmethod
+    def parse_admin_user_ids(cls, value: object) -> list[int]:
+        if value is None or value == "":
+            return []
+        if isinstance(value, list):
+            return [int(item) for item in value]
+        if isinstance(value, str):
+            return [int(item.strip()) for item in value.split(",") if item.strip()]
+        raise TypeError("ADMIN_TELEGRAM_USER_IDS must be a comma-separated string")
+
+    @field_validator("telegram_api_id")
+    @classmethod
+    def validate_telegram_api_id(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("TELEGRAM_API_ID must be >= 0")
+        return value
+
+    def ensure_runtime_dirs(self) -> None:
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        self.media_dir.mkdir(parents=True, exist_ok=True)
+        self.telegram_session_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def validate_runtime_requirements(self) -> None:
+        missing: list[str] = []
+        if not self.telegram_api_id:
+            missing.append("TELEGRAM_API_ID")
+        if not self.telegram_api_hash:
+            missing.append("TELEGRAM_API_HASH")
+        if not self.qq_bot_appid:
+            missing.append("QQ_BOT_APPID")
+        if not self.qq_bot_secret:
+            missing.append("QQ_BOT_SECRET")
+        if missing:
+            joined = ", ".join(missing)
+            raise RuntimeError(f"Missing required settings: {joined}")
+
+
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    settings = Settings()
+    settings.ensure_runtime_dirs()
+    return settings
