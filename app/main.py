@@ -13,6 +13,7 @@ from app.storage.db import Database
 from app.telegram_admin.bot import TelegramAdminBot
 from app.telegram_user.client import TelegramUserListener
 from app.worker.forward_queue import ForwardQueue
+from app.worker.media_cleanup import MediaCleanupWorker
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,7 @@ class ApplicationRuntime:
         self.rule_service = ForwardRuleService(self.db)
         self.qq_sender = QQOfficialSender(self.settings)
         self.forward_queue = ForwardQueue(self.settings, self.rule_service, self.qq_sender)
+        self.media_cleanup = MediaCleanupWorker(self.settings)
         self.telegram_listener: TelegramUserListener | None = None
         self.admin_bot = TelegramAdminBot(
             self.settings,
@@ -40,6 +42,7 @@ class ApplicationRuntime:
         await self.db.init()
         await self.qq_sender.start()
         await self.forward_queue.start()
+        await self.media_cleanup.start()
         self.telegram_listener = TelegramUserListener(self.settings, self.forward_queue.enqueue)
         await self.telegram_listener.start()
         await self.admin_bot.start()
@@ -71,6 +74,7 @@ class ApplicationRuntime:
         await self.admin_bot.stop()
         if self.telegram_listener:
             await self.telegram_listener.stop()
+        await self.media_cleanup.stop()
         await self.forward_queue.stop()
         await self.qq_sender.stop()
         await self.db.dispose()

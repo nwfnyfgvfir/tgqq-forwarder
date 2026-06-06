@@ -6,9 +6,9 @@ from pathlib import Path
 from typing import Any
 
 from telethon import events
-from telethon.tl.types import Channel, Chat, User
+from telethon.tl.types import Channel, Chat, MessageEntityTextUrl, MessageEntityUrl, User
 
-from app.rules.models import TelegramForwardMessage
+from app.rules.models import TelegramForwardMessage, TelegramLink
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +61,45 @@ def _media_type(event: events.NewMessage.Event) -> str | None:
     return "media"
 
 
+def _normalize_url(url: str) -> str:
+    url = url.strip()
+    if not url:
+        return ""
+    if "://" in url or url.startswith("mailto:"):
+        return url
+    return f"https://{url}"
+
+
+def _extract_links(event: events.NewMessage.Event) -> list[TelegramLink]:
+    message = event.message
+    if not message:
+        return []
+    links: list[TelegramLink] = []
+    seen: set[tuple[str, str]] = set()
+    try:
+        entities_text = message.get_entities_text()
+    except Exception:
+        logger.debug("Failed to read Telegram message entities", exc_info=True)
+        return []
+
+    for entity, text in entities_text:
+        url: str | None = None
+        if isinstance(entity, MessageEntityTextUrl):
+            url = entity.url
+        elif isinstance(entity, MessageEntityUrl):
+            url = text
+        if not url:
+            continue
+        url = _normalize_url(url)
+        text = (text or url).strip()
+        key = (text, url)
+        if key in seen:
+            continue
+        seen.add(key)
+        links.append(TelegramLink(text=text, url=url))
+    return links
+
+
 async def parse_event(
     event: events.NewMessage.Event,
     *,
@@ -71,6 +110,7 @@ async def parse_event(
     sender_id = getattr(sender, "id", None) or event.sender_id
     sender_username = getattr(sender, "username", None)
     sender_is_bot = bool(getattr(sender, "bot", False)) if isinstance(sender, User) else False
+    media_type = _media_type(event)
 
     return TelegramForwardMessage(
         message_id=event.message.id,
@@ -82,7 +122,11 @@ async def parse_event(
         sender_display_name=_display_name(sender),
         sender_is_bot=sender_is_bot,
         text=event.raw_text or "",
-        media_type=_media_type(event),
+        media_type=media_type,
         media_path=media_path,
         date=getattr(event.message, "date", None) or datetime.now(),
+        links=_extract_links(event),
+        grouped_id=getattr(event.message, "grouped_id", None),
+        media_paths=[media_path] if media_path else [],
+        media_types=[media_type] if media_type else [],
     )

@@ -7,6 +7,7 @@ from telethon import TelegramClient, events
 
 from app.config import Settings
 from app.rules.models import TelegramForwardMessage
+from app.telegram_user.album_buffer import TelegramAlbumBuffer
 from app.telegram_user.dialog_cache import DialogCache
 from app.telegram_user.event_parser import parse_event
 from app.telegram_user.media_downloader import TelegramMediaDownloader
@@ -29,6 +30,10 @@ class TelegramUserListener:
             settings.media_dir,
             enabled=settings.telegram_download_media,
             max_media_mb=settings.telegram_max_media_mb,
+        )
+        self.album_buffer = TelegramAlbumBuffer(
+            settings.telegram_album_buffer_seconds,
+            on_message,
         )
         self.dialogs = DialogCache(self.client)
         self._started = False
@@ -53,6 +58,7 @@ class TelegramUserListener:
     async def stop(self) -> None:
         if self._started:
             self.client.remove_event_handler(self._handle_new_message)
+        await self.album_buffer.flush_all()
         await self.client.disconnect()
         logger.info("Telegram user listener stopped")
 
@@ -63,6 +69,6 @@ class TelegramUserListener:
         try:
             media_path = await self.downloader.download(event)
             message = await parse_event(event, media_path=media_path)
-            await self.on_message(message)
+            await self.album_buffer.handle(message)
         except Exception:
             logger.exception("Failed to handle Telegram message")

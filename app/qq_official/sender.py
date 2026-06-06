@@ -112,9 +112,36 @@ class QQOfficialSender:
     async def send(self, outbound: QQOutboundMessage) -> Any:
         target_type = QQTargetType(str(outbound.target_type))
         text = self._truncate_text(outbound.text)
-        if outbound.media_path:
-            return await self._send_media(outbound, target_type, text)
+        media_paths = outbound.media_paths or ([outbound.media_path] if outbound.media_path else [])
+        if media_paths:
+            return await self._send_media_sequence(outbound, target_type, text, media_paths)
         return await self._send_text(outbound, target_type, text)
+
+    async def _send_media_sequence(
+        self,
+        outbound: QQOutboundMessage,
+        target_type: QQTargetType,
+        text: str,
+        media_paths: list[Path],
+    ) -> list[Any]:
+        results: list[Any] = []
+        total = len(media_paths)
+        for index, media_path in enumerate(media_paths, start=1):
+            media_type = None
+            if index <= len(outbound.media_types):
+                media_type = outbound.media_types[index - 1]
+            item_text = text if index == 1 else f"[继续发送媒体 {index}/{total}]"
+            item = QQOutboundMessage(
+                target_type=outbound.target_type,
+                target_id=outbound.target_id,
+                text=item_text,
+                media_path=media_path,
+                media_type=media_type,
+                guild_id=outbound.guild_id,
+                channel_id=outbound.channel_id,
+            )
+            results.append(await self._send_media(item, target_type, item_text))
+        return results
 
     async def _send_text(
         self,
@@ -132,12 +159,12 @@ class QQOfficialSender:
 
         if target_type == QQTargetType.CHANNEL:
             payload = self._guild_payload(outbound.target_id, text)
-            return await self.client.api.post_message(channel_id=outbound.target_id, **payload)
+            return await self._post_channel_message(outbound.target_id, payload)
 
         if target_type == QQTargetType.DMS:
             guild_id = outbound.guild_id or outbound.target_id
             payload = self._guild_payload(guild_id, text)
-            return await self.client.api.post_dms(guild_id=guild_id, **payload)
+            return await self._post_dms_message(guild_id, payload)
 
         raise ValueError(f"Unsupported QQ target type: {target_type}")
 
@@ -159,7 +186,7 @@ class QQOfficialSender:
                 media_type,
                 group_openid=outbound.target_id,
             )
-            payload.update({"media": media, "msg_type": 7})
+            payload.update({"media": media, "msg_type": 7, "content": text})
             payload.pop("markdown", None)
             return await self._post_group_message(outbound.target_id, payload)
 
@@ -170,7 +197,7 @@ class QQOfficialSender:
                 media_type,
                 openid=outbound.target_id,
             )
-            payload.update({"media": media, "msg_type": 7})
+            payload.update({"media": media, "msg_type": 7, "content": text})
             payload.pop("markdown", None)
             return await self._post_c2c_message(outbound.target_id, **payload)
 
@@ -180,7 +207,7 @@ class QQOfficialSender:
                 payload["file_image"] = str(media_path)
             else:
                 payload["content"] = f"{text}\n[media file: {media_path.name}]".strip()
-            return await self.client.api.post_message(channel_id=outbound.target_id, **payload)
+            return await self._post_channel_message(outbound.target_id, payload)
 
         if target_type == QQTargetType.DMS:
             guild_id = outbound.guild_id or outbound.target_id
@@ -189,7 +216,7 @@ class QQOfficialSender:
                 payload["file_image"] = str(media_path)
             else:
                 payload["content"] = f"{text}\n[media file: {media_path.name}]".strip()
-            return await self.client.api.post_dms(guild_id=guild_id, **payload)
+            return await self._post_dms_message(guild_id, payload)
 
         raise ValueError(f"Unsupported QQ target type: {target_type}")
 
@@ -233,13 +260,49 @@ class QQOfficialSender:
         try:
             return await self.client.api.post_group_message(group_openid=group_openid, **payload)
         except botpy.errors.ServerError as err:
-            if "不允许发送原生 markdown" not in str(err) or not payload.get("markdown"):
+            if not self._is_markdown_not_allowed(err, payload):
                 raise
-            fallback = payload.copy()
-            markdown = fallback.pop("markdown", None)
-            fallback["content"] = getattr(markdown, "content", None) or fallback.get("content", "")
+            return await self.client.api.post_group_message(
+                group_openid=group_openid,
+                **self._plain_text_fallback_payload(payload),
+            )
+
+    @_qq_retry
+    async def _post_channel_message(self, channel_id: str, payload: dict[str, Any]) -> Any:
+        try:
+            return await self.client.api.post_message(channel_id=channel_id, **payload)
+        except botpy.errors.ServerError as err:
+            if not self._is_markdown_not_allowed(err, payload):
+                raise
+            return await self.client.api.post_message(
+                channel_id=channel_id,
+                **self._plain_text_fallback_payload(payload),
+            )
+
+    @_qq_retry
+    async def _post_dms_message(self, guild_id: str, payload: dict[str, Any]) -> Any:
+        try:
+            return await self.client.api.post_dms(guild_id=guild_id, **payload)
+        except botpy.errors.ServerError as err:
+            if not self._is_markdown_not_allowed(err, payload):
+                raise
+            return await self.client.api.post_dms(
+                guild_id=guild_id,
+                **self._plain_text_fallback_payload(payload),
+            )
+
+    @staticmethod
+    def _is_markdown_not_allowed(err: Exception, payload: dict[str, Any]) -> bool:
+        return bool(payload.get("markdown") and "不允许发送原生 markdown" in str(err))
+
+    @staticmethod
+    def _plain_text_fallback_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        fallback = payload.copy()
+        markdown = fallback.pop("markdown", None)
+        fallback["content"] = getattr(markdown, "content", None) or fallback.get("content", "")
+        if "msg_type" in fallback:
             fallback["msg_type"] = 0
-            return await self.client.api.post_group_message(group_openid=group_openid, **fallback)
+        return fallback
 
     @_qq_retry
     async def _post_c2c_message(
@@ -264,7 +327,15 @@ class QQOfficialSender:
         }
         payload = {key: value for key, value in payload.items() if value is not None}
         route = Route("POST", "/v2/users/{openid}/messages", openid=openid)
-        result = await self.client.api._http.request(route, json=payload)
+        try:
+            result = await self.client.api._http.request(route, json=payload)
+        except botpy.errors.ServerError as err:
+            if not self._is_markdown_not_allowed(err, payload):
+                raise
+            result = await self.client.api._http.request(
+                route,
+                json=self._plain_text_fallback_payload(payload),
+            )
         if isinstance(result, dict):
             return qq_message.Message(**result)
         return result

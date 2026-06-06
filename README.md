@@ -8,6 +8,10 @@ TGQQ Forwarder 用于把指定 Telegram 消息自动转发到 QQ 官方机器人
 - 监听该账号可见的频道、群组、私聊、Bot 消息。
 - 按规则筛选要转发的消息。
 - 支持按 Telegram 会话、发送者、Bot 标记、文本正则、媒体类型匹配。
+- 自动提取 Telegram 普通 URL 和文字超链接，QQ 不能渲染时也会单独显示链接。
+- 优先使用 QQ 原生 markdown 发送，若 QQ 官方接口拒绝 markdown，会自动降级为纯文本。
+- 定时清理 `data/media/` 下的 Telegram 媒体下载缓存。
+- 自动聚合 Telegram 相册/多图图文消息，避免同一组图文被拆成多次转发。
 - 使用 QQ 官方机器人 WebSocket 模式连接 QQ。
 - 支持转发到 QQ 群、C2C、频道、频道私信场景。
 - 通过 Telegram 管理 Bot 查看状态、管理规则、查询日志。
@@ -20,7 +24,8 @@ TGQQ Forwarder 用于把指定 Telegram 消息自动转发到 QQ 官方机器人
 2. QQ 群目标使用的是 QQ 官方机器人 API 中的 `group_openid`，不是普通 QQ 群号。
 3. QQ 官方机器人不同场景的主动发送能力不同。部分群或频道发送可能需要先由 QQ 目标会话给机器人发送一条消息，以便程序缓存最近的 QQ `msg_id`。
 4. 媒体转发已支持常见图片、视频、语音、文件场景，但某些 QQ 目标类型不支持直接上传时会退化为文本说明。
-5. Telegram 匿名管理员消息、频道签名消息、隐私受限的转发消息，可能无法拿到真实发送者 ID。
+5. QQ 原生 markdown 能否显示取决于 QQ 官方机器人权限和消息场景；程序会优先尝试 markdown，失败后自动降级为纯文本。
+6. Telegram 匿名管理员消息、频道签名消息、隐私受限的转发消息，可能无法拿到真实发送者 ID。
 
 ## 文件结构
 
@@ -186,6 +191,9 @@ TELEGRAM_PHONE=+8613800000000
 TELEGRAM_SESSION_PATH=/app/data/sessions/user.session
 TELEGRAM_DOWNLOAD_MEDIA=true
 TELEGRAM_MAX_MEDIA_MB=20
+TELEGRAM_ALBUM_BUFFER_SECONDS=2.0
+MEDIA_CLEANUP_INTERVAL_SECONDS=3600
+MEDIA_RETENTION_SECONDS=86400
 
 TG_ADMIN_BOT_TOKEN=123456:请替换为你的管理BotToken
 ADMIN_TELEGRAM_USER_IDS=11111111,22222222
@@ -195,10 +203,63 @@ QQ_BOT_SECRET=请替换为你的QQ机器人Secret
 QQ_ENABLE_GROUP_C2C=true
 QQ_ENABLE_GUILD_DIRECT_MESSAGE=false
 QQ_ALLOW_SEND_WITHOUT_CACHED_MSG_ID=true
-QQ_USE_MARKDOWN=false
+QQ_USE_MARKDOWN=true
 
 FORWARD_QUEUE_SIZE=1000
 ```
+
+## 相册、多图图文、链接、Markdown 与媒体清理
+
+### Telegram 相册/多图图文聚合
+
+Telegram 的多图图文消息在底层可能按多条 `NewMessage` 到达，但它们共享同一个 `grouped_id`。程序会等待一个很短的窗口，把同一组消息合并后再转发，避免出现“第一张图单独发一次，剩余图片和文字又发一次”的情况。
+
+默认配置：
+
+```env
+TELEGRAM_ALBUM_BUFFER_SECONDS=2.0
+```
+
+含义：同一相册组等待 2 秒聚合。网络较慢或仍偶发拆分时，可调大到 `3.0` 或 `5.0`。设置为 `0` 可禁用聚合。
+
+QQ 官方机器人通常不能在一条消息里发送多张图片。程序聚合后会按顺序发送多张图：第一张带完整文字和链接，后续图片带“继续发送媒体 x/y”的说明，保证不会重复发送整段文字。
+
+### Telegram 超链接转发
+
+程序会提取两类 Telegram 链接：
+
+- 普通 URL，例如 `https://example.com`。
+- 文字超链接，例如 Telegram 中显示为“点击查看”，实际链接是 `https://example.com`。
+
+默认模板会把链接追加为：
+
+```text
+链接：
+- [点击查看](https://example.com)
+```
+
+如果 QQ 场景无法渲染 markdown，程序会自动降级为纯文本，链接仍会以 URL 形式显示。
+
+### QQ Markdown
+
+默认配置：
+
+```env
+QQ_USE_MARKDOWN=true
+```
+
+程序会优先使用 QQ 原生 markdown 消息。若 QQ 官方接口返回“不允许发送原生 markdown”之类的错误，会自动使用纯文本重发。是否能真正显示 markdown 取决于 QQ 官方机器人权限和目标场景。
+
+### media 目录清理
+
+默认配置：
+
+```env
+MEDIA_CLEANUP_INTERVAL_SECONDS=3600
+MEDIA_RETENTION_SECONDS=86400
+```
+
+含义：每 3600 秒检查一次 `data/media/`，删除修改时间超过 86400 秒的媒体文件。设置任一值为 `0` 可禁用清理任务。
 
 ## Telegram 管理 Bot 命令
 

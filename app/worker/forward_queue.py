@@ -87,6 +87,8 @@ class ForwardQueue:
                 text=forwarded_text,
                 media_path=message.media_path,
                 media_type=message.media_type,
+                media_paths=message.media_paths,
+                media_types=message.media_types,
                 guild_id=rule.qq_guild_id,
                 channel_id=rule.qq_channel_id,
             )

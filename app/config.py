@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     telegram_phone: str | None = None
     telegram_download_media: bool = True
     telegram_max_media_mb: int = 20
+    telegram_album_buffer_seconds: float = 2.0
+    media_cleanup_interval_seconds: int = 3600
+    media_retention_seconds: int = 86400
 
     tg_admin_bot_token: str | None = None
     admin_telegram_user_ids: Annotated[list[int], NoDecode] = []
@@ -38,12 +41,13 @@ class Settings(BaseSettings):
     qq_enable_group_c2c: bool = True
     qq_enable_guild_direct_message: bool = False
     qq_allow_send_without_cached_msg_id: bool = True
-    qq_use_markdown: bool = False
+    qq_use_markdown: bool = True
 
     forward_queue_size: int = 1000
     default_message_template: str = (
         "[Telegram: {chat_title}]\n"
         "{sender_name}: {text}\n"
+        "{links_note}\n"
         "{media_note}"
     )
 

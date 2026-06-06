@@ -1,0 +1,95 @@
+from __future__ import annotations
+
+import asyncio
+import logging
+from collections.abc import Awaitable, Callable
+from dataclasses import replace
+from pathlib import Path
+
+from app.rules.models import TelegramForwardMessage, TelegramLink
+
+logger = logging.getLogger(__name__)
+
+MessageCallback = Callable[[TelegramForwardMessage], Awaitable[None]]
+
+
+class TelegramAlbumBuffer:
+    def __init__(self, delay_seconds: float, on_message: MessageCallback) -> None:
+        self.delay_seconds = delay_seconds
+        self.on_message = on_message
+        self._groups: dict[tuple[int | None, int], list[TelegramForwardMessage]] = {}
+        self._tasks: dict[tuple[int | None, int], asyncio.Task] = {}
+
+    async def handle(self, message: TelegramForwardMessage) -> None:
+        if not message.grouped_id or self.delay_seconds <= 0:
+            await self.on_message(message)
+            return
+
+        key = (message.chat_id, message.grouped_id)
+        self._groups.setdefault(key, []).append(message)
+        task = self._tasks.get(key)
+        if task and not task.done():
+            task.cancel()
+        self._tasks[key] = asyncio.create_task(self._flush_later(key), name=f"tg-album-{key}")
+
+    async def flush_all(self) -> None:
+        for task in self._tasks.values():
+            task.cancel()
+        keys = list(self._groups.keys())
+        for key in keys:
+            await self._flush(key)
+
+    async def _flush_later(self, key: tuple[int | None, int]) -> None:
+        try:
+            await asyncio.sleep(self.delay_seconds)
+            await self._flush(key)
+        except asyncio.CancelledError:
+            pass
+
+    async def _flush(self, key: tuple[int | None, int]) -> None:
+        messages = self._groups.pop(key, [])
+        self._tasks.pop(key, None)
+        if not messages:
+            return
+        messages.sort(key=lambda item: item.message_id)
+        merged = self._merge(messages)
+        logger.info(
+            "Merged Telegram album grouped_id=%s chat=%s messages=%s media=%s",
+            merged.grouped_id,
+            merged.chat_id,
+            len(messages),
+            len(merged.media_paths),
+        )
+        await self.on_message(merged)
+
+    @staticmethod
+    def _merge(messages: list[TelegramForwardMessage]) -> TelegramForwardMessage:
+        base = next((message for message in messages if message.text.strip()), messages[0])
+        text_parts: list[str] = []
+        links: list[TelegramLink] = []
+        media_paths: list[Path] = []
+        media_types: list[str] = []
+        seen_links: set[tuple[str, str]] = set()
+
+        for message in messages:
+            text = message.text.strip()
+            if text and text not in text_parts:
+                text_parts.append(text)
+            for link in message.links:
+                key = (link.text, link.url)
+                if key not in seen_links:
+                    seen_links.add(key)
+                    links.append(link)
+            media_paths.extend(message.media_paths)
+            media_types.extend(message.media_types)
+
+        return replace(
+            base,
+            message_id=messages[0].message_id,
+            text="\n".join(text_parts),
+            media_path=media_paths[0] if media_paths else None,
+            media_type=media_types[0] if media_types else None,
+            links=links,
+            media_paths=media_paths,
+            media_types=media_types,
+        )
