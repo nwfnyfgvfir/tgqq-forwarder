@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Annotated
+
 from pydantic import field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -29,7 +31,7 @@ class Settings(BaseSettings):
     telegram_max_media_mb: int = 20
 
     tg_admin_bot_token: str | None = None
-    admin_telegram_user_ids: list[int] = []
+    admin_telegram_user_ids: Annotated[list[int], NoDecode] = []
 
     qq_bot_appid: str = ""
     qq_bot_secret: str = ""
