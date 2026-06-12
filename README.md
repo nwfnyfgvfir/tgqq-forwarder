@@ -7,7 +7,7 @@ TGQQ Forwarder 用于把指定 Telegram 消息自动转发到 QQ 官方机器人
 - 使用 Telethon 登录 Telegram 用户账号。
 - 监听该账号可见的频道、群组、私聊、Bot 消息。
 - 按规则筛选要转发的消息。
-- 支持按 Telegram 会话、发送者、Bot 标记、文本正则、媒体类型匹配。
+- 支持按 Telegram 会话、发送者、Bot 标记、关键词、文本正则、媒体类型匹配。
 - 自动提取 Telegram 普通 URL 和文字超链接，QQ 不能渲染时也会单独显示链接。
 - 优先使用 QQ 原生 markdown 发送，若 QQ 官方接口拒绝 markdown，会自动降级为纯文本。
 - 定时清理 `data/media/` 下的 Telegram 媒体下载缓存。
@@ -272,7 +272,7 @@ MEDIA_RETENTION_SECONDS=86400
 | `/dialogs [关键词]` | 查看或搜索 Telegram 会话 |
 | `/rules` | 查看转发规则 |
 | `/qq_targets` | 查看已缓存的 QQ 目标 ID |
-| `/add_rule <名称> <TG会话ID|*> <TG发送者ID|*> <QQ目标类型> <QQ目标ID>` | 新增规则 |
+| `/add_rule <名称> <TG会话ID|*> <TG发送者ID|*> <QQ目标类型> <QQ目标ID> [关键词...]` | 新增规则；可选关键词，设置后命中任一关键词才转发 |
 | `/del_rule <ID>` | 删除规则 |
 | `/enable_rule <ID>` | 启用规则 |
 | `/disable_rule <ID>` | 禁用规则 |
@@ -338,6 +338,20 @@ channel | 123456789 | msg_xxx | 频道 123456789
 ```text
 /add_rule channel_news -1001234567890 * group QQ_GROUP_OPENID
 ```
+
+转发某个频道中包含特定关键词的消息到 QQ 群：
+
+```text
+/add_rule channel_ai -1001234567890 * group QQ_GROUP_OPENID AI,Python,机器人
+```
+
+也可以用空格分隔多个关键词：
+
+```text
+/add_rule channel_ai -1001234567890 * group QQ_GROUP_OPENID AI Python 机器人
+```
+
+关键词为可选项；不设置关键词时，匹配该规则的全部消息都会转发。设置一个或多个关键词后，只要消息正文包含任一关键词就会转发。
 
 转发某个群里某个人的消息到 QQ 群：
 

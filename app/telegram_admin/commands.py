@@ -10,6 +10,11 @@ from telegram.ext import ContextTypes
 
 from app.config import Settings
 from app.qq_official.client import QQTargetInfo
+from app.rules.keywords import (
+    keywords_from_text_include_regex,
+    keywords_to_text_include_regex,
+    split_keyword_args,
+)
 from app.rules.service import ForwardRuleService
 from app.storage.models import ForwardRule, QQTargetType
 from app.telegram_admin.auth import AdminAuth
@@ -55,7 +60,9 @@ class AdminCommands:
             "/dialogs [关键词] - 查看或搜索 Telegram 会话\n"
             "/rules - 查看转发规则\n"
             "/qq_targets - 查看已缓存的 QQ 目标 ID\n"
-            "/add_rule <名称> <TG会话ID|*> <TG发送者ID|*> <QQ目标类型> <QQ目标ID> - 新增规则\n"
+            "/add_rule <名称> <TG会话ID|*> <TG发送者ID|*> "
+            "<QQ目标类型> <QQ目标ID> [关键词...] - 新增规则；"
+            "设置关键词后命中任一关键词才转发\n"
             "/del_rule <ID> - 删除规则\n"
             "/enable_rule <ID> - 启用规则\n"
             "/disable_rule <ID> - 禁用规则\n"
@@ -109,10 +116,13 @@ class AdminCommands:
         lines = []
         for rule in rules:
             state = "启用" if rule.enabled else "禁用"
+            keywords = keywords_from_text_include_regex(rule.text_include_regex)
+            keyword_note = f" 关键词={_escape('、'.join(keywords))}" if keywords else ""
             lines.append(
                 f"#{rule.id} [{state}] {_escape(rule.name)} | "
                 f"TG会话={rule.source_chat_id or '*'} "
-                f"TG发送者={rule.source_sender_id or '*'} -> "
+                f"TG发送者={rule.source_sender_id or '*'} "
+                f"{keyword_note} -> "
                 f"{_escape(rule.qq_target_type)}:{_escape(rule.qq_target_id)}"
             )
         await update.effective_message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
@@ -142,7 +152,8 @@ class AdminCommands:
             )
         lines.append(
             "\n添加规则示例：\n"
-            "/add_rule qq_to_group -1001234567890 * group 上面查到的目标ID"
+            "/add_rule qq_to_group -1001234567890 * group 上面查到的目标ID\n"
+            "/add_rule qq_to_group_ai -1001234567890 * group 上面查到的目标ID AI,Python"
         )
         await update.effective_message.reply_text(
             "\n".join(lines)[:3900],
@@ -154,12 +165,16 @@ class AdminCommands:
             return
         if len(context.args) < 5:
             await update.effective_message.reply_text(
-                "用法：/add_rule <名称> <TG会话ID|*> <TG发送者ID|*> <QQ目标类型> <QQ目标ID>\n"
-                "示例：/add_rule news -1001234567890 * group QQ_GROUP_OPENID\n"
+                "用法：/add_rule <名称> <TG会话ID|*> <TG发送者ID|*> "
+                "<QQ目标类型> <QQ目标ID> [关键词...]\n"
+                "示例：/add_rule news -1001234567890 * group QQ_GROUP_OPENID AI,Python\n"
+                "关键词为可选项，多个关键词可用空格、英文逗号或中文逗号分隔；"
+                "设置后命中任一关键词才会转发。\n"
                 "QQ目标类型可选：group、c2c、channel、dms"
             )
             return
         name, chat_id_raw, sender_id_raw, target_type, target_id = context.args[:5]
+        keywords = split_keyword_args(context.args[5:])
         try:
             source_chat_id = None if chat_id_raw == "*" else int(chat_id_raw)
             source_sender_id = None if sender_id_raw == "*" else int(sender_id_raw)
@@ -175,12 +190,16 @@ class AdminCommands:
             name=name,
             source_chat_id=source_chat_id,
             source_sender_id=source_sender_id,
+            text_include_regex=(
+                keywords_to_text_include_regex(keywords) if keywords else None
+            ),
             qq_target_type=target_type,
             qq_target_id=target_id,
             message_template=self.settings.default_message_template,
         )
         rule = await self.service.create_rule(rule)
-        await update.effective_message.reply_text(f"已创建规则 #{rule.id}。")
+        keyword_note = f"关键词：{'、'.join(keywords)}" if keywords else "未设置关键词"
+        await update.effective_message.reply_text(f"已创建规则 #{rule.id}。{keyword_note}。")
 
     async def del_rule(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if await self._deny_if_needed(update):
@@ -208,7 +227,9 @@ class AdminCommands:
             return
         rule_id = self._first_int_arg(context)
         if rule_id is None:
-            await update.effective_message.reply_text("用法：/enable_rule <ID> 或 /disable_rule <ID>")
+            await update.effective_message.reply_text(
+                "用法：/enable_rule <ID> 或 /disable_rule <ID>"
+            )
             return
         changed = await self.service.set_rule_enabled(rule_id, enabled)
         await update.effective_message.reply_text("已更新。" if changed else "规则不存在。")
