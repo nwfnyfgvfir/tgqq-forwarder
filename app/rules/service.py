@@ -1,15 +1,30 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 
 from app.rules.formatter import MessageFormatter
+from app.rules.keywords import (
+    is_keyword_text_include_regex,
+    keywords_from_text_include_regex,
+    keywords_to_text_include_regex,
+)
 from app.rules.matcher import RuleMatcher
 from app.rules.models import TelegramForwardMessage
 from app.storage.db import Database
-from app.storage.models import ForwardLog, ForwardRule, ForwardStatus
+from app.storage.models import ForwardLog, ForwardRule, ForwardStatus, utc_now
 from app.storage.repositories import LogRepository, RuleRepository, SettingRepository
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class CreateRuleResult:
+    rule: ForwardRule
+    created: bool
+    updated: bool
+    keywords: list[str]
+    removed_duplicate_count: int = 0
 
 
 class ForwardRuleService:
@@ -38,6 +53,52 @@ class ForwardRuleService:
         async with self.db.session() as session:
             return await self.rules.create_rule(session, rule)
 
+    async def create_or_merge_rule(self, rule: ForwardRule) -> CreateRuleResult:
+        async with self.db.session() as session:
+            existing_rules = await self.rules.list_rules(session)
+            duplicates = [
+                existing
+                for existing in existing_rules
+                if self._is_same_rule_except_text_include(existing, rule)
+                and self._can_merge_text_include(
+                    existing.text_include_regex,
+                    rule.text_include_regex,
+                )
+            ]
+            if not duplicates:
+                created_rule = await self.rules.create_rule(session, rule)
+                return CreateRuleResult(
+                    rule=created_rule,
+                    created=True,
+                    updated=False,
+                    keywords=keywords_from_text_include_regex(created_rule.text_include_regex),
+                )
+
+            primary = duplicates[0]
+            include_patterns = [duplicate.text_include_regex for duplicate in duplicates]
+            include_patterns.append(rule.text_include_regex)
+            merged_pattern = self._merged_text_include_regex(include_patterns)
+            pattern_changed = primary.text_include_regex != merged_pattern
+            if pattern_changed:
+                primary.text_include_regex = merged_pattern
+                primary.updated_at = utc_now()
+                session.add(primary)
+
+            removed_duplicate_count = 0
+            for duplicate in duplicates[1:]:
+                if duplicate.id is not None and await self.rules.delete_rule(session, duplicate.id):
+                    removed_duplicate_count += 1
+
+            await session.flush()
+            await session.refresh(primary)
+            return CreateRuleResult(
+                rule=primary,
+                created=False,
+                updated=pattern_changed or removed_duplicate_count > 0,
+                keywords=keywords_from_text_include_regex(primary.text_include_regex),
+                removed_duplicate_count=removed_duplicate_count,
+            )
+
     async def delete_rule(self, rule_id: int) -> bool:
         async with self.db.session() as session:
             return await self.rules.delete_rule(session, rule_id)
@@ -46,13 +107,60 @@ class ForwardRuleService:
         async with self.db.session() as session:
             return await self.rules.set_enabled(session, rule_id, enabled)
 
-    async def list_rules(self, *, enabled_only: bool = False, limit: int | None = None) -> list[ForwardRule]:
+    async def list_rules(
+        self,
+        *,
+        enabled_only: bool = False,
+        limit: int | None = None,
+    ) -> list[ForwardRule]:
         async with self.db.session() as session:
             return await self.rules.list_rules(session, enabled_only=enabled_only, limit=limit)
 
     async def recent_logs(self, *, limit: int = 20, status: str | None = None) -> list[ForwardLog]:
         async with self.db.session() as session:
             return await self.logs.recent_logs(session, limit=limit, status=status)
+
+    @staticmethod
+    def _is_same_rule_except_text_include(left: ForwardRule, right: ForwardRule) -> bool:
+        return (
+            left.name == right.name
+            and left.enabled == right.enabled
+            and left.source_chat_id == right.source_chat_id
+            and left.source_chat_type == right.source_chat_type
+            and left.source_sender_id == right.source_sender_id
+            and left.source_sender_is_bot == right.source_sender_is_bot
+            and left.text_exclude_regex == right.text_exclude_regex
+            and left.media_types == right.media_types
+            and left.qq_target_type == right.qq_target_type
+            and left.qq_target_id == right.qq_target_id
+            and left.qq_guild_id == right.qq_guild_id
+            and left.qq_channel_id == right.qq_channel_id
+            and left.message_template == right.message_template
+            and left.priority == right.priority
+        )
+
+    @staticmethod
+    def _can_merge_text_include(left: str | None, right: str | None) -> bool:
+        return (left is None or is_keyword_text_include_regex(left)) and (
+            right is None or is_keyword_text_include_regex(right)
+        )
+
+    @staticmethod
+    def _merged_text_include_regex(patterns: list[str | None]) -> str | None:
+        keywords: list[str] = []
+        seen: set[str] = set()
+        has_no_keyword_rule = False
+        for pattern in patterns:
+            if pattern is None:
+                has_no_keyword_rule = True
+                continue
+            for keyword in keywords_from_text_include_regex(pattern):
+                if keyword not in seen:
+                    seen.add(keyword)
+                    keywords.append(keyword)
+        if has_no_keyword_rule:
+            return None
+        return keywords_to_text_include_regex(keywords) if keywords else None
 
     async def counts(self) -> tuple[int, int, int]:
         async with self.db.session() as session:

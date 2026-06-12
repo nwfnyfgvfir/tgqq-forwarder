@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import html
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 
 from telegram import Update
 from telegram.constants import ParseMode
@@ -25,6 +26,52 @@ logger = logging.getLogger(__name__)
 
 def _escape(value: object) -> str:
     return html.escape(str(value))
+
+
+@dataclass(slots=True)
+class _ParsedAddRuleArgs:
+    name: str
+    source_chat_id: int | None
+    source_sender_id: int | None
+    target_type: str
+    target_id: str
+    keywords: list[str]
+
+
+def _parse_int_or_wildcard(raw: str) -> int | None:
+    if raw == "*":
+        return None
+    return int(raw)
+
+
+def parse_add_rule_args(args: Sequence[str]) -> _ParsedAddRuleArgs | None:
+    target_types = {item.value for item in QQTargetType}
+    candidates: list[_ParsedAddRuleArgs] = []
+    for target_type_index, raw_target_type in enumerate(args):
+        target_type = raw_target_type.lower()
+        if target_type not in target_types:
+            continue
+        if target_type_index < 3 or target_type_index + 1 >= len(args):
+            continue
+        name_parts = list(args[: target_type_index - 2])
+        if not name_parts:
+            continue
+        try:
+            source_chat_id = _parse_int_or_wildcard(args[target_type_index - 2])
+            source_sender_id = _parse_int_or_wildcard(args[target_type_index - 1])
+        except ValueError:
+            continue
+        candidates.append(
+            _ParsedAddRuleArgs(
+                name=" ".join(name_parts),
+                source_chat_id=source_chat_id,
+                source_sender_id=source_sender_id,
+                target_type=target_type,
+                target_id=args[target_type_index + 1],
+                keywords=split_keyword_args(args[target_type_index + 2 :]),
+            )
+        )
+    return candidates[-1] if candidates else None
 
 
 class AdminCommands:
@@ -62,7 +109,7 @@ class AdminCommands:
             "/qq_targets - 查看已缓存的 QQ 目标 ID\n"
             "/add_rule <名称> <TG会话ID|*> <TG发送者ID|*> "
             "<QQ目标类型> <QQ目标ID> [关键词...] - 新增规则；"
-            "设置关键词后命中任一关键词才转发\n"
+            "名称可含空格，重复规则会合并关键词\n"
             "/del_rule <ID> - 删除规则\n"
             "/enable_rule <ID> - 启用规则\n"
             "/disable_rule <ID> - 禁用规则\n"
@@ -163,43 +210,44 @@ class AdminCommands:
     async def add_rule(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if await self._deny_if_needed(update):
             return
-        if len(context.args) < 5:
+        parsed = parse_add_rule_args(context.args)
+        if parsed is None:
             await update.effective_message.reply_text(
                 "用法：/add_rule <名称> <TG会话ID|*> <TG发送者ID|*> "
                 "<QQ目标类型> <QQ目标ID> [关键词...]\n"
-                "示例：/add_rule news -1001234567890 * group QQ_GROUP_OPENID AI,Python\n"
-                "关键词为可选项，多个关键词可用空格、英文逗号或中文逗号分隔；"
-                "设置后命中任一关键词才会转发。\n"
+                "示例：/add_rule LINUX DO Channel -1002035446470 * c2c "
+                "QQ_OPENID gpt,注册机,公益\n"
+                "名称可以包含空格；关键词为可选项，可用空格、英文逗号或中文逗号分隔。\n"
                 "QQ目标类型可选：group、c2c、channel、dms"
             )
             return
-        name, chat_id_raw, sender_id_raw, target_type, target_id = context.args[:5]
-        keywords = split_keyword_args(context.args[5:])
-        try:
-            source_chat_id = None if chat_id_raw == "*" else int(chat_id_raw)
-            source_sender_id = None if sender_id_raw == "*" else int(sender_id_raw)
-        except ValueError:
-            await update.effective_message.reply_text("TG会话ID 和 TG发送者ID 必须是整数或 *。")
-            return
-        if target_type not in {item.value for item in QQTargetType}:
-            await update.effective_message.reply_text(
-                "QQ目标类型必须是以下之一：group、c2c、channel、dms。"
-            )
-            return
         rule = ForwardRule(
-            name=name,
-            source_chat_id=source_chat_id,
-            source_sender_id=source_sender_id,
+            name=parsed.name,
+            source_chat_id=parsed.source_chat_id,
+            source_sender_id=parsed.source_sender_id,
             text_include_regex=(
-                keywords_to_text_include_regex(keywords) if keywords else None
+                keywords_to_text_include_regex(parsed.keywords) if parsed.keywords else None
             ),
-            qq_target_type=target_type,
-            qq_target_id=target_id,
+            qq_target_type=parsed.target_type,
+            qq_target_id=parsed.target_id,
             message_template=self.settings.default_message_template,
         )
-        rule = await self.service.create_rule(rule)
-        keyword_note = f"关键词：{'、'.join(keywords)}" if keywords else "未设置关键词"
-        await update.effective_message.reply_text(f"已创建规则 #{rule.id}。{keyword_note}。")
+        result = await self.service.create_or_merge_rule(rule)
+        keyword_note = (
+            f"关键词：{'、'.join(result.keywords)}" if result.keywords else "未设置关键词"
+        )
+        duplicate_note = (
+            f"，已删除重复规则 {result.removed_duplicate_count} 条"
+            if result.removed_duplicate_count
+            else ""
+        )
+        if result.created:
+            prefix = f"已创建规则 #{result.rule.id}"
+        elif result.updated:
+            prefix = f"已合并到已有规则 #{result.rule.id}"
+        else:
+            prefix = f"规则已存在 #{result.rule.id}"
+        await update.effective_message.reply_text(f"{prefix}。{keyword_note}{duplicate_note}。")
 
     async def del_rule(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if await self._deny_if_needed(update):

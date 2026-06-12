@@ -31,6 +31,10 @@ def keywords_to_text_include_regex(keywords: Sequence[str]) -> str:
     return f"(?#{_KEYWORDS_COMMENT_PREFIX}{encoded})(?i:(?:{alternatives}))"
 
 
+def is_keyword_text_include_regex(pattern: str | None) -> bool:
+    return bool(pattern and _KEYWORDS_COMMENT_RE.match(pattern))
+
+
 def keywords_from_text_include_regex(pattern: str | None) -> list[str]:
     if not pattern:
         return []
