@@ -35,6 +35,11 @@ class Settings(BaseSettings):
 
     tg_admin_bot_token: str | None = None
     admin_telegram_user_ids: Annotated[list[int], NoDecode] = []
+    tg_admin_bot_connect_timeout: float = 15.0
+    tg_admin_bot_request_timeout: float = 30.0
+    tg_admin_bot_pool_timeout: float = 15.0
+    tg_admin_bot_poll_timeout: int = 30
+    tg_admin_bot_poll_read_timeout: float = 45.0
 
     qq_bot_appid: str = ""
     qq_bot_secret: str = ""

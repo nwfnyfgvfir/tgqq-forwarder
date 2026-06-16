@@ -5,8 +5,9 @@ import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
-from telegram import Update
+from telegram import Message, Update
 from telegram.constants import ParseMode
+from telegram.error import NetworkError, TimedOut
 from telegram.ext import ContextTypes
 
 from app.config import Settings
@@ -22,6 +23,15 @@ from app.telegram_admin.auth import AdminAuth
 from app.telegram_user.client import TelegramUserListener
 
 logger = logging.getLogger(__name__)
+
+
+async def _reply_text(message: Message | None, text: str, **kwargs: object) -> None:
+    if message is None:
+        return
+    try:
+        await message.reply_text(text, **kwargs)
+    except (NetworkError, TimedOut):
+        logger.warning("Failed to send Telegram admin bot reply", exc_info=True)
 
 
 def _escape(value: object) -> str:
@@ -94,14 +104,14 @@ class AdminCommands:
     async def _deny_if_needed(self, update: Update) -> bool:
         if self.auth.is_allowed(update):
             return False
-        if update.effective_message:
-            await update.effective_message.reply_text("无权限。")
+        await _reply_text(update.effective_message, "无权限。")
         return True
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if await self._deny_if_needed(update):
             return
-        await update.effective_message.reply_text(
+        await _reply_text(
+            update.effective_message,
             "TGQQ Forwarder 管理命令：\n"
             "/status - 查看运行状态\n"
             "/dialogs [关键词] - 查看或搜索 Telegram 会话\n"
@@ -126,7 +136,8 @@ class AdminCommands:
         telegram_status = "已连接" if listener and listener.is_connected else "未连接"
         paused = await self.service.is_paused()
         total_rules, enabled_rules, total_logs = await self.service.counts()
-        await update.effective_message.reply_text(
+        await _reply_text(
+            update.effective_message,
             "运行状态：\n"
             f"Telegram 用户监听：{telegram_status}\n"
             f"QQ WebSocket：{self.qq_status_getter()}\n"
@@ -140,25 +151,25 @@ class AdminCommands:
             return
         listener = self.telegram_listener_getter()
         if not listener:
-            await update.effective_message.reply_text("Telegram 用户监听器尚未就绪。")
+            await _reply_text(update.effective_message, "Telegram 用户监听器尚未就绪。")
             return
         query = " ".join(context.args) if context.args else None
         dialogs = await listener.dialogs.list_dialogs(limit=80, query=query)
         if not dialogs:
-            await update.effective_message.reply_text("没有找到匹配的 Telegram 会话。")
+            await _reply_text(update.effective_message, "没有找到匹配的 Telegram 会话。")
             return
         lines = [
             f"{item.type} | <code>{item.id}</code> | {_escape(item.name)}"
             for item in dialogs[:50]
         ]
-        await update.effective_message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+        await _reply_text(update.effective_message, "\n".join(lines), parse_mode=ParseMode.HTML)
 
     async def rules(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if await self._deny_if_needed(update):
             return
         rules = await self.service.list_rules(limit=50)
         if not rules:
-            await update.effective_message.reply_text("当前没有转发规则。")
+            await _reply_text(update.effective_message, "当前没有转发规则。")
             return
         lines = []
         for rule in rules:
@@ -172,14 +183,15 @@ class AdminCommands:
                 f"{keyword_note} -> "
                 f"{_escape(rule.qq_target_type)}:{_escape(rule.qq_target_id)}"
             )
-        await update.effective_message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+        await _reply_text(update.effective_message, "\n".join(lines), parse_mode=ParseMode.HTML)
 
     async def qq_targets(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if await self._deny_if_needed(update):
             return
         targets = self.qq_targets_getter()
         if not targets:
-            await update.effective_message.reply_text(
+            await _reply_text(
+                update.effective_message,
                 "还没有缓存到 QQ 目标 ID。\n"
                 "请先在目标 QQ 群/C2C/频道里给机器人发一条消息或 @ 机器人，"
                 "然后再执行 /qq_targets。"
@@ -202,7 +214,8 @@ class AdminCommands:
             "/add_rule qq_to_group -1001234567890 * group 上面查到的目标ID\n"
             "/add_rule qq_to_group_ai -1001234567890 * group 上面查到的目标ID AI,Python"
         )
-        await update.effective_message.reply_text(
+        await _reply_text(
+            update.effective_message,
             "\n".join(lines)[:3900],
             parse_mode=ParseMode.HTML,
         )
@@ -212,7 +225,8 @@ class AdminCommands:
             return
         parsed = parse_add_rule_args(context.args)
         if parsed is None:
-            await update.effective_message.reply_text(
+            await _reply_text(
+                update.effective_message,
                 "用法：/add_rule <名称> <TG会话ID|*> <TG发送者ID|*> "
                 "<QQ目标类型> <QQ目标ID> [关键词...]\n"
                 "示例：/add_rule LINUX DO Channel -1002035446470 * c2c "
@@ -247,17 +261,17 @@ class AdminCommands:
             prefix = f"已合并到已有规则 #{result.rule.id}"
         else:
             prefix = f"规则已存在 #{result.rule.id}"
-        await update.effective_message.reply_text(f"{prefix}。{keyword_note}{duplicate_note}。")
+        await _reply_text(update.effective_message, f"{prefix}。{keyword_note}{duplicate_note}。")
 
     async def del_rule(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if await self._deny_if_needed(update):
             return
         rule_id = self._first_int_arg(context)
         if rule_id is None:
-            await update.effective_message.reply_text("用法：/del_rule <ID>")
+            await _reply_text(update.effective_message, "用法：/del_rule <ID>")
             return
         deleted = await self.service.delete_rule(rule_id)
-        await update.effective_message.reply_text("已删除。" if deleted else "规则不存在。")
+        await _reply_text(update.effective_message, "已删除。" if deleted else "规则不存在。")
 
     async def enable_rule(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await self._set_rule_enabled(update, context, True)
@@ -275,12 +289,13 @@ class AdminCommands:
             return
         rule_id = self._first_int_arg(context)
         if rule_id is None:
-            await update.effective_message.reply_text(
+            await _reply_text(
+                update.effective_message,
                 "用法：/enable_rule <ID> 或 /disable_rule <ID>"
             )
             return
         changed = await self.service.set_rule_enabled(rule_id, enabled)
-        await update.effective_message.reply_text("已更新。" if changed else "规则不存在。")
+        await _reply_text(update.effective_message, "已更新。" if changed else "规则不存在。")
 
     async def logs(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if await self._deny_if_needed(update):
@@ -300,17 +315,17 @@ class AdminCommands:
         if await self._deny_if_needed(update):
             return
         await self.service.set_paused(True)
-        await update.effective_message.reply_text("已暂停全部转发。")
+        await _reply_text(update.effective_message, "已暂停全部转发。")
 
     async def resume(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if await self._deny_if_needed(update):
             return
         await self.service.set_paused(False)
-        await update.effective_message.reply_text("已恢复全部转发。")
+        await _reply_text(update.effective_message, "已恢复全部转发。")
 
     async def _send_logs(self, update: Update, rows) -> None:
         if not rows:
-            await update.effective_message.reply_text("没有日志。")
+            await _reply_text(update.effective_message, "没有日志。")
             return
         lines = []
         for row in rows:
@@ -321,7 +336,7 @@ class AdminCommands:
                 f"错误={_escape(row.error_message or '')}"
             )
         text = "\n".join(lines)
-        await update.effective_message.reply_text(text[:3900], parse_mode=ParseMode.HTML)
+        await _reply_text(update.effective_message, text[:3900], parse_mode=ParseMode.HTML)
 
     @staticmethod
     def _first_int_arg(context: ContextTypes.DEFAULT_TYPE) -> int | None:

@@ -4,13 +4,14 @@ import logging
 from collections.abc import Callable
 
 from telegram import BotCommand
-from telegram.ext import Application, CommandHandler
+from telegram.error import NetworkError, TimedOut
+from telegram.ext import Application, CommandHandler, ContextTypes
 
 from app.config import Settings
+from app.qq_official.client import QQTargetInfo
 from app.rules.service import ForwardRuleService
 from app.telegram_admin.auth import AdminAuth
 from app.telegram_admin.commands import AdminCommands
-from app.qq_official.client import QQTargetInfo
 from app.telegram_user.client import TelegramUserListener
 
 logger = logging.getLogger(__name__)
@@ -49,7 +50,20 @@ class TelegramAdminBot:
             self.qq_status_getter,
             self.qq_targets_getter,
         )
-        app = Application.builder().token(self.settings.tg_admin_bot_token).build()
+        app = (
+            Application.builder()
+            .token(self.settings.tg_admin_bot_token)
+            .connect_timeout(self.settings.tg_admin_bot_connect_timeout)
+            .read_timeout(self.settings.tg_admin_bot_request_timeout)
+            .write_timeout(self.settings.tg_admin_bot_request_timeout)
+            .pool_timeout(self.settings.tg_admin_bot_pool_timeout)
+            .get_updates_connect_timeout(self.settings.tg_admin_bot_connect_timeout)
+            .get_updates_read_timeout(self.settings.tg_admin_bot_poll_read_timeout)
+            .get_updates_write_timeout(self.settings.tg_admin_bot_request_timeout)
+            .get_updates_pool_timeout(self.settings.tg_admin_bot_pool_timeout)
+            .build()
+        )
+        app.add_error_handler(self._handle_error)
         app.add_handler(CommandHandler(["start", "help"], commands.start))
         app.add_handler(CommandHandler("status", commands.status))
         app.add_handler(CommandHandler("dialogs", commands.dialogs))
@@ -67,28 +81,38 @@ class TelegramAdminBot:
         await app.initialize()
         await self._set_bot_commands(app)
         await app.start()
-        await app.updater.start_polling()
+        await app.updater.start_polling(timeout=self.settings.tg_admin_bot_poll_timeout)
         self.application = app
         logger.info("Telegram admin bot started")
 
+    async def _handle_error(self, update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if isinstance(context.error, (NetworkError, TimedOut)):
+            logger.warning("Telegram admin bot network error", exc_info=context.error)
+            return
+        logger.exception("Telegram admin bot handler error", exc_info=context.error)
+
     async def _set_bot_commands(self, app: Application) -> None:
-        await app.bot.set_my_commands(
-            [
-                BotCommand("start", "显示帮助信息"),
-                BotCommand("status", "查看运行状态"),
-                BotCommand("dialogs", "查看或搜索 Telegram 会话"),
-                BotCommand("rules", "查看转发规则"),
-                BotCommand("qq_targets", "查看已缓存的 QQ 目标 ID"),
-                BotCommand("add_rule", "新增转发规则"),
-                BotCommand("del_rule", "删除转发规则"),
-                BotCommand("enable_rule", "启用转发规则"),
-                BotCommand("disable_rule", "禁用转发规则"),
-                BotCommand("logs", "查看最近转发日志"),
-                BotCommand("errors", "查看最近错误日志"),
-                BotCommand("pause", "暂停全部转发"),
-                BotCommand("resume", "恢复全部转发"),
-            ]
-        )
+        try:
+            await app.bot.set_my_commands(
+                [
+                    BotCommand("start", "显示帮助信息"),
+                    BotCommand("status", "查看运行状态"),
+                    BotCommand("dialogs", "查看或搜索 Telegram 会话"),
+                    BotCommand("rules", "查看转发规则"),
+                    BotCommand("qq_targets", "查看已缓存的 QQ 目标 ID"),
+                    BotCommand("add_rule", "新增转发规则"),
+                    BotCommand("del_rule", "删除转发规则"),
+                    BotCommand("enable_rule", "启用转发规则"),
+                    BotCommand("disable_rule", "禁用转发规则"),
+                    BotCommand("logs", "查看最近转发日志"),
+                    BotCommand("errors", "查看最近错误日志"),
+                    BotCommand("pause", "暂停全部转发"),
+                    BotCommand("resume", "恢复全部转发"),
+                ]
+            )
+        except (NetworkError, TimedOut):
+            logger.warning("Failed to register Telegram admin bot commands", exc_info=True)
+            return
         logger.info("Telegram admin bot commands have been registered")
 
     async def stop(self) -> None:
