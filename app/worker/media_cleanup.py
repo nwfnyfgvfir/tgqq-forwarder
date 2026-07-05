@@ -48,7 +48,7 @@ class MediaCleanupWorker:
         while not self._stopping.is_set():
             try:
                 await asyncio.wait_for(self._stopping.wait(), timeout=self.interval_seconds)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 await self.cleanup_once()
 
     async def cleanup_once(self) -> None:
@@ -75,7 +75,11 @@ class MediaCleanupWorker:
             except Exception:
                 logger.warning("Failed to cleanup media path: %s", path, exc_info=True)
         if removed_files or removed_dirs:
-            logger.info("Media cleanup removed %s files and %s empty dirs", removed_files, removed_dirs)
+            logger.info(
+                "Media cleanup removed %s files and %s empty dirs",
+                removed_files,
+                removed_dirs,
+            )
 
     @staticmethod
     def _remove_empty_dir(path: Path) -> None:

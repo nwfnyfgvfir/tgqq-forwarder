@@ -1,14 +1,72 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
+
+_VISIBLE_URL_RE = re.compile(
+    r"""
+    (?P<url>
+        (?:[a-z][a-z0-9+.-]*://|mailto:|tel:|tg:)[^\s<>()\[\]{}"']+
+        |
+        (?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}
+        (?::\d+)?
+        (?:/[^\s<>()\[\]{}"']*)?
+    )
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+_TRAILING_URL_PUNCTUATION = ".,!?;:，。！？；：、)]}）】》"
+
+
+def normalize_telegram_url(url: str) -> str:
+    url = url.strip()
+    if not url:
+        return ""
+    parts = urlsplit(url)
+    if "://" in url or parts.scheme in {"mailto", "tel", "tg"}:
+        return url
+    return f"https://{url}"
+
+
+def url_dedupe_key(url: str) -> str:
+    normalized = normalize_telegram_url(url)
+    if not normalized:
+        return ""
+
+    parts = urlsplit(normalized)
+    if not parts.scheme or not parts.netloc:
+        return normalized.casefold()
+
+    scheme = parts.scheme.lower()
+    netloc = parts.netloc.lower()
+    default_port = {"http": ":80", "https": ":443"}.get(scheme)
+    if default_port and netloc.endswith(default_port):
+        netloc = netloc[: -len(default_port)]
+
+    path = parts.path
+    if path == "/" and not parts.query and not parts.fragment:
+        path = ""
+    return urlunsplit((scheme, netloc, path, parts.query, parts.fragment))
+
+
+def extract_visible_url_keys(text: str) -> set[str]:
+    keys: set[str] = set()
+    for match in _VISIBLE_URL_RE.finditer(text or ""):
+        url = match.group("url").rstrip(_TRAILING_URL_PUNCTUATION)
+        key = url_dedupe_key(url)
+        if key:
+            keys.add(key)
+    return keys
 
 
 @dataclass(slots=True)
 class TelegramLink:
     text: str
     url: str
+    source: str = "unknown"
 
     @property
     def markdown(self) -> str:
@@ -79,7 +137,7 @@ class TelegramForwardMessage:
         if not self.links:
             return ""
         lines = ["链接："]
-        lines.extend(f"- {link.markdown}" for link in self.links if link.url)
+        lines.extend(f"- {link.plain}" for link in self.links if link.url)
         return "\n".join(lines)
 
     @property

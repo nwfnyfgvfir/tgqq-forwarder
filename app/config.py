@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     telegram_session_path: Path = Path("data/sessions/user.session")
     telegram_phone: str | None = None
     telegram_download_media: bool = True
+    telegram_forward_link_preview_media: bool = False
     telegram_max_media_mb: int = 20
     telegram_album_buffer_seconds: float = 2.0
     media_cleanup_interval_seconds: int = 3600

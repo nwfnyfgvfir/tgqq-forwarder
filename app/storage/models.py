@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from enum import StrEnum
 
-from sqlalchemy import Column, JSON, Text
+from sqlalchemy import JSON, Column, Text
 from sqlmodel import Field, SQLModel
 
 

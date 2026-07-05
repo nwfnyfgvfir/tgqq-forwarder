@@ -16,7 +16,12 @@ class DialogCache:
     def __init__(self, client: TelegramClient) -> None:
         self.client = client
 
-    async def list_dialogs(self, *, limit: int = 50, query: str | None = None) -> list[TelegramDialogInfo]:
+    async def list_dialogs(
+        self,
+        *,
+        limit: int = 50,
+        query: str | None = None,
+    ) -> list[TelegramDialogInfo]:
         items: list[TelegramDialogInfo] = []
         lowered = query.lower() if query else None
         async for dialog in self.client.iter_dialogs(limit=limit):

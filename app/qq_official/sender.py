@@ -33,7 +33,7 @@ def _patch_qq_botpy_formdata() -> None:
         from botpy.http import _FormData  # type: ignore
 
         if not hasattr(_FormData, "_is_processed"):
-            setattr(_FormData, "_is_processed", False)
+            _FormData._is_processed = False
     except Exception:
         logger.debug("Skip qq-botpy FormData compatibility patch", exc_info=True)
 
@@ -92,7 +92,10 @@ class QQOfficialSender:
     async def _run(self) -> None:
         logger.info("Starting QQ Official Bot WebSocket client")
         self._started.set()
-        await self.client.start(appid=self.settings.qq_bot_appid, secret=self.settings.qq_bot_secret)
+        await self.client.start(
+            appid=self.settings.qq_bot_appid,
+            secret=self.settings.qq_bot_secret,
+        )
 
     async def stop(self) -> None:
         if self._task is None:

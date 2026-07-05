@@ -7,7 +7,7 @@ from app.rules.keywords import (
     split_keyword_args,
 )
 from app.rules.matcher import RuleMatcher
-from app.rules.models import TelegramForwardMessage
+from app.rules.models import TelegramForwardMessage, TelegramLink
 from app.storage.models import ForwardRule
 
 
@@ -28,6 +28,15 @@ def make_message(**kwargs) -> TelegramForwardMessage:
     }
     data.update(kwargs)
     return TelegramForwardMessage(**data)
+
+
+def make_rule(template: str = "{text}\n{links_note}") -> ForwardRule:
+    return ForwardRule(
+        name="r1",
+        qq_target_type="group",
+        qq_target_id="target",
+        message_template=template,
+    )
 
 
 def test_rule_matcher_chat_sender_and_regex() -> None:
@@ -75,3 +84,67 @@ def test_formatter_uses_template_values() -> None:
         message_template="{chat_title}|{sender_name}|{text}",
     )
     assert MessageFormatter().format(rule, make_message()) == "news|Sender|hello world"
+
+
+def test_formatter_does_not_duplicate_visible_url() -> None:
+    message = make_message(
+        text="read https://example.com",
+        links=[
+            TelegramLink(
+                text="https://example.com",
+                url="https://example.com",
+                source="visible_url",
+            )
+        ],
+    )
+
+    rendered = MessageFormatter().format(make_rule(), message)
+
+    assert rendered.count("https://example.com") == 1
+    assert "链接：" not in rendered
+
+
+def test_formatter_preserves_hidden_text_url() -> None:
+    message = make_message(
+        text="read docs",
+        links=[TelegramLink(text="Docs", url="https://example.com/docs", source="text_url")],
+    )
+
+    rendered = MessageFormatter().format(make_rule(), message)
+
+    assert "链接：" in rendered
+    assert "- Docs: https://example.com/docs" in rendered
+
+
+def test_formatter_preserves_button_url() -> None:
+    message = make_message(
+        text="button below",
+        links=[TelegramLink(text="查看回复", url="https://example.com/reply", source="button_url")],
+    )
+
+    rendered = MessageFormatter().format(make_rule(), message)
+
+    assert "- 查看回复: https://example.com/reply" in rendered
+
+
+def test_formatter_dedupes_visible_bare_domain_and_normalized_url() -> None:
+    message = make_message(
+        text="read example.com",
+        links=[TelegramLink(text="Open", url="https://example.com", source="button_url")],
+    )
+
+    rendered = MessageFormatter().format(make_rule(), message)
+
+    assert "Open: https://example.com" not in rendered
+    assert "链接：" not in rendered
+
+
+def test_formatter_appends_hidden_links_when_template_omits_links_note() -> None:
+    message = make_message(
+        text="button below",
+        links=[TelegramLink(text="Open", url="https://example.com/open", source="button_url")],
+    )
+
+    rendered = MessageFormatter().format(make_rule("{text}"), message)
+
+    assert rendered == "button below\n链接：\n- Open: https://example.com/open"

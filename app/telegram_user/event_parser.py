@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable, Iterator
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -8,7 +9,13 @@ from typing import Any
 from telethon import events
 from telethon.tl.types import Channel, Chat, MessageEntityTextUrl, MessageEntityUrl, User
 
-from app.rules.models import TelegramForwardMessage, TelegramLink
+from app.rules.models import (
+    TelegramForwardMessage,
+    TelegramLink,
+    normalize_telegram_url,
+    url_dedupe_key,
+)
+from app.telegram_user.media_downloader import is_link_preview_media
 
 logger = logging.getLogger(__name__)
 
@@ -44,38 +51,36 @@ def _chat_type(event: events.NewMessage.Event, chat: Any) -> str:
     return "unknown"
 
 
-def _media_type(event: events.NewMessage.Event) -> str | None:
+def _media_type(
+    event: events.NewMessage.Event,
+    *,
+    include_link_preview_media: bool = False,
+) -> str | None:
     message = event.message
     if not message or not message.media:
         return None
-    if message.photo:
+    if is_link_preview_media(message):
+        return "link_preview" if include_link_preview_media else None
+    if getattr(message, "photo", None):
         return "photo"
-    if message.video:
+    if getattr(message, "video", None):
         return "video"
-    if message.voice:
+    if getattr(message, "voice", None):
         return "voice"
-    if message.audio:
+    if getattr(message, "audio", None):
         return "audio"
-    if message.document:
+    if getattr(message, "document", None):
         return "document"
     return "media"
 
 
 def _normalize_url(url: str) -> str:
-    url = url.strip()
-    if not url:
-        return ""
-    if "://" in url or url.startswith("mailto:"):
-        return url
-    return f"https://{url}"
+    return normalize_telegram_url(url)
 
 
-def _extract_links(event: events.NewMessage.Event) -> list[TelegramLink]:
-    message = event.message
-    if not message:
-        return []
+def _extract_entity_links(message: Any) -> list[TelegramLink]:
     links: list[TelegramLink] = []
-    seen: set[tuple[str, str]] = set()
+    seen: set[tuple[str, str, str]] = set()
     try:
         entities_text = message.get_entities_text()
     except Exception:
@@ -84,33 +89,111 @@ def _extract_links(event: events.NewMessage.Event) -> list[TelegramLink]:
 
     for entity, text in entities_text:
         url: str | None = None
+        source: str | None = None
         if isinstance(entity, MessageEntityTextUrl):
             url = entity.url
+            source = "text_url"
         elif isinstance(entity, MessageEntityUrl):
             url = text
-        if not url:
+            source = "visible_url"
+        if not url or not source:
             continue
         url = _normalize_url(url)
         text = (text or url).strip()
-        key = (text, url)
+        key = (source, text, url)
         if key in seen:
             continue
         seen.add(key)
-        links.append(TelegramLink(text=text, url=url))
+        links.append(TelegramLink(text=text, url=url, source=source))
     return links
+
+
+def _button_rows(buttons: Any) -> Iterable[Any]:
+    if not buttons:
+        return []
+    if isinstance(buttons, list | tuple):
+        return buttons
+    return [buttons]
+
+
+def _buttons_from_reply_markup(message: Any) -> Iterator[Any]:
+    reply_markup = getattr(message, "reply_markup", None)
+    for row in getattr(reply_markup, "rows", None) or []:
+        yield getattr(row, "buttons", []) or []
+
+
+def _button_url(button: Any) -> str | None:
+    url = getattr(button, "url", None)
+    if url:
+        return str(url)
+    raw_button = getattr(button, "button", None)
+    url = getattr(raw_button, "url", None)
+    if url:
+        return str(url)
+    return None
+
+
+def _button_text(button: Any, url: str) -> str:
+    text = getattr(button, "text", None)
+    if text:
+        return str(text).strip()
+    raw_button = getattr(button, "button", None)
+    text = getattr(raw_button, "text", None)
+    if text:
+        return str(text).strip()
+    return url
+
+
+def _iter_url_buttons(message: Any) -> Iterator[tuple[str, str]]:
+    high_level_buttons = getattr(message, "buttons", None)
+    rows = (
+        list(_button_rows(high_level_buttons))
+        if high_level_buttons
+        else list(_buttons_from_reply_markup(message))
+    )
+    for row in rows:
+        row_buttons = row if isinstance(row, list | tuple) else [row]
+        for button in row_buttons:
+            url = _button_url(button)
+            if not url:
+                continue
+            normalized_url = _normalize_url(url)
+            if not normalized_url:
+                continue
+            yield _button_text(button, normalized_url), normalized_url
+
+
+def _extract_button_links(message: Any) -> list[TelegramLink]:
+    links: list[TelegramLink] = []
+    seen: set[str] = set()
+    for text, url in _iter_url_buttons(message):
+        key = url_dedupe_key(url)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        links.append(TelegramLink(text=text, url=url, source="button_url"))
+    return links
+
+
+def _extract_links(event: events.NewMessage.Event) -> list[TelegramLink]:
+    message = event.message
+    if not message:
+        return []
+    return [*_extract_entity_links(message), *_extract_button_links(message)]
 
 
 async def parse_event(
     event: events.NewMessage.Event,
     *,
     media_path: Path | None = None,
+    include_link_preview_media: bool = False,
 ) -> TelegramForwardMessage:
     chat = await event.get_chat()
     sender = await event.get_sender()
     sender_id = getattr(sender, "id", None) or event.sender_id
     sender_username = getattr(sender, "username", None)
     sender_is_bot = bool(getattr(sender, "bot", False)) if isinstance(sender, User) else False
-    media_type = _media_type(event)
+    media_type = _media_type(event, include_link_preview_media=include_link_preview_media)
 
     return TelegramForwardMessage(
         message_id=event.message.id,

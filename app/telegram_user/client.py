@@ -30,6 +30,7 @@ class TelegramUserListener:
             settings.media_dir,
             enabled=settings.telegram_download_media,
             max_media_mb=settings.telegram_max_media_mb,
+            download_link_preview_media=settings.telegram_forward_link_preview_media,
         )
         self.album_buffer = TelegramAlbumBuffer(
             settings.telegram_album_buffer_seconds,
@@ -53,7 +54,11 @@ class TelegramUserListener:
         self.client.add_event_handler(self._handle_new_message, events.NewMessage())
         self._started = True
         me = await self.client.get_me()
-        logger.info("Telegram user listener started as %s (%s)", getattr(me, "username", None), me.id)
+        logger.info(
+            "Telegram user listener started as %s (%s)",
+            getattr(me, "username", None),
+            me.id,
+        )
 
     async def stop(self) -> None:
         if self._started:
@@ -68,7 +73,11 @@ class TelegramUserListener:
     async def _handle_new_message(self, event: events.NewMessage.Event) -> None:
         try:
             media_path = await self.downloader.download(event)
-            message = await parse_event(event, media_path=media_path)
+            message = await parse_event(
+                event,
+                media_path=media_path,
+                include_link_preview_media=self.settings.telegram_forward_link_preview_media,
+            )
             await self.album_buffer.handle(message)
         except Exception:
             logger.exception("Failed to handle Telegram message")
