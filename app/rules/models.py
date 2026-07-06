@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -52,11 +53,18 @@ def url_dedupe_key(url: str) -> str:
     return urlunsplit((scheme, netloc, path, parts.query, parts.fragment))
 
 
-def extract_visible_url_keys(text: str) -> set[str]:
-    keys: set[str] = set()
+def iter_visible_url_spans(text: str) -> Iterator[tuple[int, int]]:
     for match in _VISIBLE_URL_RE.finditer(text or ""):
         url = match.group("url").rstrip(_TRAILING_URL_PUNCTUATION)
-        key = url_dedupe_key(url)
+        if not url:
+            continue
+        yield match.start("url"), match.start("url") + len(url)
+
+
+def extract_visible_url_keys(text: str) -> set[str]:
+    keys: set[str] = set()
+    for start, end in iter_visible_url_spans(text):
+        key = url_dedupe_key(text[start:end])
         if key:
             keys.add(key)
     return keys

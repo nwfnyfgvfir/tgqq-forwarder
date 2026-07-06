@@ -86,6 +86,79 @@ def test_formatter_uses_template_values() -> None:
     assert MessageFormatter().format(rule, make_message()) == "news|Sender|hello world"
 
 
+def test_formatter_highlights_keyword_rule_text() -> None:
+    rule = make_rule("{text}")
+    rule.text_include_regex = keywords_to_text_include_regex(["AI", "机器人"])
+    message = make_message(text="AI news 智能机器人发布")
+
+    rendered = MessageFormatter().format(rule, message)
+
+    assert rendered == "**AI** news 智能**机器人**发布"
+
+
+def test_formatter_keyword_highlight_is_case_insensitive_and_preserves_casing() -> None:
+    rule = make_rule("{text}")
+    rule.text_include_regex = keywords_to_text_include_regex(["python"])
+    message = make_message(text="PyThOn news")
+
+    rendered = MessageFormatter().format(rule, message)
+
+    assert rendered == "**PyThOn** news"
+
+
+def test_formatter_does_not_highlight_arbitrary_include_regex() -> None:
+    rule = make_rule("{text}")
+    rule.text_include_regex = "AI"
+    message = make_message(text="AI news")
+
+    rendered = MessageFormatter().format(rule, message)
+
+    assert rendered == "AI news"
+
+
+def test_formatter_keyword_highlight_skips_visible_urls_and_preserves_dedupe() -> None:
+    rule = make_rule("{text}\n{links_note}")
+    rule.text_include_regex = keywords_to_text_include_regex(["AI"])
+    message = make_message(
+        text="AI https://example.com/AI",
+        links=[
+            TelegramLink(
+                text="https://example.com/AI",
+                url="https://example.com/AI",
+                source="visible_url",
+            )
+        ],
+    )
+
+    rendered = MessageFormatter().format(rule, message)
+
+    assert rendered == "**AI** https://example.com/AI"
+    assert "链接：" not in rendered
+
+
+def test_formatter_keyword_highlight_does_not_touch_hidden_link_notes() -> None:
+    rule = make_rule("{text}\n{links_note}")
+    rule.text_include_regex = keywords_to_text_include_regex(["AI"])
+    message = make_message(
+        text="AI docs",
+        links=[TelegramLink(text="AI Docs", url="https://example.com/ai", source="text_url")],
+    )
+
+    rendered = MessageFormatter().format(rule, message)
+
+    assert rendered == "**AI** docs\n链接：\n- AI Docs: https://example.com/ai"
+
+
+def test_formatter_keyword_highlight_prefers_longer_overlapping_keywords() -> None:
+    rule = make_rule("{text}")
+    rule.text_include_regex = keywords_to_text_include_regex(["AI", "AIGC"])
+    message = make_message(text="AIGC")
+
+    rendered = MessageFormatter().format(rule, message)
+
+    assert rendered == "**AIGC**"
+
+
 def test_formatter_does_not_duplicate_visible_url() -> None:
     message = make_message(
         text="read https://example.com",
