@@ -93,7 +93,7 @@ def test_formatter_highlights_keyword_rule_text() -> None:
 
     rendered = MessageFormatter().format(rule, message)
 
-    assert rendered == "**AI** news 智能**机器人**发布"
+    assert rendered == "***AI*** news 智能***机器人***发布"
 
 
 def test_formatter_keyword_highlight_is_case_insensitive_and_preserves_casing() -> None:
@@ -103,7 +103,7 @@ def test_formatter_keyword_highlight_is_case_insensitive_and_preserves_casing() 
 
     rendered = MessageFormatter().format(rule, message)
 
-    assert rendered == "**PyThOn** news"
+    assert rendered == "***PyThOn*** news"
 
 
 def test_formatter_does_not_highlight_arbitrary_include_regex() -> None:
@@ -132,7 +132,7 @@ def test_formatter_keyword_highlight_skips_visible_urls_and_preserves_dedupe() -
 
     rendered = MessageFormatter().format(rule, message)
 
-    assert rendered == "**AI** https://example.com/AI"
+    assert rendered == "***AI*** https://example.com/AI"
     assert "链接：" not in rendered
 
 
@@ -146,7 +146,7 @@ def test_formatter_keyword_highlight_does_not_touch_hidden_link_notes() -> None:
 
     rendered = MessageFormatter().format(rule, message)
 
-    assert rendered == "**AI** docs\n链接：\n- AI Docs: https://example.com/ai"
+    assert rendered == "***AI*** docs\n链接：\n- AI Docs: https://example.com/ai"
 
 
 def test_formatter_keyword_highlight_prefers_longer_overlapping_keywords() -> None:
@@ -156,7 +156,7 @@ def test_formatter_keyword_highlight_prefers_longer_overlapping_keywords() -> No
 
     rendered = MessageFormatter().format(rule, message)
 
-    assert rendered == "**AIGC**"
+    assert rendered == "***AIGC***"
 
 
 def test_formatter_does_not_duplicate_visible_url() -> None:

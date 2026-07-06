@@ -88,4 +88,4 @@ def highlight_keywords_for_markdown(text: str, keywords: Sequence[str]) -> str:
 
 
 def _highlight_segment(segment: str, keyword_re: re.Pattern[str]) -> str:
-    return keyword_re.sub(lambda match: f"**{match.group(0)}**", segment)
+    return keyword_re.sub(lambda match: f"***{match.group(0)}***", segment)
