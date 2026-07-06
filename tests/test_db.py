@@ -67,6 +67,34 @@ async def test_create_or_merge_rule_merges_duplicate_keyword_rules(tmp_path) -> 
     ]
 
 
+async def test_update_and_duplicate_rule(tmp_path) -> None:
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'app.db'}")
+    await db.init()
+    service = ForwardRuleService(db)
+    created = await service.create_rule(
+        ForwardRule(
+            name="r1",
+            qq_target_type="group",
+            qq_target_id="target",
+            text_include_regex=keywords_to_text_include_regex(["AI"]),
+            message_template="{text}",
+        )
+    )
+
+    updated = await service.update_rule(created.id, {"name": "r2", "priority": 10})
+    duplicate = await service.duplicate_rule(created.id, enabled=False)
+    await db.dispose()
+
+    assert updated is not None
+    assert updated.name == "r2"
+    assert updated.priority == 10
+    assert duplicate is not None
+    assert duplicate.id != created.id
+    assert duplicate.name == "r2 副本"
+    assert duplicate.enabled is False
+    assert keywords_from_text_include_regex(duplicate.text_include_regex) == ["AI"]
+
+
 async def test_create_or_merge_rule_removes_existing_duplicate_rows(tmp_path) -> None:
     db = Database(f"sqlite+aiosqlite:///{tmp_path / 'app.db'}")
     await db.init()

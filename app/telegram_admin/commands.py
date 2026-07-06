@@ -5,9 +5,9 @@ import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
-from telegram import Message, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message, Update, WebAppInfo
 from telegram.constants import ParseMode
-from telegram.error import NetworkError, TimedOut
+from telegram.error import NetworkError, TelegramError, TimedOut
 from telegram.ext import ContextTypes
 
 from app.config import Settings
@@ -30,7 +30,7 @@ async def _reply_text(message: Message | None, text: str, **kwargs: object) -> N
         return
     try:
         await message.reply_text(text, **kwargs)
-    except (NetworkError, TimedOut):
+    except (NetworkError, TelegramError, TimedOut):
         logger.warning("Failed to send Telegram admin bot reply", exc_info=True)
 
 
@@ -126,8 +126,37 @@ class AdminCommands:
             "/logs [数量] - 查看最近转发日志\n"
             "/errors [数量] - 查看最近错误日志\n"
             "/pause - 暂停全部转发\n"
-            "/resume - 恢复全部转发"
+            "/resume - 恢复全部转发\n"
+            "/app - 打开 Telegram Mini App 管理台",
+            reply_markup=self._mini_app_markup(),
         )
+
+    async def mini_app(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if await self._deny_if_needed(update):
+            return
+        if not self.settings.mini_app_public_url:
+            await _reply_text(update.effective_message, "MINI_APP_PUBLIC_URL 尚未配置。")
+            return
+        await _reply_text(
+            update.effective_message,
+            "打开 TGQQ Forwarder Mini App 管理台：",
+            reply_markup=self._mini_app_markup(),
+        )
+
+    def _mini_app_markup(self) -> InlineKeyboardMarkup | None:
+        if not self.settings.mini_app_public_url:
+            return None
+        try:
+            button = InlineKeyboardButton(
+                "打开 Mini App 管理台",
+                web_app=WebAppInfo(url=self.settings.mini_app_public_url),
+            )
+        except (TypeError, TelegramError):
+            button = InlineKeyboardButton(
+                "打开 Mini App 管理台",
+                url=self.settings.mini_app_public_url,
+            )
+        return InlineKeyboardMarkup([[button]])
 
     async def status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if await self._deny_if_needed(update):

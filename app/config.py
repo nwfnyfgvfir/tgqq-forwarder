@@ -42,6 +42,13 @@ class Settings(BaseSettings):
     tg_admin_bot_poll_timeout: int = 30
     tg_admin_bot_poll_read_timeout: float = 45.0
 
+    mini_app_enabled: bool = False
+    mini_app_host: str = "0.0.0.0"
+    mini_app_port: int = 8000
+    mini_app_public_url: str | None = None
+    mini_app_auth_ttl_seconds: int = 3600
+    mini_app_allowed_origins: Annotated[list[str], NoDecode] = []
+
     qq_bot_appid: str = ""
     qq_bot_secret: str = ""
     qq_enable_group_c2c: bool = True
@@ -68,6 +75,17 @@ class Settings(BaseSettings):
             return [int(item.strip()) for item in value.split(",") if item.strip()]
         raise TypeError("ADMIN_TELEGRAM_USER_IDS must be a comma-separated string")
 
+    @field_validator("mini_app_allowed_origins", mode="before")
+    @classmethod
+    def parse_mini_app_allowed_origins(cls, value: object) -> list[str]:
+        if value is None or value == "":
+            return []
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        raise TypeError("MINI_APP_ALLOWED_ORIGINS must be a comma-separated string")
+
     @field_validator("telegram_api_id")
     @classmethod
     def validate_telegram_api_id(cls, value: int) -> int:
@@ -91,6 +109,11 @@ class Settings(BaseSettings):
             missing.append("QQ_BOT_APPID")
         if not self.qq_bot_secret:
             missing.append("QQ_BOT_SECRET")
+        if self.mini_app_enabled:
+            if not self.tg_admin_bot_token:
+                missing.append("TG_ADMIN_BOT_TOKEN")
+            if not self.admin_telegram_user_ids:
+                missing.append("ADMIN_TELEGRAM_USER_IDS")
         if missing:
             joined = ", ".join(missing)
             raise RuntimeError(f"Missing required settings: {joined}")

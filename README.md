@@ -15,6 +15,7 @@ TGQQ Forwarder 用于把指定 Telegram 消息自动转发到 QQ 官方机器人
 - 使用 QQ 官方机器人 WebSocket 模式连接 QQ。
 - 支持转发到 QQ 群、C2C、频道、频道私信场景。
 - 通过 Telegram 管理 Bot 查看状态、管理规则、查询日志。
+- 提供 Telegram Mini App 管理台，可用可视化规则工坊管理关键词、目标、模板、日志和暂停状态。
 - 使用 Docker Compose 部署到 VPS。
 - 推送 `v*` 标签时，GitHub Actions 自动构建 Docker 镜像并发布到 GitHub Container Registry。
 
@@ -156,6 +157,8 @@ docker compose up -d
 docker compose logs -f
 ```
 
+如果启用了 Mini App，Compose 会把容器内 `${MINI_APP_PORT:-8000}` 端口映射到主机同名端口，请用 HTTPS 反向代理暴露给 Telegram。
+
 停止服务：
 
 ```bash
@@ -216,8 +219,94 @@ QQ_ENABLE_GUILD_DIRECT_MESSAGE=false
 QQ_ALLOW_SEND_WITHOUT_CACHED_MSG_ID=true
 QQ_USE_MARKDOWN=true
 
+MINI_APP_ENABLED=true
+MINI_APP_HOST=0.0.0.0
+MINI_APP_PORT=8000
+MINI_APP_PUBLIC_URL=https://你的域名.example.com
+MINI_APP_AUTH_TTL_SECONDS=3600
+MINI_APP_ALLOWED_ORIGINS=https://你的域名.example.com
+
 FORWARD_QUEUE_SIZE=1000
 ```
+
+## Telegram Mini App 管理台
+
+本项目内置一个 Telegram Mini App 管理台，用于替代复杂的 `/add_rule` 长命令。管理台提供：
+
+- 运行状态总览：Telegram 连接、QQ WebSocket、转发暂停状态、队列深度。
+- 规则工坊：选择 Telegram 会话、QQ 目标，编辑关键词、正则、媒体类型、模板并实时预览。
+- 规则库：编辑、复制、启用/禁用、删除规则，关键词规则会自动解码显示。
+- 日志页：查看最近转发结果和错误。
+- 系统页：查看 Mini App 部署状态和排查提示。
+
+### Mini App 配置
+
+`.env` 中启用并配置：
+
+```env
+MINI_APP_ENABLED=true
+MINI_APP_HOST=0.0.0.0
+MINI_APP_PORT=8000
+MINI_APP_PUBLIC_URL=https://你的域名.example.com
+MINI_APP_AUTH_TTL_SECONDS=3600
+MINI_APP_ALLOWED_ORIGINS=https://你的域名.example.com
+```
+
+安全规则：
+
+1. Mini App API 会校验 Telegram 传入的 `initData` HMAC 签名，不能伪造前端用户 ID。
+2. 只有 `ADMIN_TELEGRAM_USER_IDS` 中的 Telegram 用户能调用管理 API。
+3. 前端不会展示 `TG_ADMIN_BOT_TOKEN`、Telegram session、QQ secret 等敏感信息。
+4. Telegram Mini App 生产环境必须使用公网 HTTPS；普通 HTTP 或内网地址不能作为正式入口。
+
+### 打开 Mini App
+
+启动服务后，管理 Bot 会注册 `/app` 命令。如果配置了 `MINI_APP_PUBLIC_URL`，可以：
+
+```text
+/app
+```
+
+然后点击“打开 Mini App 管理台”。Bot 也会尝试把 Telegram 菜单按钮设置为 Mini App 入口；如果 Telegram API 拒绝菜单按钮设置，服务只记录 warning，不影响转发。
+
+也可以在 BotFather 中手动配置 Menu Button/Web App URL 为 `MINI_APP_PUBLIC_URL`。
+
+### 反向代理示例
+
+Caddy：
+
+```caddyfile
+你的域名.example.com {
+  reverse_proxy 127.0.0.1:8000
+}
+```
+
+Nginx：
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name 你的域名.example.com;
+
+    ssl_certificate /path/to/fullchain.pem;
+    ssl_certificate_key /path/to/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}
+```
+
+排查顺序：
+
+- 浏览器访问 `https://你的域名.example.com/healthz` 应返回 `{"ok":true}`。
+- `MINI_APP_PUBLIC_URL` 必须和 BotFather/菜单按钮 URL 一致。
+- 管理账号 ID 必须在 `ADMIN_TELEGRAM_USER_IDS` 中。
+- 若提示 `init_data_expired`，关闭 Mini App 后从 Telegram 重新打开。
+- 若 QQ 目标为空，先在目标 QQ 群/C2C/频道里给机器人发一条消息或 @ 机器人。
 
 ## 相册、多图图文、链接、Markdown 与媒体清理
 

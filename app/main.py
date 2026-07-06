@@ -12,6 +12,7 @@ from app.rules.service import ForwardRuleService
 from app.storage.db import Database
 from app.telegram_admin.bot import TelegramAdminBot
 from app.telegram_user.client import TelegramUserListener
+from app.web.server import MiniAppServer
 from app.worker.forward_queue import ForwardQueue
 from app.worker.media_cleanup import MediaCleanupWorker
 
@@ -35,6 +36,14 @@ class ApplicationRuntime:
             lambda: self.qq_sender.status,
             self.qq_sender.list_cached_targets,
         )
+        self.mini_app_server = MiniAppServer(
+            self.settings,
+            self.rule_service,
+            lambda: self.telegram_listener,
+            lambda: self.qq_sender.status,
+            self.qq_sender.list_cached_targets,
+            lambda: self.forward_queue.size,
+        )
         self.stop_event = asyncio.Event()
 
     async def start(self) -> None:
@@ -46,6 +55,7 @@ class ApplicationRuntime:
         self.telegram_listener = TelegramUserListener(self.settings, self.forward_queue.enqueue)
         await self.telegram_listener.start()
         await self.admin_bot.start()
+        await self.mini_app_server.start()
         logger.info("TGQQ Forwarder started")
 
     async def run_until_stopped(self) -> None:
@@ -62,6 +72,8 @@ class ApplicationRuntime:
                     name="telegram-disconnected",
                 )
             )
+        if self.mini_app_server.task:
+            wait_tasks.append(self.mini_app_server.task)
         done, pending = await asyncio.wait(wait_tasks, return_when=asyncio.FIRST_COMPLETED)
         for task in pending:
             task.cancel()
@@ -71,6 +83,7 @@ class ApplicationRuntime:
 
     async def stop(self) -> None:
         logger.info("Stopping TGQQ Forwarder")
+        await self.mini_app_server.stop()
         await self.admin_bot.stop()
         if self.telegram_listener:
             await self.telegram_listener.stop()

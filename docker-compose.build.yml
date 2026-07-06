@@ -10,6 +10,8 @@ services:
       TZ: ${TZ:-Asia/Shanghai}
     volumes:
       - ./data:/app/data
+    ports:
+      - "${MINI_APP_PORT:-8000}:${MINI_APP_PORT:-8000}"
     command:
       - python
       - -m

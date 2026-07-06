@@ -99,6 +99,44 @@ class ForwardRuleService:
                 removed_duplicate_count=removed_duplicate_count,
             )
 
+    async def get_rule(self, rule_id: int) -> ForwardRule | None:
+        async with self.db.session() as session:
+            return await self.rules.get_rule(session, rule_id)
+
+    async def update_rule(self, rule_id: int, values: dict[str, object]) -> ForwardRule | None:
+        async with self.db.session() as session:
+            return await self.rules.update_rule(session, rule_id, values)
+
+    async def duplicate_rule(
+        self,
+        rule_id: int,
+        *,
+        name: str | None = None,
+        enabled: bool | None = None,
+    ) -> ForwardRule | None:
+        async with self.db.session() as session:
+            source = await self.rules.get_rule(session, rule_id)
+            if source is None:
+                return None
+            duplicate = ForwardRule(
+                name=name or f"{source.name} 副本",
+                enabled=source.enabled if enabled is None else enabled,
+                source_chat_id=source.source_chat_id,
+                source_chat_type=source.source_chat_type,
+                source_sender_id=source.source_sender_id,
+                source_sender_is_bot=source.source_sender_is_bot,
+                text_include_regex=source.text_include_regex,
+                text_exclude_regex=source.text_exclude_regex,
+                media_types=list(source.media_types) if source.media_types else None,
+                qq_target_type=source.qq_target_type,
+                qq_target_id=source.qq_target_id,
+                qq_guild_id=source.qq_guild_id,
+                qq_channel_id=source.qq_channel_id,
+                message_template=source.message_template,
+                priority=source.priority,
+            )
+            return await self.rules.create_rule(session, duplicate)
+
     async def delete_rule(self, rule_id: int) -> bool:
         async with self.db.session() as session:
             return await self.rules.delete_rule(session, rule_id)

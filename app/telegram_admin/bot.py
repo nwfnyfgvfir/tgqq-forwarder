@@ -3,8 +3,8 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 
-from telegram import BotCommand
-from telegram.error import NetworkError, TimedOut
+from telegram import BotCommand, MenuButtonWebApp, WebAppInfo
+from telegram.error import NetworkError, TelegramError, TimedOut
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 from app.config import Settings
@@ -77,6 +77,7 @@ class TelegramAdminBot:
         app.add_handler(CommandHandler("errors", commands.errors))
         app.add_handler(CommandHandler("pause", commands.pause))
         app.add_handler(CommandHandler("resume", commands.resume))
+        app.add_handler(CommandHandler("app", commands.mini_app))
 
         await app.initialize()
         await self._set_bot_commands(app)
@@ -108,9 +109,17 @@ class TelegramAdminBot:
                     BotCommand("errors", "查看最近错误日志"),
                     BotCommand("pause", "暂停全部转发"),
                     BotCommand("resume", "恢复全部转发"),
+                    BotCommand("app", "打开 Mini App 管理台"),
                 ]
             )
-        except (NetworkError, TimedOut):
+            if self.settings.mini_app_public_url:
+                await app.bot.set_chat_menu_button(
+                    menu_button=MenuButtonWebApp(
+                        text="TGQQ 管理台",
+                        web_app=WebAppInfo(url=self.settings.mini_app_public_url),
+                    )
+                )
+        except (NetworkError, TelegramError, TimedOut):
             logger.warning("Failed to register Telegram admin bot commands", exc_info=True)
             return
         logger.info("Telegram admin bot commands have been registered")

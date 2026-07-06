@@ -43,6 +43,26 @@ class RuleRepository:
         result = await session.execute(delete(ForwardRule).where(ForwardRule.id == rule_id))
         return bool(result.rowcount)
 
+    async def update_rule(
+        self,
+        session: AsyncSession,
+        rule_id: int,
+        values: dict[str, object],
+    ) -> ForwardRule | None:
+        rule = await self.get_rule(session, rule_id)
+        if rule is None:
+            return None
+        for key, value in values.items():
+            if key in {"id", "created_at", "updated_at"}:
+                continue
+            if hasattr(rule, key):
+                setattr(rule, key, value)
+        rule.updated_at = _now()
+        session.add(rule)
+        await session.flush()
+        await session.refresh(rule)
+        return rule
+
     async def set_enabled(self, session: AsyncSession, rule_id: int, enabled: bool) -> bool:
         rule = await self.get_rule(session, rule_id)
         if rule is None:
