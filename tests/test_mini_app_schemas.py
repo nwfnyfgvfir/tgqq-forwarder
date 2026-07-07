@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.rules.keywords import keywords_to_text_include_regex
+from app.rules.templates import DEFAULT_MESSAGE_TEMPLATE, OLD_DEFAULT_MESSAGE_TEMPLATE
 from app.storage.models import ForwardRule
 from app.web.schemas import RuleCreateRequest, RuleResponse
 
@@ -51,6 +52,34 @@ def test_rule_response_decodes_keyword_rule() -> None:
 
     assert response.match_mode == "keywords"
     assert response.keywords == ["AI"]
+
+
+def test_rule_response_displays_upgraded_old_default_template() -> None:
+    response = RuleResponse.from_rule(
+        ForwardRule(
+            id=1,
+            name="r1",
+            qq_target_type="group",
+            qq_target_id="target",
+            message_template=OLD_DEFAULT_MESSAGE_TEMPLATE,
+        )
+    )
+
+    assert response.message_template == DEFAULT_MESSAGE_TEMPLATE
+
+
+def test_rule_response_keeps_custom_template() -> None:
+    response = RuleResponse.from_rule(
+        ForwardRule(
+            id=1,
+            name="r1",
+            qq_target_type="group",
+            qq_target_id="target",
+            message_template="{sender_name}: {text}",
+        )
+    )
+
+    assert response.message_template == "{sender_name}: {text}"
 
 
 def test_rule_request_rejects_invalid_qq_target_type() -> None:

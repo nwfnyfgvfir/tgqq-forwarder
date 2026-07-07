@@ -53,11 +53,8 @@ def keywords_from_text_include_regex(pattern: str | None) -> list[str]:
     return [item for item in decoded if isinstance(item, str) and item]
 
 
-def highlight_keywords_for_markdown(text: str, keywords: Sequence[str]) -> str:
-    if not text or not keywords:
-        return text
-
-    unique_keywords: list[str] = []
+def unique_keywords(keywords: Sequence[str]) -> list[str]:
+    cleaned: list[str] = []
     seen: set[str] = set()
     for keyword in keywords:
         if not keyword:
@@ -66,14 +63,19 @@ def highlight_keywords_for_markdown(text: str, keywords: Sequence[str]) -> str:
         if key in seen:
             continue
         seen.add(key)
-        unique_keywords.append(keyword)
-    if not unique_keywords:
+        cleaned.append(keyword)
+    return cleaned
+
+
+def highlight_keywords_for_markdown(text: str, keywords: Sequence[str]) -> str:
+    if not text or not keywords:
         return text
 
-    alternatives = "|".join(
-        re.escape(keyword) for keyword in sorted(unique_keywords, key=len, reverse=True)
-    )
-    keyword_re = re.compile(alternatives, re.IGNORECASE)
+    cleaned_keywords = unique_keywords(keywords)
+    if not cleaned_keywords:
+        return text
+
+    keyword_re = _keyword_pattern(cleaned_keywords)
 
     parts: list[str] = []
     position = 0
@@ -85,6 +87,38 @@ def highlight_keywords_for_markdown(text: str, keywords: Sequence[str]) -> str:
     if position < len(text):
         parts.append(_highlight_segment(text[position:], keyword_re))
     return "".join(parts)
+
+
+def detect_keyword_matches(text: str, keywords: Sequence[str]) -> list[str]:
+    if not text or not keywords:
+        return []
+    cleaned_keywords = unique_keywords(keywords)
+    if not cleaned_keywords:
+        return []
+    keyword_re = _keyword_pattern(cleaned_keywords)
+    matched_keys: set[str] = set()
+
+    position = 0
+    for start, end in iter_visible_url_spans(text):
+        if position < start:
+            _collect_matches(text[position:start], keyword_re, matched_keys)
+        position = end
+    if position < len(text):
+        _collect_matches(text[position:], keyword_re, matched_keys)
+
+    return [keyword for keyword in cleaned_keywords if keyword.casefold() in matched_keys]
+
+
+def _keyword_pattern(keywords: Sequence[str]) -> re.Pattern[str]:
+    alternatives = "|".join(
+        re.escape(keyword) for keyword in sorted(keywords, key=len, reverse=True)
+    )
+    return re.compile(alternatives, re.IGNORECASE)
+
+
+def _collect_matches(segment: str, keyword_re: re.Pattern[str], matched_keys: set[str]) -> None:
+    for match in keyword_re.finditer(segment):
+        matched_keys.add(match.group(0).casefold())
 
 
 def _highlight_segment(segment: str, keyword_re: re.Pattern[str]) -> str:

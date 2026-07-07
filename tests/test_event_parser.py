@@ -62,6 +62,8 @@ def test_extract_links_marks_visible_url_entity() -> None:
     assert links[0].text == "example.com"
     assert links[0].url == "https://example.com"
     assert links[0].source == "visible_url"
+    assert links[0].text_start == 0
+    assert links[0].text_end == 11
 
 
 def test_extract_links_marks_text_url_entity() -> None:
@@ -75,6 +77,8 @@ def test_extract_links_marks_text_url_entity() -> None:
     assert links[0].text == "Docs"
     assert links[0].url == "https://example.com"
     assert links[0].source == "text_url"
+    assert links[0].text_start == 0
+    assert links[0].text_end == 4
 
 
 def test_extract_links_reads_buttons_in_row_major_order() -> None:
@@ -92,6 +96,7 @@ def test_extract_links_reads_buttons_in_row_major_order() -> None:
         ("B", "https://example.com/b", "button_url"),
         ("C", "https://example.com/c", "button_url"),
     ]
+    assert all(link.text_start is None and link.text_end is None for link in links)
 
 
 def test_extract_links_dedupes_repeated_button_urls() -> None:

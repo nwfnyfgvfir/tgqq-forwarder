@@ -209,7 +209,7 @@ class QQOfficialSender:
             if media_type == IMAGE_FILE_TYPE:
                 payload["file_image"] = str(media_path)
             else:
-                payload["content"] = f"{text}\n[media file: {media_path.name}]".strip()
+                payload["content"] = f"{text}\n[媒体文件]".strip()
             return await self._post_channel_message(outbound.target_id, payload)
 
         if target_type == QQTargetType.DMS:
@@ -218,7 +218,7 @@ class QQOfficialSender:
             if media_type == IMAGE_FILE_TYPE:
                 payload["file_image"] = str(media_path)
             else:
-                payload["content"] = f"{text}\n[media file: {media_path.name}]".strip()
+                payload["content"] = f"{text}\n[媒体文件]".strip()
             return await self._post_dms_message(guild_id, payload)
 
         raise ValueError(f"Unsupported QQ target type: {target_type}")

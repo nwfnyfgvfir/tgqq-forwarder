@@ -75,12 +75,19 @@ class TelegramLink:
     text: str
     url: str
     source: str = "unknown"
+    text_start: int | None = None
+    text_end: int | None = None
 
     @property
     def markdown(self) -> str:
         label = self.text.strip() or self.url
-        label = label.replace("[", "\\[").replace("]", "\\]")
-        url = self.url.strip()
+        label = (
+            label.replace("\\", "\\\\")
+            .replace("[", "\\[")
+            .replace("]", "\\]")
+            .replace("`", "\\`")
+        )
+        url = self.url.strip().replace(")", "\\)")
         if not url:
             return label
         if label == url:
@@ -128,17 +135,25 @@ class TelegramForwardMessage:
 
     @property
     def media_note(self) -> str:
-        if not self.media_types and not self.media_type:
+        media_types = [item for item in (self.media_types or []) if item]
+        if not media_types and self.media_type:
+            media_types = [self.media_type]
+        if not media_types:
             return ""
-        parts: list[str] = []
-        media_types = self.media_types or ([self.media_type] if self.media_type else [])
-        media_paths = self.media_paths or ([self.media_path] if self.media_path else [])
-        for index, media_type in enumerate(media_types, start=1):
-            location = ""
-            if index <= len(media_paths) and media_paths[index - 1]:
-                location = f" {media_paths[index - 1]}"
-            parts.append(f"[media {index}: {media_type}{location}]")
-        return "\n".join(parts)
+
+        counts: dict[str, int] = {}
+        ordered_types: list[str] = []
+        for media_type in media_types:
+            if media_type not in counts:
+                ordered_types.append(media_type)
+                counts[media_type] = 0
+            counts[media_type] += 1
+
+        parts = [
+            media_type if counts[media_type] == 1 else f"{media_type} × {counts[media_type]}"
+            for media_type in ordered_types
+        ]
+        return f"媒体：{'、'.join(parts)}"
 
     @property
     def links_note(self) -> str:

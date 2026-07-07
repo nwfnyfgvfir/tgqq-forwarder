@@ -7,6 +7,8 @@ from typing import Annotated
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from app.rules.templates import DEFAULT_MESSAGE_TEMPLATE
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -57,12 +59,7 @@ class Settings(BaseSettings):
     qq_use_markdown: bool = True
 
     forward_queue_size: int = 1000
-    default_message_template: str = (
-        "[Telegram: {chat_title}]\n"
-        "{sender_name}: {text}\n"
-        "{links_note}\n"
-        "{media_note}"
-    )
+    default_message_template: str = DEFAULT_MESSAGE_TEMPLATE
 
     @field_validator("admin_telegram_user_ids", mode="before")
     @classmethod

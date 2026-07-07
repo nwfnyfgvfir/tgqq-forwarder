@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import Settings
 from app.qq_official.client import QQTargetInfo
-from app.rules.keywords import keywords_from_text_include_regex
+from app.rules.keywords import detect_keyword_matches, keywords_from_text_include_regex
 from app.rules.models import TelegramForwardMessage, TelegramLink
 from app.rules.service import ForwardRuleService
 from app.storage.models import ForwardStatus, QQTargetType
@@ -45,16 +45,20 @@ TEMPLATE_VARIABLES = [
     "chat_id",
     "chat_title",
     "chat_type",
+    "source_title",
+    "source_title_md",
     "sender_id",
     "sender_username",
     "sender_name",
+    "sender_name_md",
     "sender_is_bot",
     "text",
     "media_type",
-    "media_path",
     "media_note",
     "links_note",
     "plain_links_note",
+    "keywords_note",
+    "footer_note",
     "raw_url",
 ]
 MEDIA_TYPES = ["text", "photo", "video", "voice", "audio", "document", "animation", "sticker"]
@@ -253,10 +257,14 @@ def create_mini_app(
         )
         matches = service.matcher.matches(rule, message)
         rendered = service.formatter.format(rule, message)
+        detected_keywords = detect_keyword_matches(
+            payload.message.text,
+            keywords_from_text_include_regex(rule.text_include_regex),
+        )
         return RulePreviewResponse(
             matches=matches,
             rendered_text=rendered,
-            detected_keywords=keywords_from_text_include_regex(rule.text_include_regex),
+            detected_keywords=detected_keywords,
             warnings=warnings,
         )
 

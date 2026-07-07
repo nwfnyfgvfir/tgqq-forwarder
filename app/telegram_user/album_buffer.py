@@ -72,14 +72,41 @@ class TelegramAlbumBuffer:
         seen_links: set[tuple[str, str]] = set()
 
         for message in messages:
-            text = message.text.strip()
+            raw_text = message.text or ""
+            text = raw_text.strip()
+            text_offset: int | None = None
+            leading_trim = len(raw_text) - len(raw_text.lstrip())
             if text and text not in text_parts:
+                text_offset = len("\n".join(text_parts))
+                if text_parts:
+                    text_offset += 1
                 text_parts.append(text)
             for link in message.links:
                 key = (link.text, link.url)
-                if key not in seen_links:
-                    seen_links.add(key)
-                    links.append(link)
+                if key in seen_links:
+                    continue
+                seen_links.add(key)
+                adjusted_start = None
+                adjusted_end = None
+                if (
+                    text_offset is not None
+                    and link.text_start is not None
+                    and link.text_end is not None
+                ):
+                    local_start = link.text_start - leading_trim
+                    local_end = link.text_end - leading_trim
+                    if 0 <= local_start < local_end <= len(text):
+                        adjusted_start = text_offset + local_start
+                        adjusted_end = text_offset + local_end
+                links.append(
+                    TelegramLink(
+                        text=link.text,
+                        url=link.url,
+                        source=link.source,
+                        text_start=adjusted_start,
+                        text_end=adjusted_end,
+                    )
+                )
             media_paths.extend(message.media_paths)
             media_types.extend(message.media_types)
 

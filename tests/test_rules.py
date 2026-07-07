@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from app.rules.formatter import MessageFormatter
 from app.rules.keywords import (
+    detect_keyword_matches,
     keywords_from_text_include_regex,
     keywords_to_text_include_regex,
     split_keyword_args,
 )
 from app.rules.matcher import RuleMatcher
 from app.rules.models import TelegramForwardMessage, TelegramLink
+from app.rules.templates import OLD_DEFAULT_MESSAGE_TEMPLATE
 from app.storage.models import ForwardRule
 
 
@@ -76,6 +80,12 @@ def test_keyword_helpers_split_dedupe_and_round_trip() -> None:
     assert keywords_from_text_include_regex(pattern) == keywords
 
 
+def test_detect_keyword_matches_returns_actual_hits_and_skips_visible_urls() -> None:
+    keywords = ["AI", "Python"]
+
+    assert detect_keyword_matches("read https://example.com/AI Python", keywords) == ["Python"]
+
+
 def test_formatter_uses_template_values() -> None:
     rule = ForwardRule(
         name="r1",
@@ -86,14 +96,35 @@ def test_formatter_uses_template_values() -> None:
     assert MessageFormatter().format(rule, make_message()) == "news|Sender|hello world"
 
 
-def test_formatter_highlights_keyword_rule_text() -> None:
+def test_formatter_auto_upgrades_old_default_template() -> None:
+    rule = make_rule(OLD_DEFAULT_MESSAGE_TEMPLATE)
+    rule.text_include_regex = keywords_to_text_include_regex(["hello"])
+
+    rendered = MessageFormatter().format(rule, make_message(media_type="photo"))
+
+    assert rendered == (
+        "# Telegram：news\n\n"
+        "**发送者：Sender**\n\n"
+        "***hello*** world\n\n"
+        "媒体：photo\n"
+        "检测到关键词：hello"
+    )
+
+
+def test_formatter_keeps_custom_template_shape() -> None:
+    rendered = MessageFormatter().format(make_rule("{sender_name}: {text}"), make_message())
+
+    assert rendered == "Sender: hello world"
+
+
+def test_formatter_highlights_keyword_rule_text_and_appends_keyword_note() -> None:
     rule = make_rule("{text}")
     rule.text_include_regex = keywords_to_text_include_regex(["AI", "机器人"])
     message = make_message(text="AI news 智能机器人发布")
 
     rendered = MessageFormatter().format(rule, message)
 
-    assert rendered == "***AI*** news 智能***机器人***发布"
+    assert rendered == "***AI*** news 智能***机器人***发布\n检测到关键词：AI、机器人"
 
 
 def test_formatter_keyword_highlight_is_case_insensitive_and_preserves_casing() -> None:
@@ -103,7 +134,7 @@ def test_formatter_keyword_highlight_is_case_insensitive_and_preserves_casing() 
 
     rendered = MessageFormatter().format(rule, message)
 
-    assert rendered == "***PyThOn*** news"
+    assert rendered == "***PyThOn*** news\n检测到关键词：python"
 
 
 def test_formatter_does_not_highlight_arbitrary_include_regex() -> None:
@@ -132,8 +163,8 @@ def test_formatter_keyword_highlight_skips_visible_urls_and_preserves_dedupe() -
 
     rendered = MessageFormatter().format(rule, message)
 
-    assert rendered == "***AI*** https://example.com/AI"
-    assert "链接：" not in rendered
+    assert rendered == "***AI*** https://example.com/AI\n检测到关键词：AI"
+    assert "相关链接：" not in rendered
 
 
 def test_formatter_keyword_highlight_does_not_touch_hidden_link_notes() -> None:
@@ -146,7 +177,12 @@ def test_formatter_keyword_highlight_does_not_touch_hidden_link_notes() -> None:
 
     rendered = MessageFormatter().format(rule, message)
 
-    assert rendered == "***AI*** docs\n链接：\n- AI Docs: https://example.com/ai"
+    assert rendered == (
+        "***AI*** docs\n"
+        "相关链接：\n"
+        "- [AI Docs](https://example.com/ai)\n"
+        "检测到关键词：AI"
+    )
 
 
 def test_formatter_keyword_highlight_prefers_longer_overlapping_keywords() -> None:
@@ -156,7 +192,81 @@ def test_formatter_keyword_highlight_prefers_longer_overlapping_keywords() -> No
 
     rendered = MessageFormatter().format(rule, message)
 
-    assert rendered == "***AIGC***"
+    assert rendered == "***AIGC***\n检测到关键词：AIGC"
+
+
+def test_formatter_inlines_hidden_text_url_with_valid_offsets() -> None:
+    message = make_message(
+        text="read Docs now",
+        links=[
+            TelegramLink(
+                text="Docs",
+                url="https://example.com/docs",
+                source="text_url",
+                text_start=5,
+                text_end=9,
+            )
+        ],
+    )
+
+    rendered = MessageFormatter().format(make_rule(), message)
+
+    assert rendered == "read [Docs](https://example.com/docs) now"
+    assert "相关链接：" not in rendered
+
+
+def test_formatter_inlines_hidden_text_url_without_offsets_when_label_is_unique() -> None:
+    message = make_message(
+        text="read Docs now",
+        links=[TelegramLink(text="Docs", url="https://example.com/docs", source="text_url")],
+    )
+
+    rendered = MessageFormatter().format(make_rule(), message)
+
+    assert rendered == "read [Docs](https://example.com/docs) now"
+
+
+def test_formatter_hidden_text_url_with_invalid_offset_falls_back_to_link_note() -> None:
+    message = make_message(
+        text="Docs Docs",
+        links=[
+            TelegramLink(
+                text="Docs",
+                url="https://example.com/docs",
+                source="text_url",
+                text_start=2,
+                text_end=6,
+            )
+        ],
+    )
+
+    rendered = MessageFormatter().format(make_rule(), message)
+
+    assert rendered == "Docs Docs\n相关链接：\n- [Docs](https://example.com/docs)"
+
+
+def test_formatter_inlines_button_url_when_label_is_unique() -> None:
+    message = make_message(
+        text="点击查看回复",
+        links=[TelegramLink(text="查看回复", url="https://example.com/reply", source="button_url")],
+    )
+
+    rendered = MessageFormatter().format(make_rule(), message)
+
+    assert rendered == "点击[查看回复](https://example.com/reply)"
+    assert "按钮" not in rendered
+
+
+def test_formatter_button_url_note_has_no_button_prefix() -> None:
+    message = make_message(
+        text="button below",
+        links=[TelegramLink(text="查看回复", url="https://example.com/reply", source="button_url")],
+    )
+
+    rendered = MessageFormatter().format(make_rule(), message)
+
+    assert rendered == "button below\n相关链接：\n- [查看回复](https://example.com/reply)"
+    assert "按钮" not in rendered
 
 
 def test_formatter_does_not_duplicate_visible_url() -> None:
@@ -174,30 +284,7 @@ def test_formatter_does_not_duplicate_visible_url() -> None:
     rendered = MessageFormatter().format(make_rule(), message)
 
     assert rendered.count("https://example.com") == 1
-    assert "链接：" not in rendered
-
-
-def test_formatter_preserves_hidden_text_url() -> None:
-    message = make_message(
-        text="read docs",
-        links=[TelegramLink(text="Docs", url="https://example.com/docs", source="text_url")],
-    )
-
-    rendered = MessageFormatter().format(make_rule(), message)
-
-    assert "链接：" in rendered
-    assert "- Docs: https://example.com/docs" in rendered
-
-
-def test_formatter_preserves_button_url() -> None:
-    message = make_message(
-        text="button below",
-        links=[TelegramLink(text="查看回复", url="https://example.com/reply", source="button_url")],
-    )
-
-    rendered = MessageFormatter().format(make_rule(), message)
-
-    assert "- 查看回复: https://example.com/reply" in rendered
+    assert "相关链接：" not in rendered
 
 
 def test_formatter_dedupes_visible_bare_domain_and_normalized_url() -> None:
@@ -208,8 +295,9 @@ def test_formatter_dedupes_visible_bare_domain_and_normalized_url() -> None:
 
     rendered = MessageFormatter().format(make_rule(), message)
 
-    assert "Open: https://example.com" not in rendered
-    assert "链接：" not in rendered
+    assert "Open" not in rendered
+    assert "https://example.com" not in rendered
+    assert "相关链接：" not in rendered
 
 
 def test_formatter_appends_hidden_links_when_template_omits_links_note() -> None:
@@ -220,4 +308,38 @@ def test_formatter_appends_hidden_links_when_template_omits_links_note() -> None
 
     rendered = MessageFormatter().format(make_rule("{text}"), message)
 
-    assert rendered == "button below\n链接：\n- Open: https://example.com/open"
+    assert rendered == "button below\n相关链接：\n- [Open](https://example.com/open)"
+
+
+def test_formatter_media_note_omits_paths_and_media_path_variable_is_empty() -> None:
+    message = make_message(
+        media_type="photo",
+        media_path=Path("/tmp/secret/photo.jpg"),
+        media_paths=[Path("/tmp/secret/photo.jpg"), Path("/tmp/secret/video.mp4")],
+        media_types=["photo", "video"],
+    )
+
+    rendered = MessageFormatter().format(make_rule("{media_path}|{media_note}"), message)
+
+    assert rendered == "|媒体：photo、video"
+    assert "/tmp/secret" not in rendered
+    assert "photo.jpg" not in rendered
+
+
+def test_formatter_keyword_note_is_last_when_links_are_missing_from_template() -> None:
+    rule = make_rule("{text}")
+    rule.text_include_regex = keywords_to_text_include_regex(["AI"])
+    message = make_message(
+        text="AI docs",
+        links=[TelegramLink(text="Docs", url="https://example.com/docs", source="button_url")],
+    )
+
+    rendered = MessageFormatter().format(rule, message)
+
+    assert rendered.endswith("检测到关键词：AI")
+    assert rendered == (
+        "***AI*** docs\n"
+        "相关链接：\n"
+        "- [Docs](https://example.com/docs)\n"
+        "检测到关键词：AI"
+    )

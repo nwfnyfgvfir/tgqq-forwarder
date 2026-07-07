@@ -2,7 +2,7 @@ import { api } from '../api.js?v=20260707-rule-studio-2';
 import { escapeHtml, pageHeader, short, statusPill } from '../components.js?v=20260707-rule-studio-2';
 import { refreshRules } from '../state.js?v=20260707-rule-studio-2';
 
-const DEFAULT_TEMPLATE = '[Telegram: {chat_title}]\n{sender_name}: {text}\n{links_note}\n{media_note}';
+const DEFAULT_TEMPLATE = '# {source_title_md}\n\n**发送者：{sender_name_md}**\n\n{text}\n\n{footer_note}';
 
 export function renderRuleStudio(state) {
   const editRule = state.routeParams?.rule || null;
@@ -82,7 +82,7 @@ export function renderRuleStudio(state) {
           <div class="step-index">04</div>
           <div>
             <h2>模板与开关</h2>
-            <p>模板变量会由现有 MessageFormatter 渲染，隐藏链接与按钮链接仍会自动补全。</p>
+            <p>模板变量会由 MessageFormatter 渲染，隐藏链接与按钮链接会优先嵌入或以 Markdown 链接补全。</p>
           </div>
           <label class="switch-line"><input name="enabled" type="checkbox" ${editRule?.enabled === false ? '' : 'checked'} /> 保存后立即启用</label>
           <label>消息模板<textarea name="message_template" rows="6" required>${escapeHtml(editRule?.message_template || DEFAULT_TEMPLATE)}</textarea></label>

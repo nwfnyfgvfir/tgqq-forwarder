@@ -100,11 +100,22 @@ def _extract_entity_links(message: Any) -> list[TelegramLink]:
             continue
         url = _normalize_url(url)
         text = (text or url).strip()
+        start = getattr(entity, "offset", None)
+        length = getattr(entity, "length", None)
+        end = start + length if isinstance(start, int) and isinstance(length, int) else None
         key = (source, text, url)
         if key in seen:
             continue
         seen.add(key)
-        links.append(TelegramLink(text=text, url=url, source=source))
+        links.append(
+            TelegramLink(
+                text=text,
+                url=url,
+                source=source,
+                text_start=start if isinstance(start, int) else None,
+                text_end=end,
+            )
+        )
     return links
 
 

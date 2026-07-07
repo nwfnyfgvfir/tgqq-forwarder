@@ -130,6 +130,7 @@ async def test_status_me_dialogs_targets_and_static(api_client) -> None:
     status = await client.get("/api/status")
     dialogs = await client.get("/api/dialogs", params={"query": "ai"})
     targets = await client.get("/api/qq-targets")
+    options = await client.get("/api/options")
     index = await client.get("/")
     app_js = await client.get("/static/app.js?v=20260707-rule-studio-2")
 
@@ -139,6 +140,8 @@ async def test_status_me_dialogs_targets_and_static(api_client) -> None:
     assert status.json()["queue_size"] == 3
     assert dialogs.json()[0]["name"] == "AI Channel"
     assert targets.json()[0]["target_id"] == "group-openid"
+    assert "media_path" not in options.json()["template_variables"]
+    assert "footer_note" in options.json()["template_variables"]
     assert index.status_code == 200
     assert index.headers["cache-control"] == "no-store, no-cache, must-revalidate, max-age=0"
     assert "TGQQ Forwarder Mini App" in index.text
@@ -179,7 +182,9 @@ async def test_rule_crud_preview_and_pause(api_client) -> None:
     )
     assert preview.status_code == 200
     assert preview.json()["matches"] is True
+    assert preview.json()["detected_keywords"] == ["Python"]
     assert "***Python***" in preview.json()["rendered_text"]
+    assert "检测到关键词：Python" in preview.json()["rendered_text"]
 
     updated = await client.patch(
         f"/api/rules/{created_rule['id']}",

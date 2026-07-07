@@ -11,6 +11,7 @@ from app.rules.keywords import (
 )
 from app.rules.matcher import RuleMatcher
 from app.rules.models import TelegramForwardMessage
+from app.rules.templates import templates_match
 from app.storage.db import Database
 from app.storage.models import ForwardLog, ForwardRule, ForwardStatus, utc_now
 from app.storage.repositories import LogRepository, RuleRepository, SettingRepository
@@ -173,7 +174,7 @@ class ForwardRuleService:
             and left.qq_target_id == right.qq_target_id
             and left.qq_guild_id == right.qq_guild_id
             and left.qq_channel_id == right.qq_channel_id
-            and left.message_template == right.message_template
+            and templates_match(left.message_template, right.message_template)
             and left.priority == right.priority
         )
 

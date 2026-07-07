@@ -11,6 +11,7 @@ from app.rules.keywords import (
     keywords_to_text_include_regex,
     split_keyword_args,
 )
+from app.rules.templates import effective_message_template
 from app.storage.models import ForwardLog, ForwardRule, QQTargetType
 
 RuleMatchMode = Literal["all", "keywords", "regex"]
@@ -254,7 +255,7 @@ class RuleResponse(BaseModel):
             qq_target_id=rule.qq_target_id,
             qq_guild_id=rule.qq_guild_id,
             qq_channel_id=rule.qq_channel_id,
-            message_template=rule.message_template,
+            message_template=effective_message_template(rule.message_template),
             priority=rule.priority,
             created_at=rule.created_at,
             updated_at=rule.updated_at,
