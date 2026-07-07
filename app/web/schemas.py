@@ -6,7 +6,11 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, field_validator
 
 from app.qq_official.client import QQTargetInfo
-from app.rules.keywords import keywords_from_text_include_regex, keywords_to_text_include_regex
+from app.rules.keywords import (
+    keywords_from_text_include_regex,
+    keywords_to_text_include_regex,
+    split_keyword_args,
+)
 from app.storage.models import ForwardLog, ForwardRule, QQTargetType
 
 RuleMatchMode = Literal["all", "keywords", "regex"]
@@ -120,20 +124,10 @@ class RuleBase(BaseModel):
         if value is None or value == "":
             return []
         if isinstance(value, str):
-            raw_values = value.replace("\n", ",").split(",")
-        elif isinstance(value, list):
-            raw_values = [str(item) for item in value]
-        else:
-            raise ValueError("keywords must be a list or string")
-        keywords: list[str] = []
-        seen: set[str] = set()
-        for raw in raw_values:
-            for part in raw.replace("，", ",").replace(";", ",").replace("；", ",").split(","):
-                keyword = part.strip()
-                if keyword and keyword not in seen:
-                    seen.add(keyword)
-                    keywords.append(keyword)
-        return keywords
+            return split_keyword_args([value])
+        if isinstance(value, list):
+            return split_keyword_args([str(item) for item in value])
+        raise ValueError("keywords must be a list or string")
 
     @field_validator("media_types", mode="before")
     @classmethod

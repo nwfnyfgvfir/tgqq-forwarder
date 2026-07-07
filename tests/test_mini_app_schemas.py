@@ -12,7 +12,7 @@ def test_rule_request_converts_keywords_to_tagged_regex() -> None:
     payload = RuleCreateRequest(
         name="AI",
         match_mode="keywords",
-        keywords="AI,Python；机器人",
+        keywords="AI Python；机器人 量化",
         qq_target_type="group",
         qq_target_id="target",
         message_template="{text}",
@@ -20,7 +20,7 @@ def test_rule_request_converts_keywords_to_tagged_regex() -> None:
 
     values = payload.to_rule_values()
 
-    assert payload.keywords == ["AI", "Python", "机器人"]
+    assert payload.keywords == ["AI", "Python", "机器人", "量化"]
     assert values["text_include_regex"].startswith("(?#tgqq-keywords:")
 
 

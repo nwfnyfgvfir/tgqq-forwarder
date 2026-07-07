@@ -25,7 +25,7 @@ export function renderRuleStudio(state) {
             <input id="dialog-query" placeholder="搜索 Telegram 会话名或 ID" />
             <button type="button" data-action="search-dialogs">搜索会话</button>
           </div>
-          <div class="choice-list" id="dialog-results"></div>
+          <div class="choice-list" id="dialog-results" hidden></div>
           <div class="grid-2">
             <label>TG 会话 ID<input name="source_chat_id" value="${escapeHtml(editRule?.source_chat_id ?? '')}" placeholder="* 或 -100..." /></label>
             <label>会话类型<select name="source_chat_type">
@@ -73,7 +73,7 @@ export function renderRuleStudio(state) {
             </select></label>
             <label>优先级<input name="priority" type="number" value="${escapeHtml(editRule?.priority ?? 0)}" /></label>
           </div>
-          <label>关键词<input name="keywords" value="${escapeHtml((editRule?.keywords || []).join(', '))}" placeholder="AI, Python, 机器人；支持逗号、分号、换行粘贴" /></label>
+          <label>关键词<input name="keywords" value="${escapeHtml((editRule?.keywords || []).join(', '))}" placeholder="AI Python 机器人；支持空格、逗号、分号、换行粘贴" /></label>
           <label>Include 正则<textarea name="text_include_regex" rows="2" placeholder="高级模式使用">${escapeHtml(editRule?.match_mode === 'regex' ? editRule?.text_include_regex || '' : '')}</textarea></label>
           <label>Exclude 正则<textarea name="text_exclude_regex" rows="2" placeholder="命中后排除">${escapeHtml(editRule?.text_exclude_regex || '')}</textarea></label>
           <label>媒体类型<input name="media_types" value="${escapeHtml((editRule?.media_types || []).join(', '))}" placeholder="photo, video；留空不限" /></label>
@@ -108,6 +108,7 @@ export function bindRuleStudio(root, navigate) {
   root.querySelector('[data-action="search-dialogs"]')?.addEventListener('click', async () => {
     const query = root.querySelector('#dialog-query')?.value || '';
     const container = root.querySelector('#dialog-results');
+    container.hidden = false;
     container.innerHTML = '<span class="muted">搜索中…</span>';
     try {
       const items = await api.dialogs(query, 80);
@@ -116,11 +117,10 @@ export function bindRuleStudio(root, navigate) {
       container.innerHTML = `<span class="muted">${escapeHtml(error.message)}</span>`;
     }
   });
-  root.querySelectorAll('[data-dialog-id]').forEach((button) => bindDialogButton(button, form));
   form.addEventListener('click', async (event) => {
     const target = event.target.closest('button');
     if (!target) return;
-    if (target.dataset.dialogId) bindDialogButton(target, form)();
+    if (target.dataset.dialogId) selectDialog(target, form, root);
     if (target.dataset.targetId) {
       form.qq_target_type.value = target.dataset.targetType;
       form.qq_target_id.value = target.dataset.targetId;
@@ -180,7 +180,7 @@ function renderTargets(targets, editRule) {
 
 function renderDialogChoice(item) {
   return `
-    <button type="button" class="choice-card" data-dialog-id="${item.id}" data-dialog-type="${escapeHtml(item.type)}">
+    <button type="button" class="choice-card" data-dialog-id="${escapeHtml(item.id)}" data-dialog-type="${escapeHtml(item.type)}" data-dialog-name="${escapeHtml(item.name)}">
       <strong>${escapeHtml(item.type)}</strong>
       <code>${escapeHtml(item.id)}</code>
       <span>${escapeHtml(item.name)}</span>
@@ -188,11 +188,15 @@ function renderDialogChoice(item) {
   `;
 }
 
-function bindDialogButton(button, form) {
-  return () => {
-    form.source_chat_id.value = button.dataset.dialogId;
-    form.source_chat_type.value = button.dataset.dialogType;
-  };
+function selectDialog(button, form, root) {
+  form.name.value = button.dataset.dialogName || '';
+  form.source_chat_id.value = button.dataset.dialogId;
+  form.source_chat_type.value = button.dataset.dialogType;
+  const container = root.querySelector('#dialog-results');
+  if (container) {
+    container.innerHTML = '';
+    container.hidden = true;
+  }
 }
 
 function payloadFromForm(form) {

@@ -70,8 +70,8 @@ def test_rule_matcher_keyword_regex_matches_any_keyword_case_insensitive() -> No
 
 
 def test_keyword_helpers_split_dedupe_and_round_trip() -> None:
-    keywords = split_keyword_args(["AI,Python", "机器人", "AI", "量化；交易"])
-    assert keywords == ["AI", "Python", "机器人", "量化", "交易"]
+    keywords = split_keyword_args(["AI Python", "机器人", "AI", "量化；交易\n行情"])
+    assert keywords == ["AI", "Python", "机器人", "量化", "交易", "行情"]
     pattern = keywords_to_text_include_regex(keywords)
     assert keywords_from_text_include_regex(pattern) == keywords
 

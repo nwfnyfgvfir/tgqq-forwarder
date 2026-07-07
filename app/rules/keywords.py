@@ -10,7 +10,7 @@ from app.rules.models import iter_visible_url_spans
 
 _KEYWORDS_COMMENT_PREFIX = "tgqq-keywords:"
 _KEYWORDS_COMMENT_RE = re.compile(r"^\(\?#tgqq-keywords:([A-Za-z0-9_\-=]+)\)")
-_KEYWORD_SPLIT_RE = re.compile(r"[,，;；]")
+_KEYWORD_SPLIT_RE = re.compile(r"[,，;；\s]+")
 
 
 def split_keyword_args(values: Sequence[str]) -> list[str]:
