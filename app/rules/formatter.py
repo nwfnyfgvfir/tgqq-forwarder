@@ -63,7 +63,7 @@ class MessageFormatter:
         preview_lines = cls._deduped_webpage_preview_lines(text, message)
         if not preview_lines:
             return text
-        preview = "\n".join(["链接预览：", *preview_lines])
+        preview = "\n".join(preview_lines)
         if text.strip():
             return f"{text.rstrip()}\n{preview}"
         return preview
@@ -232,13 +232,13 @@ class MessageFormatter:
     def _links_note(links: list[TelegramLink]) -> str:
         if not links:
             return ""
-        return "\n".join(["相关链接：", *(f"- {link.markdown}" for link in links)])
+        return "\n".join(f"- {link.markdown}" for link in links)
 
     @staticmethod
     def _plain_links_note(links: list[TelegramLink]) -> str:
         if not links:
             return ""
-        return "\n".join(["相关链接：", *(f"- {link.plain}" for link in links)])
+        return "\n".join(f"- {link.plain}" for link in links)
 
     @classmethod
     def _append_missing_tail(

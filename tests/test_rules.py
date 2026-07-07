@@ -177,7 +177,8 @@ def test_formatter_appends_webpage_preview_without_repeating_title() -> None:
 
     rendered = MessageFormatter().format(make_rule("{text}"), message)
 
-    assert rendered == "NodeSeek 官方频道\n链接预览：\n代价配置私我看老们都在买阿三的独服"
+    assert rendered == "NodeSeek 官方频道\n代价配置私我看老们都在买阿三的独服"
+    assert "链接预览：" not in rendered
 
 
 def test_formatter_keywords_include_webpage_preview_text() -> None:
@@ -193,10 +194,10 @@ def test_formatter_keywords_include_webpage_preview_text() -> None:
 
     assert rendered == (
         "NodeSeek 官方频道\n"
-        "链接预览：\n"
         "代价配置私我看老们都在买阿三的***独服***\n"
         "检测到关键词：独服"
     )
+    assert "链接预览：" not in rendered
 
 
 def test_formatter_keyword_highlight_is_case_insensitive_and_preserves_casing() -> None:
@@ -251,10 +252,10 @@ def test_formatter_keyword_highlight_does_not_touch_hidden_link_notes() -> None:
 
     assert rendered == (
         "***AI*** docs\n"
-        "相关链接：\n"
         "- [AI Docs](https://example.com/ai)\n"
         "检测到关键词：AI"
     )
+    assert "相关链接：" not in rendered
 
 
 def test_formatter_keyword_highlight_prefers_longer_overlapping_keywords() -> None:
@@ -314,7 +315,8 @@ def test_formatter_hidden_text_url_with_invalid_offset_falls_back_to_link_note()
 
     rendered = MessageFormatter().format(make_rule(), message)
 
-    assert rendered == "Docs Docs\n相关链接：\n- [Docs](https://example.com/docs)"
+    assert rendered == "Docs Docs\n- [Docs](https://example.com/docs)"
+    assert "相关链接：" not in rendered
 
 
 def test_formatter_inlines_button_url_when_label_is_unique() -> None:
@@ -337,7 +339,8 @@ def test_formatter_button_url_note_has_no_button_prefix() -> None:
 
     rendered = MessageFormatter().format(make_rule(), message)
 
-    assert rendered == "button below\n相关链接：\n- [查看回复](https://example.com/reply)"
+    assert rendered == "button below\n- [查看回复](https://example.com/reply)"
+    assert "相关链接：" not in rendered
     assert "按钮" not in rendered
 
 
@@ -380,7 +383,8 @@ def test_formatter_appends_hidden_links_when_template_omits_links_note() -> None
 
     rendered = MessageFormatter().format(make_rule("{text}"), message)
 
-    assert rendered == "button below\n相关链接：\n- [Open](https://example.com/open)"
+    assert rendered == "button below\n- [Open](https://example.com/open)"
+    assert "相关链接：" not in rendered
 
 
 def test_formatter_media_note_omits_paths_and_media_path_variable_is_empty() -> None:
@@ -411,7 +415,7 @@ def test_formatter_keyword_note_is_last_when_links_are_missing_from_template() -
     assert rendered.endswith("检测到关键词：AI")
     assert rendered == (
         "***AI*** docs\n"
-        "相关链接：\n"
         "- [Docs](https://example.com/docs)\n"
         "检测到关键词：AI"
     )
+    assert "相关链接：" not in rendered
