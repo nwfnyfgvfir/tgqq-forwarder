@@ -189,9 +189,9 @@ function renderDialogChoice(item) {
 }
 
 function selectDialog(button, form, root) {
-  form.name.value = button.dataset.dialogName || '';
-  form.source_chat_id.value = button.dataset.dialogId;
-  form.source_chat_type.value = button.dataset.dialogType;
+  form.elements.name.value = button.dataset.dialogName || '';
+  form.elements.source_chat_id.value = button.dataset.dialogId;
+  form.elements.source_chat_type.value = button.dataset.dialogType;
   const container = root.querySelector('#dialog-results');
   if (container) {
     container.innerHTML = '';
