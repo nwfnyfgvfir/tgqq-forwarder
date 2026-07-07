@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable, Iterator
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,13 @@ from app.rules.models import (
 from app.telegram_user.media_downloader import is_link_preview_media
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class WebpagePreview:
+    title: str | None = None
+    description: str | None = None
+    url: str | None = None
 
 
 def _display_name(sender: Any) -> str | None:
@@ -76,6 +84,35 @@ def _media_type(
 
 def _normalize_url(url: str) -> str:
     return normalize_telegram_url(url)
+
+
+def _clean_preview_text(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    return text or None
+
+
+def _webpage_from_message(message: Any) -> Any | None:
+    media = getattr(message, "media", None)
+    webpage = getattr(media, "webpage", None)
+    if webpage is not None:
+        return webpage
+    return getattr(message, "web_preview", None)
+
+
+def _extract_webpage_preview(message: Any) -> WebpagePreview:
+    webpage = _webpage_from_message(message)
+    if webpage is None:
+        return WebpagePreview()
+
+    title = _clean_preview_text(getattr(webpage, "title", None))
+    description = _clean_preview_text(getattr(webpage, "description", None))
+    raw_url = _clean_preview_text(getattr(webpage, "url", None)) or _clean_preview_text(
+        getattr(webpage, "display_url", None)
+    )
+    url = _normalize_url(raw_url) if raw_url else None
+    return WebpagePreview(title=title, description=description, url=url)
 
 
 def _extract_entity_links(message: Any) -> list[TelegramLink]:
@@ -205,6 +242,7 @@ async def parse_event(
     sender_username = getattr(sender, "username", None)
     sender_is_bot = bool(getattr(sender, "bot", False)) if isinstance(sender, User) else False
     media_type = _media_type(event, include_link_preview_media=include_link_preview_media)
+    webpage_preview = _extract_webpage_preview(event.message)
 
     return TelegramForwardMessage(
         message_id=event.message.id,
@@ -219,6 +257,10 @@ async def parse_event(
         media_type=media_type,
         media_path=media_path,
         date=getattr(event.message, "date", None) or datetime.now(),
+        raw_url=webpage_preview.url,
+        webpage_title=webpage_preview.title,
+        webpage_description=webpage_preview.description,
+        webpage_url=webpage_preview.url,
         links=_extract_links(event),
         grouped_id=getattr(event.message, "grouped_id", None),
         media_paths=[media_path] if media_path else [],

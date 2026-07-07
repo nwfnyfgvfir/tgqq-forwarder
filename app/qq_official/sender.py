@@ -129,21 +129,24 @@ class QQOfficialSender:
     ) -> list[Any]:
         results: list[Any] = []
         total = len(media_paths)
+        if total > 1 and outbound.text.strip():
+            results.append(await self._send_text(outbound, target_type, text))
+        media_text = self._truncate_text(outbound.media_caption or text) if total > 1 else text
         for index, media_path in enumerate(media_paths, start=1):
             media_type = None
             if index <= len(outbound.media_types):
                 media_type = outbound.media_types[index - 1]
-            item_text = text if index == 1 else f"[继续发送媒体 {index}/{total}]"
             item = QQOutboundMessage(
                 target_type=outbound.target_type,
                 target_id=outbound.target_id,
-                text=item_text,
+                text=media_text,
                 media_path=media_path,
                 media_type=media_type,
+                media_caption=outbound.media_caption,
                 guild_id=outbound.guild_id,
                 channel_id=outbound.channel_id,
             )
-            results.append(await self._send_media(item, target_type, item_text))
+            results.append(await self._send_media(item, target_type, media_text))
         return results
 
     async def _send_text(

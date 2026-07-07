@@ -70,6 +70,17 @@ class TelegramAlbumBuffer:
         media_paths: list[Path] = []
         media_types: list[str] = []
         seen_links: set[tuple[str, str]] = set()
+        preview_message = next(
+            (
+                message
+                for message in messages
+                if message.webpage_title or message.webpage_description or message.webpage_url
+            ),
+            None,
+        )
+        webpage_title = preview_message.webpage_title if preview_message else None
+        webpage_description = preview_message.webpage_description if preview_message else None
+        webpage_url = preview_message.webpage_url if preview_message else None
 
         for message in messages:
             raw_text = message.text or ""
@@ -116,6 +127,10 @@ class TelegramAlbumBuffer:
             text="\n".join(text_parts),
             media_path=media_paths[0] if media_paths else None,
             media_type=media_types[0] if media_types else None,
+            raw_url=webpage_url or base.raw_url,
+            webpage_title=webpage_title,
+            webpage_description=webpage_description,
+            webpage_url=webpage_url,
             links=links,
             media_paths=media_paths,
             media_types=media_types,

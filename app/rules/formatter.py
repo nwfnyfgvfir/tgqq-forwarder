@@ -21,7 +21,9 @@ class MessageFormatter:
         template = effective_message_template(rule.message_template)
         keywords = self._keywords_for_rule(rule)
         formatted_text = self._text_for_rule(message, keywords)
-        keywords_note = self._keywords_note(detect_keyword_matches(message.text or "", keywords))
+        keywords_note = self._keywords_note(
+            detect_keyword_matches(message.searchable_text, keywords)
+        )
         base_values = self._template_values(
             message,
             links_note="",
@@ -51,9 +53,36 @@ class MessageFormatter:
     @classmethod
     def _text_for_rule(cls, message: TelegramForwardMessage, keywords: list[str]) -> str:
         text = cls._text_with_inline_links(message)
+        text = cls._append_webpage_preview_text(text, message)
         if not keywords:
             return text
         return highlight_keywords_for_markdown(text, keywords)
+
+    @classmethod
+    def _append_webpage_preview_text(cls, text: str, message: TelegramForwardMessage) -> str:
+        preview_lines = cls._deduped_webpage_preview_lines(text, message)
+        if not preview_lines:
+            return text
+        preview = "\n".join(["链接预览：", *preview_lines])
+        if text.strip():
+            return f"{text.rstrip()}\n{preview}"
+        return preview
+
+    @staticmethod
+    def _deduped_webpage_preview_lines(
+        text: str,
+        message: TelegramForwardMessage,
+    ) -> list[str]:
+        existing = text or ""
+        lines: list[str] = []
+        for value in (message.webpage_title, message.webpage_description):
+            line = (value or "").strip()
+            if not line:
+                continue
+            if line in existing or line in lines:
+                continue
+            lines.append(line)
+        return lines
 
     @classmethod
     def _text_with_inline_links(cls, message: TelegramForwardMessage) -> str:
@@ -131,6 +160,10 @@ class MessageFormatter:
             "sender_name_md": cls._escape_markdown_text(message.sender_name),
             "sender_is_bot": message.sender_is_bot,
             "text": text if text is not None else message.text or "",
+            "webpage_title": message.webpage_title or "",
+            "webpage_description": message.webpage_description or "",
+            "webpage_url": message.webpage_url or "",
+            "webpage_preview_text": message.webpage_preview_text,
             "media_type": message.media_type or "",
             "media_path": "",
             "media_note": message.media_note,

@@ -15,6 +15,7 @@ class QQOutboundMessage:
     media_type: str | None = None
     media_paths: list[Path] = field(default_factory=list)
     media_types: list[str] = field(default_factory=list)
+    media_caption: str | None = None
     guild_id: str | None = None
     channel_id: str | None = None
 

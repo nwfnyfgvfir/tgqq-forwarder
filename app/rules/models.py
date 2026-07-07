@@ -118,6 +118,9 @@ class TelegramForwardMessage:
     media_path: Path | None
     date: datetime | None
     raw_url: str | None = None
+    webpage_title: str | None = None
+    webpage_description: str | None = None
+    webpage_url: str | None = None
     links: list[TelegramLink] = field(default_factory=list)
     grouped_id: int | None = None
     media_paths: list[Path] = field(default_factory=list)
@@ -132,6 +135,16 @@ class TelegramForwardMessage:
     @property
     def sender_name(self) -> str:
         return self.sender_display_name or self.sender_username or str(self.sender_id or "unknown")
+
+    @property
+    def webpage_preview_text(self) -> str:
+        parts = [self.webpage_title, self.webpage_description]
+        return "\n".join(part.strip() for part in parts if part and part.strip())
+
+    @property
+    def searchable_text(self) -> str:
+        parts = [self.text, self.webpage_title, self.webpage_description]
+        return "\n".join(part.strip() for part in parts if part and part.strip())
 
     @property
     def media_note(self) -> str:

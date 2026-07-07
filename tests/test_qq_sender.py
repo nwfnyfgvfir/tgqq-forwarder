@@ -9,7 +9,48 @@ from app.qq_official.sender import QQOfficialSender
 from app.storage.models import QQTargetType
 
 
-async def test_send_media_sequence_keeps_current_split_send_behavior() -> None:
+async def test_send_media_sequence_sends_text_first_then_captioned_media() -> None:
+    sender = QQOfficialSender(Settings())
+    text_calls = []
+    media_calls = []
+
+    async def fake_send_text(self, item, target_type, text):
+        text_calls.append((item, target_type, text))
+        return {"kind": "text", "text": text}
+
+    async def fake_send_media(self, item, target_type, text):
+        media_calls.append((item, target_type, text))
+        return {"kind": "media", "text": text}
+
+    sender._send_text = MethodType(fake_send_text, sender)
+    sender._send_media = MethodType(fake_send_media, sender)
+    outbound = QQOutboundMessage(
+        target_type="group",
+        target_id="group-openid",
+        text="完整正文",
+        media_paths=[Path("one.jpg"), Path("two.jpg")],
+        media_types=["photo", "photo"],
+        media_caption="规则名称",
+    )
+
+    result = await sender._send_media_sequence(
+        outbound,
+        QQTargetType.GROUP,
+        outbound.text,
+        outbound.media_paths,
+    )
+
+    assert result == [
+        {"kind": "text", "text": "完整正文"},
+        {"kind": "media", "text": "规则名称"},
+        {"kind": "media", "text": "规则名称"},
+    ]
+    assert [text for _item, _target_type, text in text_calls] == ["完整正文"]
+    assert [text for _item, _target_type, text in media_calls] == ["规则名称", "规则名称"]
+    assert [call[0].media_path for call in media_calls] == [Path("one.jpg"), Path("two.jpg")]
+
+
+async def test_send_single_media_keeps_full_text_on_media() -> None:
     sender = QQOfficialSender(Settings())
     calls = []
 
@@ -22,8 +63,9 @@ async def test_send_media_sequence_keeps_current_split_send_behavior() -> None:
         target_type="group",
         target_id="group-openid",
         text="完整正文",
-        media_paths=[Path("one.jpg"), Path("two.jpg")],
-        media_types=["photo", "photo"],
+        media_paths=[Path("one.jpg")],
+        media_types=["photo"],
+        media_caption="规则名称",
     )
 
     result = await sender._send_media_sequence(
@@ -33,9 +75,9 @@ async def test_send_media_sequence_keeps_current_split_send_behavior() -> None:
         outbound.media_paths,
     )
 
-    assert result == [{"text": "完整正文"}, {"text": "[继续发送媒体 2/2]"}]
-    assert [text for _item, _target_type, text in calls] == ["完整正文", "[继续发送媒体 2/2]"]
-    assert [call[0].media_path for call in calls] == [Path("one.jpg"), Path("two.jpg")]
+    assert result == [{"text": "完整正文"}]
+    assert [text for _item, _target_type, text in calls] == ["完整正文"]
+    assert calls[0][0].media_path == Path("one.jpg")
 
 
 async def test_group_media_payload_removes_markdown_and_uses_rich_media_type() -> None:

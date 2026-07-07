@@ -4,13 +4,21 @@ from dataclasses import dataclass
 
 from telethon.tl.types import MessageEntityTextUrl, MessageEntityUrl
 
-from app.telegram_user.event_parser import _extract_links, _media_type
+from app.telegram_user.event_parser import _extract_links, _extract_webpage_preview, _media_type
 from app.telegram_user.media_downloader import MessageMediaWebPage
 
 
 @dataclass
 class FakeEvent:
     message: object
+
+
+@dataclass
+class FakeWebpage:
+    title: str | None = None
+    description: str | None = None
+    url: str | None = None
+    display_url: str | None = None
 
 
 class FakeMessage:
@@ -22,12 +30,22 @@ class FakeMessage:
     document = None
     buttons = None
     reply_markup = None
+    web_preview = None
 
-    def __init__(self, entities_text=None, *, buttons=None, reply_markup=None, media=None) -> None:
+    def __init__(
+        self,
+        entities_text=None,
+        *,
+        buttons=None,
+        reply_markup=None,
+        media=None,
+        web_preview=None,
+    ) -> None:
         self._entities_text = entities_text or []
         self.buttons = buttons
         self.reply_markup = reply_markup
         self.media = media
+        self.web_preview = web_preview
 
     def get_entities_text(self):
         return self._entities_text
@@ -124,6 +142,34 @@ def test_extract_links_falls_back_to_reply_markup_buttons() -> None:
     assert [(link.text, link.url, link.source) for link in links] == [
         ("Open", "https://example.com/open", "button_url")
     ]
+
+
+def test_extract_webpage_preview_reads_media_webpage_metadata() -> None:
+    message = FakeMessage(
+        media=MessageMediaWebPage(
+            webpage=FakeWebpage(
+                title="  Preview Title  ",
+                description="Preview description",
+                url="example.com/page",
+            )
+        )
+    )
+
+    preview = _extract_webpage_preview(message)
+
+    assert preview.title == "Preview Title"
+    assert preview.description == "Preview description"
+    assert preview.url == "https://example.com/page"
+
+
+def test_extract_webpage_preview_falls_back_to_web_preview() -> None:
+    message = FakeMessage(web_preview=FakeWebpage(title="Title", display_url="example.com"))
+
+    preview = _extract_webpage_preview(message)
+
+    assert preview.title == "Title"
+    assert preview.description is None
+    assert preview.url == "https://example.com"
 
 
 def test_media_type_skips_webpage_media_by_default() -> None:

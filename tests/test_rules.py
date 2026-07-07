@@ -73,6 +73,34 @@ def test_rule_matcher_keyword_regex_matches_any_keyword_case_insensitive() -> No
     assert not RuleMatcher().matches(rule, make_message(text="hello world"))
 
 
+def test_rule_matcher_uses_webpage_preview_text_for_regexes() -> None:
+    rule = ForwardRule(
+        name="r1",
+        text_include_regex="独服",
+        text_exclude_regex="已售出",
+        qq_target_type="group",
+        qq_target_id="target",
+        message_template="{text}",
+    )
+
+    assert RuleMatcher().matches(
+        rule,
+        make_message(
+            text="标题",
+            webpage_title="NodeSeek",
+            webpage_description="代价配置私我看老们都在买阿三的独服",
+        ),
+    )
+    assert not RuleMatcher().matches(
+        rule,
+        make_message(
+            text="标题",
+            webpage_title="NodeSeek",
+            webpage_description="独服已售出",
+        ),
+    )
+
+
 def test_keyword_helpers_split_dedupe_and_round_trip() -> None:
     keywords = split_keyword_args(["AI Python", "机器人", "AI", "量化；交易\n行情"])
     assert keywords == ["AI", "Python", "机器人", "量化", "交易", "行情"]
@@ -94,6 +122,19 @@ def test_formatter_uses_template_values() -> None:
         message_template="{chat_title}|{sender_name}|{text}",
     )
     assert MessageFormatter().format(rule, make_message()) == "news|Sender|hello world"
+
+
+def test_formatter_exposes_webpage_preview_template_values() -> None:
+    rule = make_rule("{webpage_title}|{webpage_description}|{webpage_url}|{webpage_preview_text}")
+    message = make_message(
+        webpage_title="标题",
+        webpage_description="摘要",
+        webpage_url="https://example.com",
+    )
+
+    rendered = MessageFormatter().format(rule, message)
+
+    assert rendered == "标题|摘要|https://example.com|标题\n摘要"
 
 
 def test_formatter_auto_upgrades_old_default_template() -> None:
@@ -125,6 +166,37 @@ def test_formatter_highlights_keyword_rule_text_and_appends_keyword_note() -> No
     rendered = MessageFormatter().format(rule, message)
 
     assert rendered == "***AI*** news 智能***机器人***发布\n检测到关键词：AI、机器人"
+
+
+def test_formatter_appends_webpage_preview_without_repeating_title() -> None:
+    message = make_message(
+        text="NodeSeek 官方频道",
+        webpage_title="NodeSeek 官方频道",
+        webpage_description="代价配置私我看老们都在买阿三的独服",
+    )
+
+    rendered = MessageFormatter().format(make_rule("{text}"), message)
+
+    assert rendered == "NodeSeek 官方频道\n链接预览：\n代价配置私我看老们都在买阿三的独服"
+
+
+def test_formatter_keywords_include_webpage_preview_text() -> None:
+    rule = make_rule("{text}")
+    rule.text_include_regex = keywords_to_text_include_regex(["独服"])
+    message = make_message(
+        text="NodeSeek 官方频道",
+        webpage_title="NodeSeek 官方频道",
+        webpage_description="代价配置私我看老们都在买阿三的独服",
+    )
+
+    rendered = MessageFormatter().format(rule, message)
+
+    assert rendered == (
+        "NodeSeek 官方频道\n"
+        "链接预览：\n"
+        "代价配置私我看老们都在买阿三的***独服***\n"
+        "检测到关键词：独服"
+    )
 
 
 def test_formatter_keyword_highlight_is_case_insensitive_and_preserves_casing() -> None:

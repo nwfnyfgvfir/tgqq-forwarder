@@ -36,7 +36,7 @@ class RuleMatcher:
 
         if rule.text_include_regex:
             try:
-                if not re.search(rule.text_include_regex, message.text or ""):
+                if not re.search(rule.text_include_regex, message.searchable_text):
                     return False
             except re.error:
                 logger.warning("Invalid include regex in rule %s", rule.id)
@@ -44,7 +44,7 @@ class RuleMatcher:
 
         if rule.text_exclude_regex:
             try:
-                if re.search(rule.text_exclude_regex, message.text or ""):
+                if re.search(rule.text_exclude_regex, message.searchable_text):
                     return False
             except re.error:
                 logger.warning("Invalid exclude regex in rule %s", rule.id)
