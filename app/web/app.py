@@ -79,7 +79,7 @@ def create_mini_app(
         )
 
     async def require_admin_session(
-        init_data: Annotated[str | None, Header(alias="X-Telegram-Init-Data")] = None,
+        init_data: str | None = Header(default=None, alias="X-Telegram-Init-Data"),
     ) -> MiniAppSession:
         try:
             return validate_init_data(init_data or "", settings)
@@ -91,7 +91,7 @@ def create_mini_app(
         return {"ok": True}
 
     @app.get("/api/me", response_model=MeResponse)
-    async def me(session: Annotated[MiniAppSession, Depends(require_admin_session)]) -> MeResponse:
+    async def me(session: MiniAppSession = Depends(require_admin_session)) -> MeResponse:
         return MeResponse(
             user=MiniAppUserResponse(
                 id=session.user.id,
@@ -105,7 +105,7 @@ def create_mini_app(
 
     @app.get("/api/status", response_model=StatusResponse)
     async def app_status(
-        session: Annotated[MiniAppSession, Depends(require_admin_session)],
+        session: MiniAppSession = Depends(require_admin_session),
     ) -> StatusResponse:
         _ = session
         listener = telegram_listener_getter()
@@ -125,7 +125,7 @@ def create_mini_app(
     @app.patch("/api/settings/paused", response_model=PauseResponse)
     async def set_paused(
         payload: PauseRequest,
-        session: Annotated[MiniAppSession, Depends(require_admin_session)],
+        session: MiniAppSession = Depends(require_admin_session),
     ) -> PauseResponse:
         _ = session
         await service.set_paused(payload.paused)
@@ -133,7 +133,7 @@ def create_mini_app(
 
     @app.get("/api/dialogs", response_model=list[DialogResponse])
     async def dialogs(
-        session: Annotated[MiniAppSession, Depends(require_admin_session)],
+        session: MiniAppSession = Depends(require_admin_session),
         query: str | None = None,
         limit: Annotated[int, Query(ge=1, le=200)] = 80,
     ) -> list[DialogResponse]:
@@ -150,14 +150,14 @@ def create_mini_app(
 
     @app.get("/api/qq-targets", response_model=list[QQTargetResponse])
     async def qq_targets(
-        session: Annotated[MiniAppSession, Depends(require_admin_session)],
+        session: MiniAppSession = Depends(require_admin_session),
     ) -> list[QQTargetResponse]:
         _ = session
         return [QQTargetResponse.from_target(target) for target in qq_targets_getter()]
 
     @app.get("/api/rules", response_model=list[RuleResponse])
     async def rules(
-        session: Annotated[MiniAppSession, Depends(require_admin_session)],
+        session: MiniAppSession = Depends(require_admin_session),
         enabled_only: bool = False,
         limit: Annotated[int | None, Query(ge=1, le=500)] = None,
     ) -> list[RuleResponse]:
@@ -168,7 +168,7 @@ def create_mini_app(
     @app.post("/api/rules", response_model=RuleCreateResponse, status_code=status.HTTP_201_CREATED)
     async def create_rule(
         payload: RuleCreateRequest,
-        session: Annotated[MiniAppSession, Depends(require_admin_session)],
+        session: MiniAppSession = Depends(require_admin_session),
     ) -> RuleCreateResponse:
         _ = session
         result = await service.create_or_merge_rule(payload.to_rule())
@@ -183,7 +183,7 @@ def create_mini_app(
     @app.post("/api/rules/preview", response_model=RulePreviewResponse)
     async def preview_rule(
         payload: RulePreviewRequest,
-        session: Annotated[MiniAppSession, Depends(require_admin_session)],
+        session: MiniAppSession = Depends(require_admin_session),
     ) -> RulePreviewResponse:
         _ = session
         rule = payload.rule.to_rule()
@@ -195,15 +195,36 @@ def create_mini_app(
             _compile_rule_regexes(rule.text_include_regex, rule.text_exclude_regex)
         except re.error as exc:
             warnings.append(f"正则表达式无效：{exc}")
+        message_fields = payload.message.model_fields_set
+        preview_chat_id = (
+            rule.source_chat_id
+            if "chat_id" not in message_fields and rule.source_chat_id is not None
+            else payload.message.chat_id
+        )
+        preview_chat_type = (
+            rule.source_chat_type
+            if "chat_type" not in message_fields and rule.source_chat_type
+            else payload.message.chat_type
+        )
+        preview_sender_id = (
+            rule.source_sender_id
+            if "sender_id" not in message_fields and rule.source_sender_id is not None
+            else payload.message.sender_id
+        )
+        preview_sender_is_bot = (
+            rule.source_sender_is_bot
+            if "sender_is_bot" not in message_fields and rule.source_sender_is_bot is not None
+            else payload.message.sender_is_bot
+        )
         message = TelegramForwardMessage(
             message_id=1,
-            chat_id=payload.message.chat_id,
+            chat_id=preview_chat_id,
             chat_title=payload.message.chat_title,
-            chat_type=payload.message.chat_type,
-            sender_id=payload.message.sender_id,
+            chat_type=preview_chat_type,
+            sender_id=preview_sender_id,
             sender_username=payload.message.sender_username,
             sender_display_name=payload.message.sender_display_name,
-            sender_is_bot=payload.message.sender_is_bot,
+            sender_is_bot=preview_sender_is_bot,
             text=payload.message.text,
             media_type=payload.message.media_type,
             media_path=None,
@@ -230,7 +251,7 @@ def create_mini_app(
     @app.get("/api/rules/{rule_id}", response_model=RuleResponse)
     async def get_rule(
         rule_id: int,
-        session: Annotated[MiniAppSession, Depends(require_admin_session)],
+        session: MiniAppSession = Depends(require_admin_session),
     ) -> RuleResponse:
         _ = session
         rule = await service.get_rule(rule_id)
@@ -242,7 +263,7 @@ def create_mini_app(
     async def update_rule(
         rule_id: int,
         payload: RuleUpdateRequest,
-        session: Annotated[MiniAppSession, Depends(require_admin_session)],
+        session: MiniAppSession = Depends(require_admin_session),
     ) -> RuleResponse:
         _ = session
         rule = await service.update_rule(rule_id, payload.to_rule_values())
@@ -254,7 +275,7 @@ def create_mini_app(
     async def duplicate_rule(
         rule_id: int,
         payload: RuleDuplicateRequest,
-        session: Annotated[MiniAppSession, Depends(require_admin_session)],
+        session: MiniAppSession = Depends(require_admin_session),
     ) -> RuleResponse:
         _ = session
         rule = await service.duplicate_rule(rule_id, name=payload.name, enabled=payload.enabled)
@@ -266,7 +287,7 @@ def create_mini_app(
     async def set_rule_enabled(
         rule_id: int,
         payload: RuleEnabledRequest,
-        session: Annotated[MiniAppSession, Depends(require_admin_session)],
+        session: MiniAppSession = Depends(require_admin_session),
     ) -> RuleResponse:
         _ = session
         changed = await service.set_rule_enabled(rule_id, payload.enabled)
@@ -280,7 +301,7 @@ def create_mini_app(
     @app.delete("/api/rules/{rule_id}")
     async def delete_rule(
         rule_id: int,
-        session: Annotated[MiniAppSession, Depends(require_admin_session)],
+        session: MiniAppSession = Depends(require_admin_session),
     ) -> dict[str, bool]:
         _ = session
         deleted = await service.delete_rule(rule_id)
@@ -290,7 +311,7 @@ def create_mini_app(
 
     @app.get("/api/logs", response_model=list[ForwardLogResponse])
     async def logs(
-        session: Annotated[MiniAppSession, Depends(require_admin_session)],
+        session: MiniAppSession = Depends(require_admin_session),
         status_filter: str | None = Query(default=None, alias="status"),
         limit: Annotated[int, Query(ge=1, le=100)] = 50,
     ) -> list[ForwardLogResponse]:
@@ -309,7 +330,7 @@ def create_mini_app(
 
     @app.get("/api/options", response_model=OptionsResponse)
     async def options(
-        session: Annotated[MiniAppSession, Depends(require_admin_session)],
+        session: MiniAppSession = Depends(require_admin_session),
     ) -> OptionsResponse:
         _ = session
         return OptionsResponse(
