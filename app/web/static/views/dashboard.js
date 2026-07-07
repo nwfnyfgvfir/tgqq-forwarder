@@ -1,4 +1,4 @@
-import { emptyState, escapeHtml, formatDate, logRow, pageHeader, statTile, statusPill } from '../components.js';
+import { emptyState, escapeHtml, formatDate, logRow, pageHeader, statTile, statusPill } from '../components.js?v=20260707-rule-studio-2';
 
 export function renderDashboard(state) {
   const status = state.status;

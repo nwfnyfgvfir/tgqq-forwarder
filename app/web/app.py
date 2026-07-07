@@ -7,7 +7,7 @@ from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, Query, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from app.config import Settings
@@ -58,6 +58,18 @@ TEMPLATE_VARIABLES = [
     "raw_url",
 ]
 MEDIA_TYPES = ["text", "photo", "video", "voice", "audio", "document", "animation", "sticker"]
+NO_CACHE_HEADERS = {
+    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+    "Pragma": "no-cache",
+    "Expires": "0",
+}
+
+
+class NoCacheStaticFiles(StaticFiles):
+    async def get_response(self, path: str, scope) -> Response:
+        response = await super().get_response(path, scope)
+        response.headers.update(NO_CACHE_HEADERS)
+        return response
 
 
 def create_mini_app(
@@ -341,11 +353,11 @@ def create_mini_app(
         )
 
     if STATIC_DIR.exists():
-        app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+        app.mount("/static", NoCacheStaticFiles(directory=STATIC_DIR), name="static")
 
         @app.get("/", include_in_schema=False)
         async def index() -> FileResponse:
-            return FileResponse(STATIC_DIR / "index.html")
+            return FileResponse(STATIC_DIR / "index.html", headers=NO_CACHE_HEADERS)
 
     return app
 

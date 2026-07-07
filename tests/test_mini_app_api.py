@@ -131,6 +131,7 @@ async def test_status_me_dialogs_targets_and_static(api_client) -> None:
     dialogs = await client.get("/api/dialogs", params={"query": "ai"})
     targets = await client.get("/api/qq-targets")
     index = await client.get("/")
+    app_js = await client.get("/static/app.js?v=20260707-rule-studio-2")
 
     assert me.status_code == 200
     assert me.json()["user"]["id"] == 1
@@ -139,7 +140,13 @@ async def test_status_me_dialogs_targets_and_static(api_client) -> None:
     assert dialogs.json()[0]["name"] == "AI Channel"
     assert targets.json()[0]["target_id"] == "group-openid"
     assert index.status_code == 200
+    assert index.headers["cache-control"] == "no-store, no-cache, must-revalidate, max-age=0"
     assert "TGQQ Forwarder Mini App" in index.text
+    assert "/static/styles.css?v=20260707-rule-studio-2" in index.text
+    assert "/static/app.js?v=20260707-rule-studio-2" in index.text
+    assert app_js.status_code == 200
+    assert app_js.headers["cache-control"] == "no-store, no-cache, must-revalidate, max-age=0"
+    assert "./views/rule-studio.js?v=20260707-rule-studio-2" in app_js.text
 
 
 async def test_rule_crud_preview_and_pause(api_client) -> None:

@@ -1,4 +1,4 @@
-import { emptyState, pageHeader, ruleCard } from '../components.js';
+import { emptyState, pageHeader, ruleCard } from '../components.js?v=20260707-rule-studio-2';
 
 export function renderRules(state) {
   const rules = state.rules || [];

@@ -1,6 +1,6 @@
-import { api } from '../api.js';
-import { escapeHtml, pageHeader, short, statusPill } from '../components.js';
-import { refreshRules } from '../state.js';
+import { api } from '../api.js?v=20260707-rule-studio-2';
+import { escapeHtml, pageHeader, short, statusPill } from '../components.js?v=20260707-rule-studio-2';
+import { refreshRules } from '../state.js?v=20260707-rule-studio-2';
 
 const DEFAULT_TEMPLATE = '[Telegram: {chat_title}]\n{sender_name}: {text}\n{links_note}\n{media_note}';
 
@@ -105,32 +105,45 @@ export function renderRuleStudio(state) {
 export function bindRuleStudio(root, navigate) {
   const form = root.querySelector('#rule-form');
   if (!form) return;
+  let dialogSearchSeq = 0;
   root.querySelector('[data-action="search-dialogs"]')?.addEventListener('click', async () => {
     const query = root.querySelector('#dialog-query')?.value || '';
     const container = root.querySelector('#dialog-results');
+    if (!container) return;
+    const searchSeq = ++dialogSearchSeq;
     container.hidden = false;
     container.innerHTML = '<span class="muted">搜索中…</span>';
     try {
       const items = await api.dialogs(query, 80);
+      if (searchSeq !== dialogSearchSeq) return;
+      container.hidden = false;
       container.innerHTML = items.length ? items.map(renderDialogChoice).join('') : '<span class="muted">没有匹配会话</span>';
     } catch (error) {
+      if (searchSeq !== dialogSearchSeq) return;
+      container.hidden = false;
       container.innerHTML = `<span class="muted">${escapeHtml(error.message)}</span>`;
     }
   });
   form.addEventListener('click', async (event) => {
-    const target = event.target.closest('button');
+    const target = buttonFromEvent(event, form);
     if (!target) return;
-    if (target.dataset.dialogId) selectDialog(target, form, root);
+    if (target.matches('#dialog-results button[data-dialog-id]')) {
+      dialogSearchSeq += 1;
+      selectDialog(target, form, root);
+      return;
+    }
     if (target.dataset.targetId) {
-      form.qq_target_type.value = target.dataset.targetType;
-      form.qq_target_id.value = target.dataset.targetId;
-      form.qq_guild_id.value = target.dataset.guildId || '';
-      form.qq_channel_id.value = target.dataset.channelId || '';
+      setFormValue(form, 'qq_target_type', target.dataset.targetType || '');
+      setFormValue(form, 'qq_target_id', target.dataset.targetId || '');
+      setFormValue(form, 'qq_guild_id', target.dataset.guildId || '');
+      setFormValue(form, 'qq_channel_id', target.dataset.channelId || '');
     }
     if (target.dataset.action === 'insert-var') {
-      const textarea = form.message_template;
-      textarea.setRangeText(`{${target.dataset.var}}`, textarea.selectionStart, textarea.selectionEnd, 'end');
-      textarea.focus();
+      const textarea = form.elements.namedItem('message_template');
+      if (textarea && 'setRangeText' in textarea) {
+        textarea.setRangeText(`{${target.dataset.var}}`, textarea.selectionStart, textarea.selectionEnd, 'end');
+        textarea.focus();
+      }
     }
     if (target.dataset.action === 'preview-rule') {
       await preview(form, root);
@@ -167,6 +180,23 @@ function boolToSelect(value) {
   return '';
 }
 
+function buttonFromEvent(event, scope) {
+  const pathButton = event.composedPath?.().find((node) => node instanceof HTMLButtonElement && scope.contains(node));
+  if (pathButton) return pathButton;
+  if (event.target instanceof Element) {
+    const button = event.target.closest('button');
+    return button && scope.contains(button) ? button : null;
+  }
+  return null;
+}
+
+function setFormValue(form, name, value) {
+  const control = form.elements.namedItem(name);
+  if (control && 'value' in control) {
+    control.value = value;
+  }
+}
+
 function renderTargets(targets, editRule) {
   if (!targets.length) return '<span class="muted">还没有缓存到 QQ 目标。</span>';
   return targets.slice(0, 24).map((target) => `
@@ -189,12 +219,12 @@ function renderDialogChoice(item) {
 }
 
 function selectDialog(button, form, root) {
-  form.elements.name.value = button.dataset.dialogName || '';
-  form.elements.source_chat_id.value = button.dataset.dialogId;
-  form.elements.source_chat_type.value = button.dataset.dialogType;
+  setFormValue(form, 'name', button.dataset.dialogName || '');
+  setFormValue(form, 'source_chat_id', button.dataset.dialogId || '');
+  setFormValue(form, 'source_chat_type', button.dataset.dialogType || '');
   const container = root.querySelector('#dialog-results');
   if (container) {
-    container.innerHTML = '';
+    container.replaceChildren();
     container.hidden = true;
   }
 }

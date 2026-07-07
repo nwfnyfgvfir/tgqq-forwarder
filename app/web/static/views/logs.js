@@ -1,4 +1,4 @@
-import { emptyState, logRow, pageHeader } from '../components.js';
+import { emptyState, logRow, pageHeader } from '../components.js?v=20260707-rule-studio-2';
 
 export function renderLogs(state) {
   const logs = state.logs || [];

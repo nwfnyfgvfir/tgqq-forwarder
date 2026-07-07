@@ -1,11 +1,11 @@
-import { api } from './api.js';
-import { renderShell } from './components.js';
-import { bootstrapData, navigate, refreshLogs, refreshRules, refreshStatus, setState, state, subscribe } from './state.js';
-import { renderDashboard } from './views/dashboard.js';
-import { renderLogs } from './views/logs.js';
-import { filterRules, renderRules } from './views/rules.js';
-import { bindRuleStudio, renderRuleStudio } from './views/rule-studio.js';
-import { renderSystem } from './views/system.js';
+import { api } from './api.js?v=20260707-rule-studio-2';
+import { renderShell } from './components.js?v=20260707-rule-studio-2';
+import { bootstrapData, navigate, refreshLogs, refreshRules, refreshStatus, setState, state, subscribe } from './state.js?v=20260707-rule-studio-2';
+import { renderDashboard } from './views/dashboard.js?v=20260707-rule-studio-2';
+import { renderLogs } from './views/logs.js?v=20260707-rule-studio-2';
+import { filterRules, renderRules } from './views/rules.js?v=20260707-rule-studio-2';
+import { bindRuleStudio, renderRuleStudio } from './views/rule-studio.js?v=20260707-rule-studio-2';
+import { renderSystem } from './views/system.js?v=20260707-rule-studio-2';
 
 const tg = window.Telegram?.WebApp;
 const root = document.querySelector('#app');

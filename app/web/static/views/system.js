@@ -1,4 +1,4 @@
-import { escapeHtml, pageHeader, statusPill } from '../components.js';
+import { escapeHtml, pageHeader, statusPill } from '../components.js?v=20260707-rule-studio-2';
 
 export function renderSystem(state) {
   const status = state.status || {};
