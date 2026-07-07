@@ -147,7 +147,6 @@ def test_formatter_auto_upgrades_old_default_template() -> None:
         "# Telegram：news\n\n"
         "**发送者：Sender**\n\n"
         "***hello*** world\n\n"
-        "媒体：photo\n"
         "检测到关键词：hello"
     )
 
@@ -387,6 +386,19 @@ def test_formatter_appends_hidden_links_when_template_omits_links_note() -> None
     assert "相关链接：" not in rendered
 
 
+def test_formatter_media_note_omits_single_media() -> None:
+    message = make_message(
+        media_type="photo",
+        media_path=Path("/tmp/secret/photo.jpg"),
+    )
+
+    rendered = MessageFormatter().format(make_rule("{media_path}|{media_note}"), message)
+
+    assert rendered == "|"
+    assert "/tmp/secret" not in rendered
+    assert "photo.jpg" not in rendered
+
+
 def test_formatter_media_note_omits_paths_and_media_path_variable_is_empty() -> None:
     message = make_message(
         media_type="photo",
@@ -397,7 +409,7 @@ def test_formatter_media_note_omits_paths_and_media_path_variable_is_empty() -> 
 
     rendered = MessageFormatter().format(make_rule("{media_path}|{media_note}"), message)
 
-    assert rendered == "|媒体：photo、video"
+    assert rendered == "|"
     assert "/tmp/secret" not in rendered
     assert "photo.jpg" not in rendered
 

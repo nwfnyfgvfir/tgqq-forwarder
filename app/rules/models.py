@@ -148,25 +148,7 @@ class TelegramForwardMessage:
 
     @property
     def media_note(self) -> str:
-        media_types = [item for item in (self.media_types or []) if item]
-        if not media_types and self.media_type:
-            media_types = [self.media_type]
-        if not media_types:
-            return ""
-
-        counts: dict[str, int] = {}
-        ordered_types: list[str] = []
-        for media_type in media_types:
-            if media_type not in counts:
-                ordered_types.append(media_type)
-                counts[media_type] = 0
-            counts[media_type] += 1
-
-        parts = [
-            media_type if counts[media_type] == 1 else f"{media_type} × {counts[media_type]}"
-            for media_type in ordered_types
-        ]
-        return f"媒体：{'、'.join(parts)}"
+        return ""
 
     @property
     def links_note(self) -> str:
