@@ -13,6 +13,7 @@ from app.rules.keywords import (
 )
 from app.rules.templates import effective_message_template
 from app.storage.models import ForwardLog, ForwardRule, QQTargetType
+from app.telegram_user.accounts import TelegramAccountStatus
 
 RuleMatchMode = Literal["all", "keywords", "regex"]
 
@@ -30,8 +31,35 @@ class MeResponse(BaseModel):
     auth_date: int
 
 
+class TelegramAccountStatusResponse(BaseModel):
+    id: str
+    enabled: bool
+    connected: bool
+    authorized: bool
+    user_id: int | None = None
+    username: str | None = None
+    phone: str | None = None
+    session_path: str
+    last_error: str | None = None
+
+    @classmethod
+    def from_status(cls, status: TelegramAccountStatus) -> TelegramAccountStatusResponse:
+        return cls(
+            id=status.id,
+            enabled=status.enabled,
+            connected=status.connected,
+            authorized=status.authorized,
+            user_id=status.user_id,
+            username=status.username,
+            phone=status.phone,
+            session_path=status.session_path,
+            last_error=status.last_error,
+        )
+
+
 class StatusResponse(BaseModel):
     telegram_connected: bool
+    telegram_accounts: list[TelegramAccountStatusResponse] = Field(default_factory=list)
     qq_status: str
     forwarding_paused: bool
     total_rules: int
@@ -40,6 +68,7 @@ class StatusResponse(BaseModel):
     queue_size: int
     mini_app_enabled: bool
     mini_app_public_url: str | None = None
+    telegram_dedupe_cross_account: bool = False
 
 
 class PauseRequest(BaseModel):
@@ -54,6 +83,7 @@ class DialogResponse(BaseModel):
     id: int
     name: str
     type: str
+    account_id: str | None = None
 
 
 class QQTargetResponse(BaseModel):
@@ -77,6 +107,7 @@ class QQTargetResponse(BaseModel):
 class RuleBase(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     enabled: bool = True
+    source_account_id: str | None = None
     source_chat_id: int | None = None
     source_chat_type: str | None = None
     source_sender_id: int | None = None
@@ -100,6 +131,14 @@ class RuleBase(BaseModel):
         if not text:
             raise ValueError("value must not be empty")
         return text
+
+    @field_validator("source_account_id")
+    @classmethod
+    def blank_account_to_none(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        text = value.strip()
+        return text or None
 
     @field_validator("source_chat_type")
     @classmethod
@@ -163,6 +202,7 @@ class RuleBase(BaseModel):
         return {
             "name": self.name,
             "enabled": self.enabled,
+            "source_account_id": self.source_account_id,
             "source_chat_id": self.source_chat_id,
             "source_chat_type": self.source_chat_type,
             "source_sender_id": self.source_sender_id,
@@ -211,6 +251,7 @@ class RuleResponse(BaseModel):
     id: int
     name: str
     enabled: bool
+    source_account_id: str | None = None
     source_chat_id: int | None = None
     source_chat_type: str | None = None
     source_sender_id: int | None = None
@@ -242,6 +283,7 @@ class RuleResponse(BaseModel):
             id=int(rule.id or 0),
             name=rule.name,
             enabled=rule.enabled,
+            source_account_id=rule.source_account_id,
             source_chat_id=rule.source_chat_id,
             source_chat_type=rule.source_chat_type,
             source_sender_id=rule.source_sender_id,
@@ -272,6 +314,7 @@ class RuleCreateResponse(BaseModel):
 
 class PreviewMessageRequest(BaseModel):
     text: str = "AI news from Telegram"
+    account_id: str | None = None
     chat_id: int | None = -1001234567890
     chat_title: str | None = "Telegram Channel"
     chat_type: str = "channel"
@@ -298,6 +341,8 @@ class RulePreviewResponse(BaseModel):
 class ForwardLogResponse(BaseModel):
     id: int
     rule_id: int | None = None
+    tg_account_id: str | None = None
+    tg_account_user_id: int | None = None
     tg_chat_id: int | None = None
     tg_message_id: int | None = None
     tg_sender_id: int | None = None
@@ -315,6 +360,8 @@ class ForwardLogResponse(BaseModel):
         return cls(
             id=int(log.id or 0),
             rule_id=log.rule_id,
+            tg_account_id=log.tg_account_id,
+            tg_account_user_id=log.tg_account_user_id,
             tg_chat_id=log.tg_chat_id,
             tg_message_id=log.tg_message_id,
             tg_sender_id=log.tg_sender_id,
@@ -334,4 +381,5 @@ class OptionsResponse(BaseModel):
     chat_types: list[str]
     media_types: list[str]
     template_variables: list[str]
+    telegram_account_ids: list[str] = Field(default_factory=list)
     now: datetime = Field(default_factory=lambda: datetime.now(UTC))

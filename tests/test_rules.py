@@ -60,6 +60,28 @@ def test_rule_matcher_chat_sender_and_regex() -> None:
     assert not RuleMatcher().matches(rule, make_message(chat_id=-100999))
 
 
+def test_rule_matcher_source_account_id() -> None:
+    rule = ForwardRule(
+        name="r1",
+        source_account_id="main",
+        qq_target_type="group",
+        qq_target_id="target",
+        message_template="{text}",
+    )
+    assert RuleMatcher().matches(rule, make_message(account_id="main"))
+    assert not RuleMatcher().matches(rule, make_message(account_id="news"))
+    assert RuleMatcher().matches(
+        ForwardRule(
+            name="any",
+            source_account_id=None,
+            qq_target_type="group",
+            qq_target_id="target",
+            message_template="{text}",
+        ),
+        make_message(account_id="news"),
+    )
+
+
 def test_rule_matcher_keyword_regex_matches_any_keyword_case_insensitive() -> None:
     rule = ForwardRule(
         name="r1",

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
 from app.config import Settings
 from app.qq_official.models import QQOutboundMessage
@@ -28,6 +29,8 @@ class ForwardQueue:
         )
         self._task: asyncio.Task | None = None
         self._stopping = asyncio.Event()
+        self._recent_message_keys: dict[tuple[int | None, int], float] = {}
+        self._dedupe_ttl_seconds = 300.0
 
     @property
     def size(self) -> int:
@@ -54,7 +57,11 @@ class ForwardQueue:
         try:
             self.queue.put_nowait(message)
         except asyncio.QueueFull:
-            logger.error("Forward queue is full; dropping Telegram message %s", message.message_id)
+            logger.error(
+                "Forward queue is full; dropping Telegram message account=%s message=%s",
+                message.account_id,
+                message.message_id,
+            )
 
     async def _run(self) -> None:
         while not self._stopping.is_set():
@@ -64,15 +71,49 @@ class ForwardQueue:
             finally:
                 self.queue.task_done()
 
+    def _should_skip_cross_account_duplicate(self, message: TelegramForwardMessage) -> bool:
+        if not self.settings.telegram_dedupe_cross_account:
+            return False
+        if message.chat_id is None:
+            return False
+        now = time.monotonic()
+        expired = [
+            key
+            for key, seen_at in self._recent_message_keys.items()
+            if now - seen_at > self._dedupe_ttl_seconds
+        ]
+        for key in expired:
+            self._recent_message_keys.pop(key, None)
+
+        key = (message.chat_id, message.message_id)
+        if key in self._recent_message_keys:
+            logger.info(
+                "Skip cross-account duplicate Telegram message account=%s chat=%s message=%s",
+                message.account_id,
+                message.chat_id,
+                message.message_id,
+            )
+            return True
+        self._recent_message_keys[key] = now
+        return False
+
     async def _process_message(self, message: TelegramForwardMessage) -> None:
         if await self.service.is_paused():
-            logger.info("Forwarding is paused; skip Telegram message %s", message.message_id)
+            logger.info(
+                "Forwarding is paused; skip Telegram message account=%s message=%s",
+                message.account_id,
+                message.message_id,
+            )
+            return
+
+        if self._should_skip_cross_account_duplicate(message):
             return
 
         rules = await self.service.matching_rules(message)
         if not rules:
             logger.debug(
-                "No forwarding rule matched Telegram message chat=%s message=%s sender=%s",
+                "No rule matched account=%s chat=%s message=%s sender=%s",
+                message.account_id,
                 message.chat_id,
                 message.message_id,
                 message.sender_id,
@@ -102,8 +143,9 @@ class ForwardQueue:
                     forwarded_text=forwarded_text,
                 )
                 logger.info(
-                    "Forwarded Telegram message %s from chat %s by rule %s to QQ %s:%s",
+                    "Forwarded Telegram message %s from account %s chat %s by rule %s to QQ %s:%s",
                     message.message_id,
+                    message.account_id,
                     message.chat_id,
                     rule.id,
                     rule.qq_target_type,

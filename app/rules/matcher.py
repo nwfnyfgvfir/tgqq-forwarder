@@ -14,6 +14,12 @@ class RuleMatcher:
         if not rule.enabled:
             return False
 
+        if (
+            rule.source_account_id is not None
+            and rule.source_account_id != message.account_id
+        ):
+            return False
+
         if rule.source_chat_id is not None and rule.source_chat_id != message.chat_id:
             return False
 

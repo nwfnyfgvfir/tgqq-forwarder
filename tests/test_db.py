@@ -36,6 +36,7 @@ async def test_create_or_merge_rule_merges_duplicate_keyword_rules(tmp_path) -> 
     first = await service.create_or_merge_rule(
         ForwardRule(
             name="LINUX DO Channel",
+            source_account_id="main",
             source_chat_id=-1002035446470,
             qq_target_type="c2c",
             qq_target_id="target",
@@ -46,6 +47,7 @@ async def test_create_or_merge_rule_merges_duplicate_keyword_rules(tmp_path) -> 
     second = await service.create_or_merge_rule(
         ForwardRule(
             name="LINUX DO Channel",
+            source_account_id="main",
             source_chat_id=-1002035446470,
             qq_target_type="c2c",
             qq_target_id="target",
@@ -65,6 +67,41 @@ async def test_create_or_merge_rule_merges_duplicate_keyword_rules(tmp_path) -> 
         "注册机",
         "公益",
     ]
+    assert rules[0].source_account_id == "main"
+
+
+async def test_create_or_merge_rule_keeps_different_accounts_separate(tmp_path) -> None:
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'app.db'}")
+    await db.init()
+    service = ForwardRuleService(db)
+
+    first = await service.create_or_merge_rule(
+        ForwardRule(
+            name="same-name",
+            source_account_id="main",
+            source_chat_id=-100,
+            qq_target_type="group",
+            qq_target_id="target",
+            text_include_regex=keywords_to_text_include_regex(["AI"]),
+            message_template="{text}",
+        )
+    )
+    second = await service.create_or_merge_rule(
+        ForwardRule(
+            name="same-name",
+            source_account_id="news",
+            source_chat_id=-100,
+            qq_target_type="group",
+            qq_target_id="target",
+            text_include_regex=keywords_to_text_include_regex(["AI"]),
+            message_template="{text}",
+        )
+    )
+    rules = await service.list_rules()
+    await db.dispose()
+    assert first.created
+    assert second.created
+    assert len(rules) == 2
 
 
 async def test_update_and_duplicate_rule(tmp_path) -> None:

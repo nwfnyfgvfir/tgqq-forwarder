@@ -15,6 +15,7 @@ from app.qq_official.client import QQTargetInfo
 from app.rules.keywords import keywords_from_text_include_regex
 from app.rules.service import ForwardRuleService
 from app.storage.db import Database
+from app.telegram_user.accounts import TelegramAccountStatus
 from app.web.app import create_mini_app
 
 TOKEN = "123456:TEST_TOKEN"
@@ -28,8 +29,50 @@ class FakeDialog:
     type: str
 
 
-class FakeDialogs:
-    async def list_dialogs(self, *, limit: int = 50, query: str | None = None) -> list[FakeDialog]:
+class FakeAccountManager:
+    def is_any_connected(self) -> bool:
+        return True
+
+    def list_status(self) -> list[TelegramAccountStatus]:
+        return [
+            TelegramAccountStatus(
+                id="default",
+                enabled=True,
+                connected=True,
+                authorized=True,
+                user_id=10001,
+                username="default_user",
+                phone=None,
+                session_path="data/sessions/user.session",
+            ),
+            TelegramAccountStatus(
+                id="news",
+                enabled=True,
+                connected=False,
+                authorized=False,
+                user_id=None,
+                username=None,
+                phone=None,
+                session_path="data/sessions/news.session",
+                last_error="not authorized",
+            ),
+        ]
+
+    def get(self, account_id: str | None = None):
+        class _Listener:
+            account_id = "default"
+
+        return _Listener()
+
+    async def list_dialogs(
+        self,
+        *,
+        account_id: str | None = None,
+        limit: int = 50,
+        query: str | None = None,
+    ) -> list[FakeDialog]:
+        if account_id not in (None, "default", "news"):
+            raise KeyError(f"Telegram account not found or not started: {account_id}")
         items = [
             FakeDialog(id=-1001, name="AI Channel", type="channel"),
             FakeDialog(id=-1002, name="Python Group", type="group"),
@@ -44,11 +87,6 @@ class FakeDialogs:
         return items[:limit]
 
 
-class FakeListener:
-    is_connected = True
-    dialogs = FakeDialogs()
-
-
 @pytest.fixture
 async def api_client(tmp_path):
     db = Database(f"sqlite+aiosqlite:///{tmp_path / 'app.db'}")
@@ -59,12 +97,16 @@ async def api_client(tmp_path):
         mini_app_enabled=True,
         mini_app_auth_ttl_seconds=0,
         default_message_template="{text}\n{links_note}",
+        telegram_accounts_json=(
+            '[{"id":"default","session_path":"data/sessions/user.session"},'
+            '{"id":"news","session_path":"data/sessions/news.session"}]'
+        ),
     )
     service = ForwardRuleService(db)
     app = create_mini_app(
         settings=settings,
         service=service,
-        telegram_listener_getter=lambda: FakeListener(),
+        account_manager_getter=lambda: FakeAccountManager(),
         qq_status_getter=lambda: "running",
         qq_targets_getter=lambda: [
             QQTargetInfo(
@@ -103,6 +145,7 @@ def rule_payload(**overrides):
     data = {
         "name": "AI 转发",
         "enabled": True,
+        "source_account_id": "default",
         "source_chat_id": -1001,
         "source_chat_type": "channel",
         "source_sender_id": None,
@@ -128,7 +171,7 @@ async def test_status_me_dialogs_targets_and_static(api_client) -> None:
 
     me = await client.get("/api/me")
     status = await client.get("/api/status")
-    dialogs = await client.get("/api/dialogs", params={"query": "ai"})
+    dialogs = await client.get("/api/dialogs", params={"query": "ai", "account": "default"})
     targets = await client.get("/api/qq-targets")
     options = await client.get("/api/options")
     index = await client.get("/")
@@ -138,10 +181,14 @@ async def test_status_me_dialogs_targets_and_static(api_client) -> None:
     assert me.json()["user"]["id"] == 1
     assert status.json()["telegram_connected"] is True
     assert status.json()["queue_size"] == 3
+    assert len(status.json()["telegram_accounts"]) == 2
+    assert status.json()["telegram_accounts"][0]["id"] == "default"
     assert dialogs.json()[0]["name"] == "AI Channel"
+    assert dialogs.json()[0]["account_id"] == "default"
     assert targets.json()[0]["target_id"] == "group-openid"
     assert "media_path" not in options.json()["template_variables"]
     assert "footer_note" in options.json()["template_variables"]
+    assert options.json()["telegram_account_ids"] == ["default", "news"]
     assert index.status_code == 200
     assert index.headers["cache-control"] == "no-store, no-cache, must-revalidate, max-age=0"
     assert "TGQQ Forwarder Mini App" in index.text
@@ -159,6 +206,7 @@ async def test_rule_crud_preview_and_pause(api_client) -> None:
     assert created.status_code == 201
     created_rule = created.json()["rule"]
     assert created_rule["keywords"] == ["AI", "Python"]
+    assert created_rule["source_account_id"] == "default"
 
     duplicate_merge = await client.post(
         "/api/rules",
@@ -226,3 +274,9 @@ async def test_auth_required_for_api(api_client) -> None:
 
     assert response.status_code == 403
     assert response.json()["detail"]["code"] == "admin_required"
+
+
+async def test_unknown_account_rejected(api_client) -> None:
+    client, _service = api_client
+    created = await client.post("/api/rules", json=rule_payload(source_account_id="missing"))
+    assert created.status_code == 422

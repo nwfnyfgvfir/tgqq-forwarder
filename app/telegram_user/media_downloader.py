@@ -30,11 +30,13 @@ class TelegramMediaDownloader:
         enabled: bool = True,
         max_media_mb: int = 20,
         download_link_preview_media: bool = False,
+        account_id: str | None = None,
     ) -> None:
         self.media_dir = media_dir
         self.enabled = enabled
         self.max_media_bytes = max_media_mb * 1024 * 1024
         self.download_link_preview_media = download_link_preview_media
+        self.account_id = account_id
         self.media_dir.mkdir(parents=True, exist_ok=True)
 
     async def download(self, event: events.NewMessage.Event) -> Path | None:
@@ -49,7 +51,10 @@ class TelegramMediaDownloader:
             return None
 
         chat_part = str(event.chat_id or "unknown")
-        target_dir = self.media_dir / chat_part
+        if self.account_id:
+            target_dir = self.media_dir / self.account_id / chat_part
+        else:
+            target_dir = self.media_dir / chat_part
         target_dir.mkdir(parents=True, exist_ok=True)
         downloaded = await event.message.download_media(file=str(target_dir))
         return Path(downloaded) if downloaded else None

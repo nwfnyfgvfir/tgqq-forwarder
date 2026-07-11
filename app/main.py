@@ -11,7 +11,7 @@ from app.qq_official.sender import QQOfficialSender
 from app.rules.service import ForwardRuleService
 from app.storage.db import Database
 from app.telegram_admin.bot import TelegramAdminBot
-from app.telegram_user.client import TelegramUserListener
+from app.telegram_user.accounts import TelegramAccountManager
 from app.web.server import MiniAppServer
 from app.worker.forward_queue import ForwardQueue
 from app.worker.media_cleanup import MediaCleanupWorker
@@ -28,18 +28,18 @@ class ApplicationRuntime:
         self.qq_sender = QQOfficialSender(self.settings)
         self.forward_queue = ForwardQueue(self.settings, self.rule_service, self.qq_sender)
         self.media_cleanup = MediaCleanupWorker(self.settings)
-        self.telegram_listener: TelegramUserListener | None = None
+        self.account_manager: TelegramAccountManager | None = None
         self.admin_bot = TelegramAdminBot(
             self.settings,
             self.rule_service,
-            lambda: self.telegram_listener,
+            lambda: self.account_manager,
             lambda: self.qq_sender.status,
             self.qq_sender.list_cached_targets,
         )
         self.mini_app_server = MiniAppServer(
             self.settings,
             self.rule_service,
-            lambda: self.telegram_listener,
+            lambda: self.account_manager,
             lambda: self.qq_sender.status,
             self.qq_sender.list_cached_targets,
             lambda: self.forward_queue.size,
@@ -52,8 +52,11 @@ class ApplicationRuntime:
         await self.qq_sender.start()
         await self.forward_queue.start()
         await self.media_cleanup.start()
-        self.telegram_listener = TelegramUserListener(self.settings, self.forward_queue.enqueue)
-        await self.telegram_listener.start()
+        self.account_manager = TelegramAccountManager(
+            self.settings,
+            self.forward_queue.enqueue,
+        )
+        await self.account_manager.start()
         await self.admin_bot.start()
         await self.mini_app_server.start()
         logger.info("TGQQ Forwarder started")
@@ -65,10 +68,10 @@ class ApplicationRuntime:
                 loop.add_signal_handler(sig, self.stop_event.set)
 
         wait_tasks = [asyncio.create_task(self.stop_event.wait(), name="stop-event")]
-        if self.telegram_listener:
+        if self.account_manager and not self.settings.telegram_reconnect_enabled:
             wait_tasks.append(
                 asyncio.create_task(
-                    self.telegram_listener.wait_disconnected(),
+                    self.account_manager.wait_any_disconnected(),
                     name="telegram-disconnected",
                 )
             )
@@ -85,8 +88,8 @@ class ApplicationRuntime:
         logger.info("Stopping TGQQ Forwarder")
         await self.mini_app_server.stop()
         await self.admin_bot.stop()
-        if self.telegram_listener:
-            await self.telegram_listener.stop()
+        if self.account_manager:
+            await self.account_manager.stop()
         await self.media_cleanup.stop()
         await self.forward_queue.stop()
         await self.qq_sender.stop()

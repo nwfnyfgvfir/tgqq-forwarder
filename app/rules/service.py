@@ -122,6 +122,7 @@ class ForwardRuleService:
             duplicate = ForwardRule(
                 name=name or f"{source.name} 副本",
                 enabled=source.enabled if enabled is None else enabled,
+                source_account_id=source.source_account_id,
                 source_chat_id=source.source_chat_id,
                 source_chat_type=source.source_chat_type,
                 source_sender_id=source.source_sender_id,
@@ -164,6 +165,7 @@ class ForwardRuleService:
         return (
             left.name == right.name
             and left.enabled == right.enabled
+            and left.source_account_id == right.source_account_id
             and left.source_chat_id == right.source_chat_id
             and left.source_chat_type == right.source_chat_type
             and left.source_sender_id == right.source_sender_id
@@ -219,6 +221,8 @@ class ForwardRuleService:
     ) -> None:
         log = ForwardLog(
             rule_id=rule.id if rule else None,
+            tg_account_id=message.account_id,
+            tg_account_user_id=message.account_user_id,
             tg_chat_id=message.chat_id,
             tg_message_id=message.message_id,
             tg_sender_id=message.sender_id,

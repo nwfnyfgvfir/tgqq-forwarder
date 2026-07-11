@@ -18,16 +18,22 @@ export function renderRuleStudio(state) {
           <div class="step-index">01</div>
           <div>
             <h2>Telegram 来源</h2>
-            <p>选择监听账号可见的频道、群组或私聊；留空代表全部来源。</p>
+            <p>先选监听账号，再搜索该账号可见的频道、群组或私聊；账号留空代表任意账号。</p>
           </div>
           <label>规则名称<input name="name" required maxlength="120" value="${escapeHtml(editRule?.name || '')}" placeholder="例如：LINUX DO AI 关键词" /></label>
+          <div class="grid-2">
+            <label>监听账号<select name="source_account_id">
+              ${option('', '任意账号', editRule?.source_account_id || '')}
+              ${(state.options?.telegram_account_ids || []).map((item) => option(item, item, editRule?.source_account_id || '')).join('')}
+            </select></label>
+            <label>TG 会话 ID<input name="source_chat_id" value="${escapeHtml(editRule?.source_chat_id ?? '')}" placeholder="* 或 -100..." /></label>
+          </div>
           <div class="picker-row">
             <input id="dialog-query" placeholder="搜索 Telegram 会话名或 ID" />
             <button type="button" data-action="search-dialogs">搜索会话</button>
           </div>
           <div class="choice-list" id="dialog-results" hidden></div>
           <div class="grid-2">
-            <label>TG 会话 ID<input name="source_chat_id" value="${escapeHtml(editRule?.source_chat_id ?? '')}" placeholder="* 或 -100..." /></label>
             <label>会话类型<select name="source_chat_type">
               ${option('', '任意', editRule?.source_chat_type)}
               ${option('channel', '频道', editRule?.source_chat_type)}
@@ -108,13 +114,14 @@ export function bindRuleStudio(root, navigate) {
   let dialogSearchSeq = 0;
   root.querySelector('[data-action="search-dialogs"]')?.addEventListener('click', async () => {
     const query = root.querySelector('#dialog-query')?.value || '';
+    const account = form.elements.source_account_id?.value || '';
     const container = root.querySelector('#dialog-results');
     if (!container) return;
     const searchSeq = ++dialogSearchSeq;
     container.hidden = false;
     container.innerHTML = '<span class="muted">搜索中…</span>';
     try {
-      const items = await api.dialogs(query, 80);
+      const items = await api.dialogs(query, 80, account);
       if (searchSeq !== dialogSearchSeq) return;
       container.hidden = false;
       container.innerHTML = items.length ? items.map(renderDialogChoice).join('') : '<span class="muted">没有匹配会话</span>';
@@ -210,10 +217,10 @@ function renderTargets(targets, editRule) {
 
 function renderDialogChoice(item) {
   return `
-    <button type="button" class="choice-card" data-dialog-id="${escapeHtml(item.id)}" data-dialog-type="${escapeHtml(item.type)}" data-dialog-name="${escapeHtml(item.name)}">
+    <button type="button" class="choice-card" data-dialog-id="${escapeHtml(item.id)}" data-dialog-type="${escapeHtml(item.type)}" data-dialog-name="${escapeHtml(item.name)}" data-dialog-account="${escapeHtml(item.account_id || '')}">
       <strong>${escapeHtml(item.type)}</strong>
       <code>${escapeHtml(item.id)}</code>
-      <span>${escapeHtml(item.name)}</span>
+      <span>${escapeHtml(item.name)}${item.account_id ? ` · ${escapeHtml(item.account_id)}` : ''}</span>
     </button>
   `;
 }
@@ -222,6 +229,9 @@ function selectDialog(button, form, root) {
   setFormValue(form, 'name', button.dataset.dialogName || '');
   setFormValue(form, 'source_chat_id', button.dataset.dialogId || '');
   setFormValue(form, 'source_chat_type', button.dataset.dialogType || '');
+  if (button.dataset.dialogAccount) {
+    setFormValue(form, 'source_account_id', button.dataset.dialogAccount);
+  }
   const container = root.querySelector('#dialog-results');
   if (container) {
     container.replaceChildren();
@@ -244,6 +254,7 @@ function payloadFromForm(form) {
   return {
     name: value('name'),
     enabled: form.elements.enabled.checked,
+    source_account_id: value('source_account_id') || null,
     source_chat_id: nullableInt('source_chat_id'),
     source_chat_type: value('source_chat_type') || null,
     source_sender_id: nullableInt('source_sender_id'),
@@ -266,14 +277,16 @@ async function preview(form, root) {
   const output = root.querySelector('#preview-output');
   output.textContent = '渲染中…';
   try {
+    const formPayload = payloadFromForm(form);
     const result = await api.previewRule({
-      rule: payloadFromForm(form),
+      rule: formPayload,
       message: {
         text: form.elements.preview_text.value,
-        chat_id: payloadFromForm(form).source_chat_id || -1001234567890,
+        account_id: formPayload.source_account_id || null,
+        chat_id: formPayload.source_chat_id || -1001234567890,
         chat_title: 'Preview Channel',
-        chat_type: payloadFromForm(form).source_chat_type || 'channel',
-        sender_id: payloadFromForm(form).source_sender_id || 42,
+        chat_type: formPayload.source_chat_type || 'channel',
+        sender_id: formPayload.source_sender_id || 42,
         sender_username: 'preview_sender',
         sender_display_name: 'Preview Sender',
         sender_is_bot: false,

@@ -38,7 +38,11 @@ export const api = {
   me: () => request('/api/me'),
   status: () => request('/api/status'),
   pause: (paused) => request('/api/settings/paused', { method: 'PATCH', body: { paused } }),
-  dialogs: (query = '', limit = 80) => request(`/api/dialogs?${new URLSearchParams({ query, limit })}`),
+  dialogs: (query = '', limit = 80, account = '') => {
+    const params = new URLSearchParams({ query, limit });
+    if (account) params.set('account', account);
+    return request(`/api/dialogs?${params}`);
+  },
   qqTargets: () => request('/api/qq-targets'),
   rules: () => request('/api/rules?limit=500'),
   rule: (id) => request(`/api/rules/${id}`),

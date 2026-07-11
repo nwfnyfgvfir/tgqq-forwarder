@@ -12,7 +12,7 @@ from app.qq_official.client import QQTargetInfo
 from app.rules.service import ForwardRuleService
 from app.telegram_admin.auth import AdminAuth
 from app.telegram_admin.commands import AdminCommands
-from app.telegram_user.client import TelegramUserListener
+from app.telegram_user.accounts import TelegramAccountManager
 
 logger = logging.getLogger(__name__)
 
@@ -22,13 +22,13 @@ class TelegramAdminBot:
         self,
         settings: Settings,
         service: ForwardRuleService,
-        telegram_listener_getter: Callable[[], TelegramUserListener | None],
+        account_manager_getter: Callable[[], TelegramAccountManager | None],
         qq_status_getter: Callable[[], str],
         qq_targets_getter: Callable[[], list[QQTargetInfo]],
     ) -> None:
         self.settings = settings
         self.service = service
-        self.telegram_listener_getter = telegram_listener_getter
+        self.account_manager_getter = account_manager_getter
         self.qq_status_getter = qq_status_getter
         self.qq_targets_getter = qq_targets_getter
         self.application: Application | None = None
@@ -46,7 +46,7 @@ class TelegramAdminBot:
             self.settings,
             self.service,
             auth,
-            self.telegram_listener_getter,
+            self.account_manager_getter,
             self.qq_status_getter,
             self.qq_targets_getter,
         )
@@ -66,6 +66,7 @@ class TelegramAdminBot:
         app.add_error_handler(self._handle_error)
         app.add_handler(CommandHandler(["start", "help"], commands.start))
         app.add_handler(CommandHandler("status", commands.status))
+        app.add_handler(CommandHandler("accounts", commands.accounts))
         app.add_handler(CommandHandler("dialogs", commands.dialogs))
         app.add_handler(CommandHandler("rules", commands.rules))
         app.add_handler(CommandHandler("qq_targets", commands.qq_targets))
@@ -98,6 +99,7 @@ class TelegramAdminBot:
                 [
                     BotCommand("start", "显示帮助信息"),
                     BotCommand("status", "查看运行状态"),
+                    BotCommand("accounts", "查看 Telegram 账号状态"),
                     BotCommand("dialogs", "查看或搜索 Telegram 会话"),
                     BotCommand("rules", "查看转发规则"),
                     BotCommand("qq_targets", "查看已缓存的 QQ 目标 ID"),

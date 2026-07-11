@@ -125,6 +125,9 @@ class TelegramForwardMessage:
     grouped_id: int | None = None
     media_paths: list[Path] = field(default_factory=list)
     media_types: list[str] = field(default_factory=list)
+    account_id: str | None = None
+    account_user_id: int | None = None
+    account_username: str | None = None
 
     def __post_init__(self) -> None:
         if self.media_path and not self.media_paths:

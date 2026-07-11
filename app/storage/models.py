@@ -36,6 +36,7 @@ class ForwardRule(SQLModel, table=True):
     name: str = Field(index=True, max_length=120)
     enabled: bool = Field(default=True, index=True)
 
+    source_account_id: str | None = Field(default=None, index=True, max_length=64)
     source_chat_id: int | None = Field(default=None, index=True)
     source_chat_type: str | None = Field(default=None, max_length=32)
     source_sender_id: int | None = Field(default=None, index=True)
@@ -60,6 +61,8 @@ class ForwardRule(SQLModel, table=True):
 class ForwardLog(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     rule_id: int | None = Field(default=None, foreign_key="forwardrule.id", index=True)
+    tg_account_id: str | None = Field(default=None, index=True, max_length=64)
+    tg_account_user_id: int | None = Field(default=None, index=True)
     tg_chat_id: int | None = Field(default=None, index=True)
     tg_message_id: int | None = Field(default=None, index=True)
     tg_sender_id: int | None = Field(default=None, index=True)

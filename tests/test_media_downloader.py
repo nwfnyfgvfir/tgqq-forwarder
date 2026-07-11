@@ -75,6 +75,16 @@ async def test_real_photo_media_downloads_by_default(tmp_path: Path) -> None:
     assert message.download_called
 
 
+async def test_media_download_uses_account_bucket(tmp_path: Path) -> None:
+    message = FakePhotoMessage(media=object())
+    downloader = TelegramMediaDownloader(tmp_path, account_id="main")
+
+    downloaded = await downloader.download(FakeEvent(message))
+
+    assert downloaded == tmp_path / "main" / str(FakeEvent.chat_id) / "downloaded.jpg"
+    assert message.download_called
+
+
 def test_is_link_preview_media_ignores_real_media_with_web_preview() -> None:
     message = FakePhotoMessage(media=object())
     message.web_preview = object()

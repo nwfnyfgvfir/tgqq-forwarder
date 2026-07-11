@@ -16,7 +16,7 @@ from app.rules.keywords import detect_keyword_matches, keywords_from_text_includ
 from app.rules.models import TelegramForwardMessage, TelegramLink
 from app.rules.service import ForwardRuleService
 from app.storage.models import ForwardStatus, QQTargetType
-from app.telegram_user.client import TelegramUserListener
+from app.telegram_user.accounts import TelegramAccountManager
 from app.web.auth import MiniAppAuthError, MiniAppSession, validate_init_data
 from app.web.errors import api_error, auth_http_exception
 from app.web.schemas import (
@@ -37,6 +37,7 @@ from app.web.schemas import (
     RuleResponse,
     RuleUpdateRequest,
     StatusResponse,
+    TelegramAccountStatusResponse,
 )
 
 STATIC_DIR = Path(__file__).with_name("static")
@@ -62,6 +63,10 @@ TEMPLATE_VARIABLES = [
     "raw_url",
 ]
 MEDIA_TYPES = ["text", "photo", "video", "voice", "audio", "document", "animation", "sticker"]
+# Starlette 1.x renamed UNPROCESSABLE_ENTITY -> UNPROCESSABLE_CONTENT.
+HTTP_422 = getattr(status, "HTTP_422_UNPROCESSABLE_CONTENT", None)
+if HTTP_422 is None:
+    HTTP_422 = status.HTTP_422_UNPROCESSABLE_ENTITY
 NO_CACHE_HEADERS = {
     "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
     "Pragma": "no-cache",
@@ -80,7 +85,7 @@ def create_mini_app(
     *,
     settings: Settings,
     service: ForwardRuleService,
-    telegram_listener_getter: Callable[[], TelegramUserListener | None],
+    account_manager_getter: Callable[[], TelegramAccountManager | None],
     qq_status_getter: Callable[[], str],
     qq_targets_getter: Callable[[], list[QQTargetInfo]],
     queue_size_getter: Callable[[], int],
@@ -124,10 +129,14 @@ def create_mini_app(
         session: MiniAppSession = Depends(require_admin_session),
     ) -> StatusResponse:
         _ = session
-        listener = telegram_listener_getter()
+        manager = account_manager_getter()
+        account_statuses = manager.list_status() if manager else []
         total_rules, enabled_rules, total_logs = await service.counts()
         return StatusResponse(
-            telegram_connected=bool(listener and listener.is_connected),
+            telegram_connected=bool(manager and manager.is_any_connected()),
+            telegram_accounts=[
+                TelegramAccountStatusResponse.from_status(item) for item in account_statuses
+            ],
             qq_status=qq_status_getter(),
             forwarding_paused=await service.is_paused(),
             total_rules=total_rules,
@@ -136,6 +145,7 @@ def create_mini_app(
             queue_size=queue_size_getter(),
             mini_app_enabled=settings.mini_app_enabled,
             mini_app_public_url=settings.mini_app_public_url,
+            telegram_dedupe_cross_account=settings.telegram_dedupe_cross_account,
         )
 
     @app.patch("/api/settings/paused", response_model=PauseResponse)
@@ -150,19 +160,42 @@ def create_mini_app(
     @app.get("/api/dialogs", response_model=list[DialogResponse])
     async def dialogs(
         session: MiniAppSession = Depends(require_admin_session),
+        account: str | None = None,
         query: str | None = None,
         limit: Annotated[int, Query(ge=1, le=200)] = 80,
     ) -> list[DialogResponse]:
         _ = session
-        listener = telegram_listener_getter()
-        if listener is None:
+        manager = account_manager_getter()
+        if manager is None:
             raise api_error(
                 status.HTTP_503_SERVICE_UNAVAILABLE,
                 "telegram_listener_not_ready",
                 "Telegram 用户监听器尚未就绪",
             )
-        items = await listener.dialogs.list_dialogs(limit=limit, query=query)
-        return [DialogResponse(id=item.id, name=item.name, type=item.type) for item in items]
+        account_id = account.strip() if account else None
+        if account_id == "":
+            account_id = None
+        try:
+            items = await manager.list_dialogs(account_id=account_id, limit=limit, query=query)
+        except KeyError as exc:
+            raise api_error(
+                status.HTTP_404_NOT_FOUND,
+                "telegram_account_not_found",
+                str(exc),
+            ) from exc
+        resolved_account = account_id
+        if resolved_account is None:
+            listener = manager.get()
+            resolved_account = listener.account_id if listener else None
+        return [
+            DialogResponse(
+                id=item.id,
+                name=item.name,
+                type=item.type,
+                account_id=resolved_account,
+            )
+            for item in items
+        ]
 
     @app.get("/api/qq-targets", response_model=list[QQTargetResponse])
     async def qq_targets(
@@ -179,7 +212,7 @@ def create_mini_app(
     ) -> list[RuleResponse]:
         _ = session
         rows = await service.list_rules(enabled_only=enabled_only, limit=limit)
-        return [RuleResponse.from_rule(rule) for rule in rows]
+        return [RuleResponse.from_rule(row) for row in rows]
 
     @app.post("/api/rules", response_model=RuleCreateResponse, status_code=status.HTTP_201_CREATED)
     async def create_rule(
@@ -187,6 +220,7 @@ def create_mini_app(
         session: MiniAppSession = Depends(require_admin_session),
     ) -> RuleCreateResponse:
         _ = session
+        _validate_source_account(payload.source_account_id)
         result = await service.create_or_merge_rule(payload.to_rule())
         return RuleCreateResponse(
             rule=RuleResponse.from_rule(result.rule),
@@ -212,6 +246,11 @@ def create_mini_app(
         except re.error as exc:
             warnings.append(f"正则表达式无效：{exc}")
         message_fields = payload.message.model_fields_set
+        preview_account_id = (
+            rule.source_account_id
+            if "account_id" not in message_fields and rule.source_account_id is not None
+            else payload.message.account_id
+        )
         preview_chat_id = (
             rule.source_chat_id
             if "chat_id" not in message_fields and rule.source_chat_id is not None
@@ -245,6 +284,7 @@ def create_mini_app(
             media_type=payload.message.media_type,
             media_path=None,
             date=None,
+            account_id=preview_account_id,
             links=[
                 TelegramLink(
                     text=str(item.get("text") or item.get("url") or ""),
@@ -286,6 +326,7 @@ def create_mini_app(
         session: MiniAppSession = Depends(require_admin_session),
     ) -> RuleResponse:
         _ = session
+        _validate_source_account(payload.source_account_id)
         rule = await service.update_rule(rule_id, payload.to_rule_values())
         if rule is None:
             raise api_error(status.HTTP_404_NOT_FOUND, "rule_not_found", "规则不存在")
@@ -341,7 +382,7 @@ def create_mini_app(
         valid_statuses = {item.value for item in ForwardStatus}
         if status_filter is not None and status_filter not in valid_statuses:
             raise api_error(
-                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                HTTP_422,
                 "invalid_status",
                 "日志状态无效",
             )
@@ -358,7 +399,19 @@ def create_mini_app(
             chat_types=["private", "group", "channel", "unknown"],
             media_types=MEDIA_TYPES,
             template_variables=TEMPLATE_VARIABLES,
+            telegram_account_ids=[account.id for account in settings.telegram_accounts],
         )
+
+    def _validate_source_account(account_id: str | None) -> None:
+        if account_id is None:
+            return
+        known = {account.id for account in settings.telegram_accounts}
+        if account_id not in known:
+            raise api_error(
+                HTTP_422,
+                "invalid_source_account_id",
+                f"未知 Telegram 账号：{account_id}",
+            )
 
     if STATIC_DIR.exists():
         app.mount("/static", NoCacheStaticFiles(directory=STATIC_DIR), name="static")

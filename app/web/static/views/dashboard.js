@@ -5,10 +5,15 @@ export function renderDashboard(state) {
   if (!status) {
     return `${pageHeader('CONTROL DECK', '转发控制舱', '正在建立与 Mini App 后端的安全通道。')}<div class="loading-card">载入中…</div>`;
   }
+  const accounts = status.telegram_accounts || [];
+  const connectedAccounts = accounts.filter((item) => item.connected).length;
   const telegramState = status.telegram_connected ? 'good' : 'bad';
   const pausedState = status.forwarding_paused ? 'warning' : 'good';
   const recentErrors = (state.logs || []).filter((item) => item.status === 'failed').length;
   const latestLogs = (state.logs || []).slice(0, 5);
+  const accountSummary = accounts.length
+    ? `${connectedAccounts}/${accounts.length} 在线`
+    : (status.telegram_connected ? '在线' : '断开');
   return `
     ${pageHeader(
       'CONTROL DECK',
@@ -17,7 +22,7 @@ export function renderDashboard(state) {
       `<button class="primary" data-route="studio">新建规则</button>`
     )}
     <section class="signal-grid">
-      ${statTile('Telegram', status.telegram_connected ? '在线' : '断开', '用户账号监听', telegramState)}
+      ${statTile('Telegram', accountSummary, '多用户账号监听', telegramState)}
       ${statTile('QQ WebSocket', status.qq_status, '官方机器人通道', status.qq_status === 'running' ? 'good' : 'warning')}
       ${statTile('转发开关', status.forwarding_paused ? '已暂停' : '运行中', '全局队列控制', pausedState)}
       ${statTile('队列深度', status.queue_size, '待处理消息', status.queue_size > 0 ? 'warning' : 'neutral')}
@@ -61,9 +66,9 @@ export function renderDashboard(state) {
         <span>${escapeHtml(formatDate(new Date().toISOString()))}</span>
       </div>
       <div class="status-lanes">
-        <div>${statusPill(status.telegram_connected ? 'Telegram 已连接' : 'Telegram 未连接', telegramState)}<span>会话选择器依赖该连接。</span></div>
+        <div>${statusPill(status.telegram_connected ? 'Telegram 已连接' : 'Telegram 未连接', telegramState)}<span>${accounts.length ? accounts.map((item) => `${item.id}:${item.connected ? '在线' : '离线'}`).join(' · ') : '会话选择器依赖该连接。'}</span></div>
         <div>${statusPill(status.qq_status, status.qq_status === 'running' ? 'good' : 'warning')}<span>QQ 目标来自 WebSocket 缓存。</span></div>
-        <div>${statusPill(status.forwarding_paused ? '全局暂停' : '自动转发中', pausedState)}<span>暂停后队列消费会跳过转发。</span></div>
+        <div>${statusPill(status.forwarding_paused ? '全局暂停' : '自动转发中', pausedState)}<span>暂停后队列消费会跳过转发。跨账号去重：${status.telegram_dedupe_cross_account ? '开' : '关'}</span></div>
       </div>
     </section>
   `;

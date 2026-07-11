@@ -22,7 +22,7 @@ class MiniAppServer:
         self,
         settings: Settings,
         service: ForwardRuleService,
-        telegram_listener_getter,
+        account_manager_getter,
         qq_status_getter,
         qq_targets_getter,
         queue_size_getter,
@@ -31,7 +31,7 @@ class MiniAppServer:
         self.app = create_mini_app(
             settings=settings,
             service=service,
-            telegram_listener_getter=telegram_listener_getter,
+            account_manager_getter=account_manager_getter,
             qq_status_getter=qq_status_getter,
             qq_targets_getter=qq_targets_getter,
             queue_size_getter=queue_size_getter,

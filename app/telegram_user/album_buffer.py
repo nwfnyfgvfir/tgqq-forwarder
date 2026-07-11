@@ -17,15 +17,15 @@ class TelegramAlbumBuffer:
     def __init__(self, delay_seconds: float, on_message: MessageCallback) -> None:
         self.delay_seconds = delay_seconds
         self.on_message = on_message
-        self._groups: dict[tuple[int | None, int], list[TelegramForwardMessage]] = {}
-        self._tasks: dict[tuple[int | None, int], asyncio.Task] = {}
+        self._groups: dict[tuple[str | None, int | None, int], list[TelegramForwardMessage]] = {}
+        self._tasks: dict[tuple[str | None, int | None, int], asyncio.Task] = {}
 
     async def handle(self, message: TelegramForwardMessage) -> None:
         if not message.grouped_id or self.delay_seconds <= 0:
             await self.on_message(message)
             return
 
-        key = (message.chat_id, message.grouped_id)
+        key = (message.account_id, message.chat_id, message.grouped_id)
         self._groups.setdefault(key, []).append(message)
         task = self._tasks.get(key)
         if task and not task.done():
@@ -39,14 +39,14 @@ class TelegramAlbumBuffer:
         for key in keys:
             await self._flush(key)
 
-    async def _flush_later(self, key: tuple[int | None, int]) -> None:
+    async def _flush_later(self, key: tuple[str | None, int | None, int]) -> None:
         try:
             await asyncio.sleep(self.delay_seconds)
             await self._flush(key)
         except asyncio.CancelledError:
             pass
 
-    async def _flush(self, key: tuple[int | None, int]) -> None:
+    async def _flush(self, key: tuple[str | None, int | None, int]) -> None:
         messages = self._groups.pop(key, [])
         self._tasks.pop(key, None)
         if not messages:
@@ -54,7 +54,8 @@ class TelegramAlbumBuffer:
         messages.sort(key=lambda item: item.message_id)
         merged = self._merge(messages)
         logger.info(
-            "Merged Telegram album grouped_id=%s chat=%s messages=%s media=%s",
+            "Merged Telegram album account=%s grouped_id=%s chat=%s messages=%s media=%s",
+            merged.account_id,
             merged.grouped_id,
             merged.chat_id,
             len(messages),

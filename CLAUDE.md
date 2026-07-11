@@ -28,7 +28,9 @@ conda run -n tgqq-forwarder python -m pytest tests/test_rules.py::test_formatter
 conda run -n tgqq-forwarder python -m ruff check .
 
 # Local Telegram login and app run
-conda run -n tgqq-forwarder python -m app.telegram_user.login
+# Single-account (legacy TELEGRAM_SESSION_PATH) or multi-account via TELEGRAM_ACCOUNTS_JSON
+conda run -n tgqq-forwarder python -m app.telegram_user.login --account all
+conda run -n tgqq-forwarder python -m app.telegram_user.login --account main
 conda run -n tgqq-forwarder python -m app.main
 ```
 
@@ -43,8 +45,9 @@ docker compose up -d
 docker compose logs -f
 docker compose down
 
-# First Telegram user login in Docker
-docker compose run --rm tgqq-forwarder python -m app.telegram_user.login
+# First Telegram user login in Docker (all accounts, or --account <id>)
+docker compose run --rm tgqq-forwarder python -m app.telegram_user.login --account all
+docker compose run --rm tgqq-forwarder python -m app.telegram_user.login --account main
 
 # Local image build instead of GHCR image
 docker compose -f docker-compose.build.yml up -d --build
@@ -62,7 +65,11 @@ Package/build references:
 - `Settings.validate_runtime_requirements()` requires Telegram API credentials and QQ bot credentials before startup.
 - `get_settings()` creates runtime directories for data, logs, media, and Telegram sessions.
 - Runtime data defaults under `data/`: SQLite DB, logs, Telegram media cache, and Telegram user session.
-- `TELEGRAM_SESSION_PATH` is the Telegram user login state and should be treated as account credentials.
+- `TELEGRAM_SESSION_PATH` is the legacy single-account session path (maps to account id `default`) and should be treated as account credentials.
+- Multi-account config uses `TELEGRAM_ACCOUNTS_JSON` (`[{id, session_path?, phone?, enabled?, api_id?, api_hash?}, ...]`).
+- Default multi-account layout is `TELEGRAM_SESSIONS_DIR/<account_id>/account.session` (and Telethon may also create `account.session-journal` beside it). Explicit `session_path` still wins for legacy flat files.
+- Messages carry `account_id`; rules may set `source_account_id` (null = any account). Optional `TELEGRAM_DEDUPE_CROSS_ACCOUNT` dedupes the same `(chat_id, message_id)` across accounts.
+- `TelegramAccountManager` starts one listener per enabled account and shares one `ForwardQueue`.
 - QQ group targets use QQ Official Bot `group_openid`, not normal QQ group numbers.
 
 Important media/link settings:
@@ -80,19 +87,20 @@ Important media/link settings:
 
 1. Load settings and configure logging.
 2. Initialize SQLite/SQLModel database.
-3. Start QQ sender, forwarding queue, media cleanup worker, Telegram user listener, and optional Telegram admin bot.
+3. Start QQ sender, forwarding queue, media cleanup worker, Telegram account manager (N user listeners), and optional Telegram admin bot.
 4. Stop components in reverse order on shutdown.
 
 ### Telegram ingestion path
 
-`app/telegram_user/client.py` creates the Telethon `TelegramClient` and registers `events.NewMessage()`.
+`app/telegram_user/accounts.py` owns one `TelegramUserListener` per configured account. Each listener in `app/telegram_user/client.py` creates a Telethon `TelegramClient` and registers `events.NewMessage()`.
 
 For each incoming Telegram message:
 
-1. `TelegramMediaDownloader.download()` downloads real media when enabled, respects max size, and skips webpage preview media unless explicitly configured.
+1. `TelegramMediaDownloader.download()` downloads real media when enabled, respects max size, namespaces files under `media/{account_id}/{chat_id}/`, and skips webpage preview media unless explicitly configured.
 2. `event_parser.parse_event()` builds `TelegramForwardMessage` with chat/sender metadata, raw text/caption, extracted URL entities, URL buttons, media type, media paths, and `grouped_id`.
-3. `TelegramAlbumBuffer` merges messages sharing `grouped_id` so albums/multi-image posts forward once with ordered media paths.
-4. Parsed messages enter `ForwardQueue.enqueue()`.
+3. The listener stamps `account_id` / account user identity onto the message.
+4. `TelegramAlbumBuffer` merges messages sharing `(account_id, chat_id, grouped_id)` so albums/multi-image posts forward once with ordered media paths.
+5. Parsed messages enter the shared `ForwardQueue.enqueue()`.
 
 URL handling is centralized around `TelegramLink` in `app/rules/models.py`:
 
@@ -108,7 +116,7 @@ Rules and logs are SQLModel tables in `app/storage/models.py`, accessed through 
 
 `app/rules/service.py` combines repositories, `RuleMatcher`, and `MessageFormatter`:
 
-- `RuleMatcher` filters by enabled state, Telegram chat ID/type, sender ID/bot flag, media type, include regex, and exclude regex.
+- `RuleMatcher` filters by enabled state, Telegram account id, chat ID/type, sender ID/bot flag, media type, include regex, and exclude regex.
 - Keyword rules are encoded/decoded in `app/rules/keywords.py` as regex with metadata.
 - `MessageFormatter` renders rule templates, appends missing hidden/button links, and avoids duplicate visible URL notes.
 

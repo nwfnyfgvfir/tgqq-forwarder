@@ -118,6 +118,7 @@ export function ruleCard(rule) {
         ${state}
       </div>
       <div class="rule-route">
+        <code>账号 ${escapeHtml(rule.source_account_id ?? '*')}</code>
         <code>TG ${escapeHtml(rule.source_chat_id ?? '*')}</code>
         <span>→</span>
         <code>${escapeHtml(rule.qq_target_type)}:${escapeHtml(short(rule.qq_target_id, 20))}</code>
@@ -138,7 +139,7 @@ export function logRow(log) {
   return `
     <article class="log-row">
       <div>${statusPill(log.status, state)}<strong>#${escapeHtml(log.id)}</strong></div>
-      <p>TG ${escapeHtml(log.tg_chat_id ?? '-')} / ${escapeHtml(log.tg_message_id ?? '-')} → ${escapeHtml(log.qq_target_type)}:${escapeHtml(short(log.qq_target_id, 22))}</p>
+      <p>账号 ${escapeHtml(log.tg_account_id ?? '-')} · TG ${escapeHtml(log.tg_chat_id ?? '-')} / ${escapeHtml(log.tg_message_id ?? '-')} → ${escapeHtml(log.qq_target_type)}:${escapeHtml(short(log.qq_target_id, 22))}</p>
       <small>${escapeHtml(formatDate(log.created_at))} · 规则 ${escapeHtml(log.rule_id ?? '-')}</small>
       ${log.error_message ? `<pre>${escapeHtml(log.error_message)}</pre>` : ''}
     </article>
