@@ -11,7 +11,10 @@ from app.rules.keywords import (
 )
 from app.rules.matcher import RuleMatcher
 from app.rules.models import TelegramForwardMessage, TelegramLink
-from app.rules.templates import OLD_DEFAULT_MESSAGE_TEMPLATE
+from app.rules.templates import (
+    OLD_DEFAULT_MESSAGE_TEMPLATE,
+    PREVIOUS_DEFAULT_MESSAGE_TEMPLATE,
+)
 from app.storage.models import ForwardRule
 
 
@@ -159,17 +162,74 @@ def test_formatter_exposes_webpage_preview_template_values() -> None:
     assert rendered == "标题|摘要|https://example.com|标题\n摘要"
 
 
+def test_formatter_exposes_account_template_values() -> None:
+    rule = make_rule("{account_id}|{account_user_id}|{account_username}|{text}")
+    message = make_message(
+        account_id="main",
+        account_user_id=12345,
+        account_username="listener_main",
+    )
+
+    rendered = MessageFormatter().format(rule, message)
+
+    assert rendered == "main|12345|listener_main|hello world"
+
+
+def test_formatter_account_id_empty_when_missing() -> None:
+    rule = make_rule("账号：`{account_id}`\n{text}")
+    rendered = MessageFormatter().format(rule, make_message())
+
+    assert rendered == "账号：``\nhello world"
+
+
 def test_formatter_auto_upgrades_old_default_template() -> None:
     rule = make_rule(OLD_DEFAULT_MESSAGE_TEMPLATE)
     rule.text_include_regex = keywords_to_text_include_regex(["hello"])
 
-    rendered = MessageFormatter().format(rule, make_message(media_type="photo"))
+    rendered = MessageFormatter().format(
+        rule,
+        make_message(media_type="photo", account_id="main"),
+    )
 
     assert rendered == (
         "# Telegram：news\n\n"
+        "账号：`main`\n\n"
         "**发送者：Sender**\n\n"
         "***hello*** world\n\n"
         "检测到关键词：hello"
+    )
+
+
+def test_formatter_auto_upgrades_previous_markdown_default_template() -> None:
+    rule = make_rule(PREVIOUS_DEFAULT_MESSAGE_TEMPLATE)
+    rendered = MessageFormatter().format(rule, make_message(account_id="news"))
+
+    assert rendered == (
+        "# Telegram：news\n\n"
+        "账号：`news`\n\n"
+        "**发送者：Sender**\n\n"
+        "hello world"
+    )
+
+
+def test_formatter_custom_template_with_account_id_keeps_shape() -> None:
+    template = (
+        "# {source_title_md}\n"
+        "账号：`{account_id}`\n\n"
+        "**发送者：{sender_name_md}**\n\n"
+        "{text}\n\n"
+        "{footer_note}"
+    )
+    rendered = MessageFormatter().format(
+        make_rule(template),
+        make_message(account_id="main"),
+    )
+
+    assert rendered == (
+        "# Telegram：news\n"
+        "账号：`main`\n\n"
+        "**发送者：Sender**\n\n"
+        "hello world"
     )
 
 
