@@ -35,6 +35,7 @@ class ApplicationRuntime:
             lambda: self.account_manager,
             lambda: self.qq_sender.status,
             self.qq_sender.list_cached_targets,
+            self.forward_queue.status_snapshot,
         )
         self.mini_app_server = MiniAppServer(
             self.settings,
@@ -42,7 +43,7 @@ class ApplicationRuntime:
             lambda: self.account_manager,
             lambda: self.qq_sender.status,
             self.qq_sender.list_cached_targets,
-            lambda: self.forward_queue.size,
+            self.forward_queue.status_snapshot,
         )
         self.stop_event = asyncio.Event()
 

@@ -66,6 +66,10 @@ class StatusResponse(BaseModel):
     enabled_rules: int
     total_logs: int
     queue_size: int
+    queue_max_size: int = 1000
+    queue_dropped_total: int = 0
+    forward_consumer_alive: bool = True
+    forward_consumer_restarts: int = 0
     mini_app_enabled: bool
     mini_app_public_url: str | None = None
     telegram_dedupe_cross_account: bool = False

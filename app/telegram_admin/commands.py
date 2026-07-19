@@ -146,6 +146,7 @@ class AdminCommands:
         account_manager_getter: Callable[[], TelegramAccountManager | None],
         qq_status_getter: Callable[[], str],
         qq_targets_getter: Callable[[], list[QQTargetInfo]],
+        queue_status_getter: Callable[[], dict[str, object]] | None = None,
     ) -> None:
         self.settings = settings
         self.service = service
@@ -153,6 +154,7 @@ class AdminCommands:
         self.account_manager_getter = account_manager_getter
         self.qq_status_getter = qq_status_getter
         self.qq_targets_getter = qq_targets_getter
+        self.queue_status_getter = queue_status_getter or (lambda: {})
 
     async def _deny_if_needed(self, update: Update) -> bool:
         if self.auth.is_allowed(update):
@@ -232,6 +234,15 @@ class AdminCommands:
                 f"{_escape(item.username or '-')} ({item.user_id or '-'})"
             )
         accounts_block = "\n".join(account_lines) if account_lines else "- 无账号"
+        queue_status = self.queue_status_getter()
+        queue_size = int(queue_status.get("queue_size", 0) or 0)
+        queue_max = int(
+            queue_status.get("queue_max_size", self.settings.forward_queue_size)
+            or self.settings.forward_queue_size
+        )
+        consumer_alive = bool(queue_status.get("forward_consumer_alive", True))
+        dropped_total = int(queue_status.get("queue_dropped_total", 0) or 0)
+        restarts = int(queue_status.get("forward_consumer_restarts", 0) or 0)
         await _reply_text(
             update.effective_message,
             "运行状态：\n"
@@ -240,6 +251,9 @@ class AdminCommands:
             f"QQ WebSocket：{self.qq_status_getter()}\n"
             f"是否暂停转发：{'是' if paused else '否'}\n"
             f"跨账号去重：{'开' if self.settings.telegram_dedupe_cross_account else '关'}\n"
+            f"转发队列：{queue_size} / {queue_max}\n"
+            f"消费者：{'存活' if consumer_alive else '已停止'}"
+            f"（重启 {restarts} 次，丢弃累计 {dropped_total}）\n"
             f"规则数量：启用 {enabled_rules} / 总计 {total_rules}\n"
             f"日志数量：{total_logs}",
             parse_mode=ParseMode.HTML,

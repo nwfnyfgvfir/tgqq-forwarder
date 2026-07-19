@@ -117,7 +117,13 @@ async def api_client(tmp_path):
                 updated_at=datetime(2026, 1, 1, tzinfo=UTC),
             )
         ],
-        queue_size_getter=lambda: 3,
+        queue_status_getter=lambda: {
+            "queue_size": 3,
+            "queue_max_size": 1000,
+            "queue_dropped_total": 2,
+            "forward_consumer_alive": True,
+            "forward_consumer_restarts": 1,
+        },
     )
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -181,6 +187,10 @@ async def test_status_me_dialogs_targets_and_static(api_client) -> None:
     assert me.json()["user"]["id"] == 1
     assert status.json()["telegram_connected"] is True
     assert status.json()["queue_size"] == 3
+    assert status.json()["queue_max_size"] == 1000
+    assert status.json()["queue_dropped_total"] == 2
+    assert status.json()["forward_consumer_alive"] is True
+    assert status.json()["forward_consumer_restarts"] == 1
     assert len(status.json()["telegram_accounts"]) == 2
     assert status.json()["telegram_accounts"][0]["id"] == "default"
     assert dialogs.json()[0]["name"] == "AI Channel"

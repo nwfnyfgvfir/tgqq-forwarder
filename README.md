@@ -258,6 +258,8 @@ MINI_APP_PUBLIC_URL=https://你的域名.example.com
 MINI_APP_AUTH_TTL_SECONDS=3600
 MINI_APP_ALLOWED_ORIGINS=https://你的域名.example.com
 
+# 单条 QQ 发送（含多图与重试）总超时；超时后记失败并继续消费队列
+QQ_SEND_TIMEOUT_SECONDS=120
 FORWARD_QUEUE_SIZE=1000
 ```
 

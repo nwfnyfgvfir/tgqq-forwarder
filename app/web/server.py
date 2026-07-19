@@ -25,7 +25,7 @@ class MiniAppServer:
         account_manager_getter,
         qq_status_getter,
         qq_targets_getter,
-        queue_size_getter,
+        queue_status_getter,
     ) -> None:
         self.settings = settings
         self.app = create_mini_app(
@@ -34,7 +34,7 @@ class MiniAppServer:
             account_manager_getter=account_manager_getter,
             qq_status_getter=qq_status_getter,
             qq_targets_getter=qq_targets_getter,
-            queue_size_getter=queue_size_getter,
+            queue_status_getter=queue_status_getter,
         )
         self.server: _EmbeddedUvicornServer | None = None
         self._task: asyncio.Task | None = None

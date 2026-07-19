@@ -91,7 +91,7 @@ def create_mini_app(
     account_manager_getter: Callable[[], TelegramAccountManager | None],
     qq_status_getter: Callable[[], str],
     qq_targets_getter: Callable[[], list[QQTargetInfo]],
-    queue_size_getter: Callable[[], int],
+    queue_status_getter: Callable[[], dict[str, object]],
 ) -> FastAPI:
     app = FastAPI(title="TGQQ Forwarder Mini App", docs_url=None, redoc_url=None)
     if settings.mini_app_allowed_origins:
@@ -135,6 +135,7 @@ def create_mini_app(
         manager = account_manager_getter()
         account_statuses = manager.list_status() if manager else []
         total_rules, enabled_rules, total_logs = await service.counts()
+        queue_status = queue_status_getter()
         return StatusResponse(
             telegram_connected=bool(manager and manager.is_any_connected()),
             telegram_accounts=[
@@ -145,7 +146,17 @@ def create_mini_app(
             total_rules=total_rules,
             enabled_rules=enabled_rules,
             total_logs=total_logs,
-            queue_size=queue_size_getter(),
+            queue_size=int(queue_status.get("queue_size", 0) or 0),
+            queue_max_size=int(
+                queue_status.get(
+                    "queue_max_size",
+                    settings.forward_queue_size,
+                )
+                or settings.forward_queue_size
+            ),
+            queue_dropped_total=int(queue_status.get("queue_dropped_total", 0) or 0),
+            forward_consumer_alive=bool(queue_status.get("forward_consumer_alive", True)),
+            forward_consumer_restarts=int(queue_status.get("forward_consumer_restarts", 0) or 0),
             mini_app_enabled=settings.mini_app_enabled,
             mini_app_public_url=settings.mini_app_public_url,
             telegram_dedupe_cross_account=settings.telegram_dedupe_cross_account,

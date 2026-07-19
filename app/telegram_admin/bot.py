@@ -25,12 +25,14 @@ class TelegramAdminBot:
         account_manager_getter: Callable[[], TelegramAccountManager | None],
         qq_status_getter: Callable[[], str],
         qq_targets_getter: Callable[[], list[QQTargetInfo]],
+        queue_status_getter: Callable[[], dict[str, object]] | None = None,
     ) -> None:
         self.settings = settings
         self.service = service
         self.account_manager_getter = account_manager_getter
         self.qq_status_getter = qq_status_getter
         self.qq_targets_getter = qq_targets_getter
+        self.queue_status_getter = queue_status_getter or (lambda: {})
         self.application: Application | None = None
 
     async def start(self) -> None:
@@ -49,6 +51,7 @@ class TelegramAdminBot:
             self.account_manager_getter,
             self.qq_status_getter,
             self.qq_targets_getter,
+            self.queue_status_getter,
         )
         app = (
             Application.builder()

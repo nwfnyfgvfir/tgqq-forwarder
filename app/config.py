@@ -224,6 +224,8 @@ class Settings(BaseSettings):
     qq_enable_guild_direct_message: bool = False
     qq_allow_send_without_cached_msg_id: bool = True
     qq_use_markdown: bool = True
+    # Hard cap for one QQ outbound send (includes multi-media sequence + retries).
+    qq_send_timeout_seconds: float = 120.0
 
     forward_queue_size: int = 1000
     default_message_template: str = DEFAULT_MESSAGE_TEMPLATE
