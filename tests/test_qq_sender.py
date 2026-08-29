@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import MethodType
+from typing import Any
+
+import botpy
 
 from app.config import Settings
 from app.qq_official.models import QQOutboundMessage
@@ -78,6 +81,39 @@ async def test_send_single_media_keeps_full_text_on_media() -> None:
     assert result == [{"text": "完整正文"}]
     assert [text for _item, _target_type, text in calls] == ["完整正文"]
     assert calls[0][0].media_path == Path("one.jpg")
+
+
+async def test_group_proactive_payload_omits_msg_id_even_when_cached() -> None:
+    sender = QQOfficialSender(Settings(qq_use_markdown=False))
+    sender.client.remember_session("group-openid", "group", "stale-msg-id")
+
+    payload = sender._group_proactive_payload("hello")
+
+    assert payload == {"content": "hello", "msg_type": 0, "msg_seq": payload["msg_seq"]}
+    assert "msg_id" not in payload
+
+
+async def test_post_group_message_retries_without_msg_id_on_resource_not_found() -> None:
+    sender = QQOfficialSender(Settings())
+    calls: list[dict[str, Any]] = []
+
+    async def fake_post_group_message(*, group_openid: str, **payload: Any) -> dict[str, str]:
+        calls.append({"group_openid": group_openid, **payload})
+        if "msg_id" in payload:
+            raise botpy.errors.ServerError("请求的资源不存在(用户/群已注销)")
+        return {"id": "sent-1"}
+
+    sender.client.api.post_group_message = fake_post_group_message  # type: ignore[method-assign]
+
+    result = await sender._post_group_message(
+        "group-openid",
+        {"content": "hello", "msg_type": 0, "msg_seq": 1, "msg_id": "stale-msg-id"},
+    )
+
+    assert result == {"id": "sent-1"}
+    assert len(calls) == 2
+    assert "msg_id" in calls[0]
+    assert "msg_id" not in calls[1]
 
 
 async def test_group_media_payload_removes_markdown_and_uses_rich_media_type() -> None:

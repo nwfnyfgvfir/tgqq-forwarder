@@ -7,8 +7,30 @@ from typing import Any
 
 import botpy
 from botpy import Client
+from botpy.connection import ConnectionState
 
 logger = logging.getLogger(__name__)
+
+
+def ensure_group_message_create_parser() -> None:
+    """Register qq-botpy parser for plain group messages (not only @ mentions)."""
+
+    if getattr(ConnectionState, "_tgqq_group_message_create_parser", False):
+        return
+
+    def build_parser(event_name: str) -> Any:
+        def parse_message(self, payload: dict[str, Any]) -> None:
+            qq_message = botpy.message.GroupMessage(
+                self.api,
+                payload.get("id", None),
+                payload.get("d", {}),
+            )
+            self._dispatch(event_name, qq_message)
+
+        return parse_message
+
+    ConnectionState.parse_group_message_create = build_parser("group_message_create")
+    ConnectionState._tgqq_group_message_create_parser = True
 
 
 def _utc_now() -> datetime:
@@ -79,6 +101,12 @@ class ForwarderQQClient(Client):
         )
 
     async def on_group_at_message_create(self, message: botpy.message.GroupMessage) -> None:
+        self._remember_group_session(message)
+
+    async def on_group_message_create(self, message: botpy.message.GroupMessage) -> None:
+        self._remember_group_session(message)
+
+    def _remember_group_session(self, message: botpy.message.GroupMessage) -> None:
         self.remember_session(
             getattr(message, "group_openid", None),
             "group",

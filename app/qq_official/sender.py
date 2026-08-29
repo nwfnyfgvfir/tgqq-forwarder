@@ -16,7 +16,7 @@ from botpy.types.message import MarkdownPayload, Media
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from app.config import Settings
-from app.qq_official.client import ForwarderQQClient, QQTargetInfo
+from app.qq_official.client import ForwarderQQClient, QQTargetInfo, ensure_group_message_create_parser
 from app.qq_official.models import QQOutboundMessage
 from app.storage.models import QQTargetType
 
@@ -39,6 +39,7 @@ def _patch_qq_botpy_formdata() -> None:
 
 
 _patch_qq_botpy_formdata()
+ensure_group_message_create_parser()
 
 
 _qq_retry = retry(
@@ -156,7 +157,7 @@ class QQOfficialSender:
         text: str,
     ) -> Any:
         if target_type == QQTargetType.GROUP:
-            payload = self._v2_payload(outbound.target_id, text, include_msg_id=True)
+            payload = self._group_proactive_payload(text)
             return await self._post_group_message(outbound.target_id, payload)
 
         if target_type == QQTargetType.C2C:
@@ -186,7 +187,7 @@ class QQOfficialSender:
         media_type = self._qq_media_type(outbound.media_type, media_path)
 
         if target_type == QQTargetType.GROUP:
-            payload = self._v2_payload(outbound.target_id, text, include_msg_id=True)
+            payload = self._group_proactive_payload(text)
             media = await self._upload_group_or_c2c_media(
                 media_path,
                 media_type,
@@ -226,6 +227,10 @@ class QQOfficialSender:
 
         raise ValueError(f"Unsupported QQ target type: {target_type}")
 
+    def _group_proactive_payload(self, text: str) -> dict[str, Any]:
+        """Build a proactive QQ group payload without msg_id (Telegram -> QQ forwarding)."""
+        return self._v2_payload("", text, include_msg_id=False)
+
     def _v2_payload(self, session_id: str, text: str, *, include_msg_id: bool) -> dict[str, Any]:
         payload: dict[str, Any]
         if self.settings.qq_use_markdown:
@@ -264,6 +269,20 @@ class QQOfficialSender:
     @_qq_retry
     async def _post_group_message(self, group_openid: str, payload: dict[str, Any]) -> Any:
         try:
+            return await self._post_group_message_once(group_openid, payload)
+        except botpy.errors.ServerError as err:
+            if payload.get("msg_id") and self._should_retry_group_without_msg_id(err):
+                fallback = payload.copy()
+                fallback.pop("msg_id", None)
+                logger.warning(
+                    "QQ group send failed with cached msg_id (%s); retrying proactive send",
+                    err,
+                )
+                return await self._post_group_message_once(group_openid, fallback)
+            raise
+
+    async def _post_group_message_once(self, group_openid: str, payload: dict[str, Any]) -> Any:
+        try:
             return await self.client.api.post_group_message(group_openid=group_openid, **payload)
         except botpy.errors.ServerError as err:
             if not self._is_markdown_not_allowed(err, payload):
@@ -272,6 +291,11 @@ class QQOfficialSender:
                 group_openid=group_openid,
                 **self._plain_text_fallback_payload(payload),
             )
+
+    @staticmethod
+    def _should_retry_group_without_msg_id(err: Exception) -> bool:
+        message = str(err)
+        return "资源不存在" in message or "已注销" in message
 
     @_qq_retry
     async def _post_channel_message(self, channel_id: str, payload: dict[str, Any]) -> Any:
