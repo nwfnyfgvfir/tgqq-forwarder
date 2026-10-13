@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 from collections.abc import Awaitable, Callable
 from datetime import timedelta
@@ -14,7 +15,10 @@ from app.rss.errors import RssError
 from app.rss.formatting import matches_keywords, render_entry
 from app.rss.publisher import RssPublisher
 from app.rss.service import RssService
+from app.rss.translator import BingTranslator
 from app.storage.models import RssEntry, RssSubscription, utc_now
+
+logger = logging.getLogger(__name__)
 
 
 class RssWorker:
@@ -26,11 +30,13 @@ class RssWorker:
         service: RssService,
         publisher=None,
         can_publish: Callable[[], Awaitable[bool]] | None = None,
+        translator=None,
     ) -> None:
         self.settings = settings
         self.service = service
         self.publisher = publisher if publisher is not None else RssPublisher(settings)
         self.can_publish = can_publish
+        self.translator = translator if translator is not None else BingTranslator(settings)
         self._task: asyncio.Task | None = None
         self._jobs: dict[int, asyncio.Task] = {}
         self._job_locks: dict[int, asyncio.Lock] = {}
@@ -74,6 +80,15 @@ class RssWorker:
                     await close()
                 except Exception:
                     self._last_worker_error = "RSS 抓取连接关闭失败"
+            # 发布与预览各自持有 translator，逐一关闭；重复关闭是幂等的。
+            for translator in (self.translator, getattr(self.service, "translator", None)):
+                close = getattr(translator, "close", None)
+                if close is None:
+                    continue
+                try:
+                    await close()
+                except Exception:
+                    self._last_worker_error = "RSS 翻译连接关闭失败"
 
     def status_snapshot(self) -> dict:
         return {
@@ -354,6 +369,8 @@ class RssWorker:
                 await asyncio.sleep(delay)
             if not self.settings.rss_enabled:
                 return
+            # 翻译在 DB 锁外进行，写回前复查条目仍为 pending；失败不影响发布。
+            await self._translate_pending(subscription_id, entry_id)
             # 短锁读条目并原子占用：订阅被删/禁用、entry 被删或不再 pending 时跳过，
             # 不发送、不报错、不复活旧状态。
             async with (
@@ -416,6 +433,77 @@ class RssWorker:
                     stored.tg_chat_id = result.chat_id
                     stored.last_error = None
                     stored.next_retry_at = None
+
+    async def _translate_pending(self, subscription_id: int, entry_id: int) -> None:
+        """锁外翻译 title/summary 并短事务写回；失败或条目状态变化则按原文发布。"""
+        if not self.settings.rss_translate_enabled:
+            return
+        async with (
+            self.service.subscription_lock(subscription_id),
+            self.service.db.session() as session,
+        ):
+            sub = await session.get(RssSubscription, subscription_id)
+            entry = await session.get(RssEntry, entry_id)
+            if sub is None or not sub.enabled or not sub.translate:
+                return
+            if entry is None or entry.status != "pending":
+                return
+            if entry.next_retry_at is not None and entry.next_retry_at > utc_now():
+                return
+            # 已缓存译文（含「已是中文」的检测结果）不重复请求。
+            if entry.detected_language or entry.translated_title or entry.translated_summary:
+                return
+            fields = self._translation_fields(entry.title, entry.summary)
+        if not fields:
+            return
+        result = await self._translate_fields(fields)
+        if result is None:
+            return
+        detected, values = result
+        async with (
+            self.service.subscription_lock(subscription_id),
+            self.service.db.session() as session,
+        ):
+            stored = await session.get(RssEntry, entry_id)
+            if stored is None or stored.status != "pending":
+                return
+            if stored.detected_language or stored.translated_title or stored.translated_summary:
+                return
+            stored.detected_language = detected
+            stored.translated_title = values.get("title")
+            stored.translated_summary = values.get("summary")
+
+    @staticmethod
+    def _translation_fields(title: str | None, summary: str | None) -> list[tuple[str, str]]:
+        fields: list[tuple[str, str]] = []
+        if isinstance(title, str) and title.strip():
+            fields.append(("title", title))
+        if isinstance(summary, str) and summary.strip():
+            fields.append(("summary", summary))
+        return fields
+
+    async def _translate_fields(
+        self, fields: list[tuple[str, str]]
+    ) -> tuple[str | None, dict[str, str]] | None:
+        """一次批量调用翻译 title/summary；失败返回 None，由调用方按原文发布。"""
+        try:
+            outcomes = await self.translator.translate(
+                [text for _, text in fields], target=self.settings.rss_translate_target
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("RSS 翻译失败，按原文发布")
+            return None
+        if len(outcomes) != len(fields) or any(outcome.error for outcome in outcomes):
+            logger.warning("RSS 翻译失败，按原文发布")
+            return None
+        detected = next((outcome.language for outcome in outcomes if outcome.language), None)
+        values: dict[str, str] = {}
+        for (name, _), outcome in zip(fields, outcomes, strict=True):
+            if not outcome.skipped and outcome.text:
+                values[name] = outcome.text
+        return detected, values
 
     @staticmethod
     def _same_sending(stored: RssEntry | None, snapshot: RssEntry) -> bool:

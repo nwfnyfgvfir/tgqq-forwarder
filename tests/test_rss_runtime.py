@@ -149,6 +149,7 @@ async def runtime_context(tmp_path, monkeypatch):
         mini_app_auth_ttl_seconds=0,
         rss_enabled=True,
         rss_send_interval_seconds=0.01,
+        rss_translate_enabled=False,
     )
 
     def configure_logging(log_dir, level):

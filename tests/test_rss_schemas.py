@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -8,7 +9,14 @@ from pydantic import ValidationError
 
 from app.config import Settings
 from app.rss.errors import RssError
-from app.rss.formatting import fit_message, matches_keywords, plain_text, render_entry, utf16_units
+from app.rss.formatting import (
+    fit_message,
+    format_published_at,
+    matches_keywords,
+    plain_text,
+    render_entry,
+    utf16_units,
+)
 from app.rss.schemas import SubscriptionInput
 
 
@@ -139,11 +147,33 @@ def test_plain_template_and_original_link() -> None:
         published_at=datetime(2026, 1, 1, tzinfo=UTC),
     )
     text = render_entry(payload(message_template="{{{title}}} {published_at}"), entry)
-    assert text.startswith("{<b>不是格式化标记</b>} 2026-01-01T00:00:00+00:00")
+    # 发布时间渲染为本地时间，格式为 YYYY-MM-DD HH:MM。
+    first_line = text.split("\n")[0]
+    assert re.fullmatch(r"\{<b>不是格式化标记</b>\} \d{4}-\d{2}-\d{2} \d{2}:\d{2}", first_line)
     assert text.endswith(entry.link)
     assert render_entry(payload(message_template="{link}"), entry).count(entry.link) == 1
     assert "script" not in plain_text("<p>A &amp; B</p><script>x()</script><style>x</style>")
     assert plain_text("<p>A &amp; B</p><script>x()</script><style>x</style>") == "A & B"
+
+
+def test_default_template_shows_publish_time_and_collapses_missing_one() -> None:
+    entry = SimpleNamespace(
+        title="每周分享",
+        summary="摘要",
+        link="https://example.com/1",
+        feed_title="weekly",
+        published_at=datetime(2026, 10, 13, 0, 30, tzinfo=UTC),
+    )
+    text = render_entry(payload(), entry)
+    assert text.splitlines()[2] == format_published_at(entry.published_at)
+    assert "\n\n\n" not in text
+
+    without_time = SimpleNamespace(**{**entry.__dict__, "published_at": None})
+    blank = render_entry(payload(), without_time)
+    assert blank.splitlines()[0] == "[rss]"
+    assert blank.splitlines()[1] == "每周分享"
+    assert "\n\n\n" not in blank
+    assert format_published_at(None) == ""
 
 
 def test_emoji_utf16_budget_preserves_link() -> None:

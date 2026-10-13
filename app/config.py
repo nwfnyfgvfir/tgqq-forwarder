@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -224,6 +225,14 @@ class Settings(BaseSettings):
     rss_max_send_attempts: int = Field(default=5, ge=1, le=20)
     rss_allowed_private_hosts: Annotated[list[str], NoDecode] = Field(default_factory=list)
 
+    # RSS 条目自动翻译：Edge 浏览器内置翻译的免密钥非官方端点，无 SLA、可能限流或变更。
+    rss_translate_enabled: bool = True
+    rss_translate_target: str = "zh-Hans"
+    rss_translate_timeout_seconds: float = Field(
+        default=10, gt=0, le=120, allow_inf_nan=False
+    )
+    rss_translate_max_chars: int = Field(default=1200, ge=100, le=5000)
+
     @field_validator("telegram_bot_proxy", mode="before")
     @classmethod
     def normalize_bot_proxy(cls, value: object) -> object:
@@ -245,6 +254,14 @@ class Settings(BaseSettings):
     @classmethod
     def normalize_rss_bot_token(cls, value: object) -> object:
         return value.strip() or None if isinstance(value, str) else value
+
+    @field_validator("rss_translate_target")
+    @classmethod
+    def validate_rss_translate_target(cls, value: str) -> str:
+        text = value.strip()
+        if re.fullmatch(r"[a-zA-Z]{2,3}(-[A-Za-z]{2,4})?", text) is None:
+            raise ValueError("RSS_TRANSLATE_TARGET 仅接受简单语言标签，如 zh-Hans、zh-Hant、en")
+        return text
 
     @field_validator("rss_allowed_private_hosts", mode="before")
     @classmethod

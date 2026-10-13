@@ -113,6 +113,7 @@ class RssSubscription(SQLModel, table=True):
     )
     message_template: str = Field(sa_column=Column(Text, nullable=False))
     max_summary_length: int = 600
+    translate: bool = True
     initialized: bool = False
     feed_title: str = ""
     feed_version: int = 0
@@ -145,6 +146,9 @@ class RssEntry(SQLModel, table=True):
     link: str = Field(sa_column=Column(Text, nullable=False))
     summary: str = Field(sa_column=Column(Text, nullable=False))
     published_at: datetime | None = Field(default=None, sa_column=Column(RssUTCDateTime()))
+    detected_language: str | None = Field(default=None, max_length=16)
+    translated_title: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
+    translated_summary: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
     status: str = Field(default="pending", max_length=32, index=True)
     attempts: int = 0
     last_error: str | None = None

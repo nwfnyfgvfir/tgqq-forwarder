@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections import Counter
+from types import SimpleNamespace
 
 from sqlalchemy import delete, func, select, update
 
@@ -10,17 +12,21 @@ from app.rss.errors import RssError
 from app.rss.fetcher import RssFetcher
 from app.rss.formatting import matches_keywords, render_entry
 from app.rss.schemas import SubscriptionInput
+from app.rss.translator import BingTranslator
 from app.storage.db import Database
 from app.storage.models import RssEntry, RssSubscription, utc_now
+
+logger = logging.getLogger(__name__)
 
 
 class RssService:
     """CRUD 与 worker 共用订阅锁；仅支持一个进程内的单实例 worker。"""
 
-    def __init__(self, db: Database, settings: Settings, fetcher=None) -> None:
+    def __init__(self, db: Database, settings: Settings, fetcher=None, translator=None) -> None:
         self.db = db
         self.settings = settings
         self.fetcher = fetcher if fetcher is not None else RssFetcher(settings)
+        self.translator = translator if translator is not None else BingTranslator(settings)
         self._locks: dict[int, asyncio.Lock] = {}
 
     def subscription_lock(self, subscription_id: int) -> asyncio.Lock:
@@ -156,10 +162,16 @@ class RssService:
         warnings = list(result.warnings)
         if len(result.entries) > 10:
             warnings.append("预览仅展示最近 10 条，已截断其余条目")
+        selected = result.entries[-10:]
+        translations: dict[int, dict] = {}
+        if payload.translate and self.settings.rss_translate_enabled and selected:
+            translations = await self._translate_preview(selected, warnings)
         entries = []
-        for entry in result.entries[-10:]:
+        for index, entry in enumerate(selected):
+            translation = translations.get(index, {})
+            target = self._with_translation(entry, translation)
             try:
-                rendered = render_entry(payload, entry, result.feed_title)
+                rendered = render_entry(payload, target, result.feed_title)
             except RssError:
                 rendered = ""
                 warnings.append("部分原文链接超过消息长度限制，将跳过发布")
@@ -169,6 +181,9 @@ class RssService:
                     "link": entry.link,
                     "summary": entry.summary,
                     "published_at": entry.published_at,
+                    "translated_title": translation.get("translated_title"),
+                    "translated_summary": translation.get("translated_summary"),
+                    "detected_language": translation.get("detected_language"),
                     "rendered_text": rendered,
                     "matches": matches_keywords(payload, entry),
                 }
@@ -178,6 +193,57 @@ class RssService:
             "entries": entries,
             "warnings": list(dict.fromkeys(warnings)),
         }
+
+    @staticmethod
+    def _with_translation(entry, translation: dict):
+        # FeedEntry 是 slots dataclass，用 SimpleNamespace 包装以承载译文字段。
+        return SimpleNamespace(
+            title=entry.title,
+            summary=entry.summary,
+            link=entry.link,
+            published_at=entry.published_at,
+            feed_title=getattr(entry, "feed_title", ""),
+            translated_title=translation.get("translated_title"),
+            translated_summary=translation.get("translated_summary"),
+            detected_language=translation.get("detected_language"),
+        )
+
+    async def _translate_preview(self, entries: list, warnings: list[str]) -> dict[int, dict]:
+        """批量翻译预览条目（最多 10 条）；失败时提示按原文展示，不写库。"""
+        texts: list[str] = []
+        index: list[tuple[int, str]] = []
+        for position, entry in enumerate(entries):
+            if entry.title.strip():
+                texts.append(entry.title)
+                index.append((position, "title"))
+            if entry.summary.strip():
+                texts.append(entry.summary)
+                index.append((position, "summary"))
+        if not texts:
+            return {}
+        try:
+            outcomes = await self.translator.translate(
+                texts, target=self.settings.rss_translate_target
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            warnings.append("部分条目翻译失败，预览按原文展示")
+            return {}
+        if len(outcomes) != len(texts) or any(outcome.error for outcome in outcomes):
+            warnings.append("部分条目翻译失败，预览按原文展示")
+            return {}
+        result: dict[int, dict] = {}
+        for (position, field), outcome in zip(index, outcomes, strict=True):
+            bucket = result.setdefault(
+                position,
+                {"detected_language": None, "translated_title": None, "translated_summary": None},
+            )
+            if outcome.language and bucket["detected_language"] is None:
+                bucket["detected_language"] = outcome.language
+            if not outcome.skipped and outcome.text:
+                bucket[f"translated_{field}"] = outcome.text
+        return result
 
     async def status(self) -> dict:
         async with self.db.session() as session:

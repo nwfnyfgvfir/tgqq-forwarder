@@ -16,7 +16,7 @@ TGQQ Forwarder 用于把指定 Telegram 消息自动转发到 QQ 官方机器人
 - 支持转发到 QQ 群、C2C、频道、频道私信场景。
 - 通过 Telegram 管理 Bot 查看状态、管理规则、查询日志。
 - 提供 Telegram Mini App 管理台，可用可视化规则工坊管理关键词、目标、模板、日志和暂停状态。
-- 内置 RSS / RSSHub 订阅：在管理台「订阅」入口统一管理，新条目自动发布到指定 Telegram 频道，再按既有规则转发到 QQ。
+- 内置 RSS / RSSHub 订阅：在管理台「订阅」入口统一管理，新条目自动发布到指定 Telegram 频道，再按既有规则转发到 QQ。可选把非中文条目自动翻译成中文（原文在上、译文在下）。
 - 使用 Docker Compose 部署到 VPS。
 - 推送 `v*` 标签时，GitHub Actions 自动构建 Docker 镜像并发布到 GitHub Container Registry。
 
@@ -30,6 +30,7 @@ TGQQ Forwarder 用于把指定 Telegram 消息自动转发到 QQ 官方机器人
 6. Telegram 匿名管理员消息、频道签名消息、隐私受限的转发消息，可能无法拿到真实发送者 ID。
 7. RSS 订阅为进程内单实例调度；Telegram 发送在“响应丢失 / 进程中断”后不能保证 exactly-once，重试可能造成重复发布。条目去重与“首次基线”策略可避免正常情况下的重复推送。
 8. RSS 抓取默认禁止访问非公网地址（SSRF 防护）。自建 RSSHub 与转发器同机时，需把主机名加入 `RSS_ALLOWED_PRIVATE_HOSTS` 白名单。
+9. RSS 自动翻译使用 Edge 浏览器内置翻译的**免密钥非官方端点**，无 SLA、可能限流或变更，且不保证译文质量；翻译失败会自动回退原文，不影响发布。
 
 ## 文件结构
 
@@ -256,6 +257,12 @@ RSS_SEND_INTERVAL_SECONDS=1.1
 RSS_MAX_SEND_ATTEMPTS=5
 # 非公网地址默认拒绝；自建 RSSHub（如 docker-compose 服务名 rsshub）在此显式登记
 RSS_ALLOWED_PRIVATE_HOSTS=
+# RSS 条目自动翻译：源语言自动检测，非中文才翻译，原文在上、译文在下。
+# 使用 Edge 浏览器内置翻译的免密钥非官方端点，无 SLA、可能限流或变更，失败自动回退原文。
+RSS_TRANSLATE_ENABLED=true
+RSS_TRANSLATE_TARGET=zh-Hans
+RSS_TRANSLATE_TIMEOUT_SECONDS=10
+RSS_TRANSLATE_MAX_CHARS=1200
 
 TG_ADMIN_BOT_TOKEN=123456:请替换为你的管理BotToken
 ADMIN_TELEGRAM_USER_IDS=11111111,22222222
@@ -505,8 +512,32 @@ MEDIA_RETENTION_SECONDS=86400
 - **Telegram 目标**：建议填专用频道的**数字 ID**（`-100…`），可从「从监听账号搜索频道」挑选；`@username` 无法作为 TG → QQ 规则的 `source_chat_id`。
 - **检查间隔**：60–86400 秒。
 - **首次处理策略**：默认「只建立基线」——首次检查只记录已有条目，不推送历史文章；选「发送最近 N 条」可把最新 N 条入队。
-- **消息模板**：默认 `[{subscription_name}] {title} {summary} {link}`，可改用 `feed_title`、`published_at` 等变量；原文链接总会附加在末尾。
-- 保存前可点「预览」真实抓取该源并渲染消息效果，**不保存、不建基线、不发送**。
+- **消息模板**：默认
+  ```
+  [{subscription_name}]
+  {title}
+  {published_at}
+
+  {summary}
+
+  {translation}
+
+  {link}
+  ```
+  `{published_at}` 渲染为**本地时间**（如 `2026-10-13 08:30`，按容器 `TZ` 换算）；源里没有发布时间时该行自动省略，不会留空行。`{translation}` 是译文（见下），源语言已是中文时为空，同样不会留空行。其他可用变量：`feed_title`。原文链接总会附加在末尾，不会重复。
+- **翻译成中文**：默认勾选。源语言自动检测，**仅当原文不是中文**时才翻译，消息里**原文在上、译文在下**（译文为标题与摘要）。译文会缓存到条目上，重试不会重复请求。
+- 保存前可点「预览」真实抓取该源并渲染消息效果，**不保存、不建基线、不发送**；预览同样会展示译文。
+
+> 翻译使用 **Edge 浏览器内置翻译的免密钥非官方端点**，**无 SLA**，可能限流或随时变更；**翻译失败会自动回退原文**，不影响抓取与发布。可在 `.env` 关闭或调整：
+>
+> ```env
+> RSS_TRANSLATE_ENABLED=true
+> RSS_TRANSLATE_TARGET=zh-Hans
+> RSS_TRANSLATE_TIMEOUT_SECONDS=10
+> RSS_TRANSLATE_MAX_CHARS=1200
+> ```
+>
+> 容器内请求默认沿用环境变量 `HTTP_PROXY` / `HTTPS_PROXY`。
 
 ### 2. 让 Telegram 一侧能收到
 
@@ -526,6 +557,7 @@ MEDIA_RETENTION_SECONDS=86400
 - 抓取失败按指数退避；Telegram 发送失败自动重试，触达 `RSS_MAX_SEND_ATTEMPTS` 后标记失败，可一键重试。
 - 全局转发暂停或 Telegram 监听未就绪时，RSS 仍会抓取和入队，但**不会发布**，面板会显式提示。
 - 修改 Feed URL 会重建基线并跳过旧源未发送条目；修改 TG 目标只会影响之后待发送条目，已发布条目不会重发。
+- 翻译在发送前完成并缓存到条目上：已缓存的译文不会重复请求；翻译失败会记录 warning 并按原文发布，不会因此重试或标记失败。
 
 ## Telegram 管理 Bot 命令
 

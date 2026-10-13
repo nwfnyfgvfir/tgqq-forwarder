@@ -2,7 +2,7 @@ import { api } from '../api.js?v=20260707-rule-studio-2';
 import { emptyState, escapeHtml, formatDate, pageHeader, statusPill } from '../components.js?v=20260707-rule-studio-2';
 import { refreshSubscriptions, state } from '../state.js?v=20260707-rule-studio-2';
 
-const DEFAULT_TEMPLATE = '[{subscription_name}]\n{title}\n\n{summary}\n\n{link}';
+const DEFAULT_TEMPLATE = '[{subscription_name}]\n{title}\n{published_at}\n\n{summary}\n\n{translation}\n\n{link}';
 const ui = {
   draft: null,
   original: null,
@@ -110,6 +110,7 @@ function formDefaults(subscription = {}) {
     exclude_keywords: (subscription.exclude_keywords || []).join(', '),
     message_template: subscription.message_template ?? DEFAULT_TEMPLATE,
     max_summary_length: String(subscription.max_summary_length ?? 600),
+    translate: subscription.translate ?? true,
     listener_account: '',
     dialog_query: '',
   };
@@ -120,7 +121,7 @@ function previewHtml() {
   return `<p class="muted">${ui.previewStale ? '配置已变化，请重新预览。以下为上一次结果。' : '仅预览：没有保存或发送。'}</p>
     <h3>${escapeHtml(ui.preview.feed_title || '未命名订阅源')}</h3>
     ${(ui.preview.warnings || []).length ? `<ul class="rss-warnings">${ui.preview.warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join('')}</ul>` : ''}
-    ${(ui.preview.entries || []).length ? ui.preview.entries.map((entry) => `<article class="rss-preview-entry"><div class="rss-entry-heading"><strong>${escapeHtml(entry.title || '无标题')}</strong>${statusPill(entry.matches ? '匹配' : '不匹配', entry.matches ? 'good' : 'muted')}</div><p>${safeLink(entry.link)} · ${escapeHtml(formatDate(entry.published_at))}</p>${entry.summary ? `<p class="rss-summary">${escapeHtml(entry.summary)}</p>` : ''}<pre>${escapeHtml(entry.rendered_text || '')}</pre></article>`).join('') : '<p class="muted">该订阅源当前没有条目。</p>'}`;
+    ${(ui.preview.entries || []).length ? ui.preview.entries.map((entry) => `<article class="rss-preview-entry"><div class="rss-entry-heading"><strong>${escapeHtml(entry.title || '无标题')}</strong>${statusPill(entry.matches ? '匹配' : '不匹配', entry.matches ? 'good' : 'muted')}</div><p>${safeLink(entry.link)} · ${escapeHtml(formatDate(entry.published_at))}</p>${entry.summary ? `<p class="rss-summary">${escapeHtml(entry.summary)}</p>` : ''}${entry.translated_title || entry.translated_summary ? `<div class="rss-translation"><p class="muted">译文${entry.detected_language ? `（${escapeHtml(entry.detected_language)}）` : ''}</p>${entry.translated_title ? `<p><strong>${escapeHtml(entry.translated_title)}</strong></p>` : ''}${entry.translated_summary ? `<p class="rss-summary">${escapeHtml(entry.translated_summary)}</p>` : ''}</div>` : ''}<pre>${escapeHtml(entry.rendered_text || '')}</pre></article>`).join('') : '<p class="muted">该订阅源当前没有条目。</p>'}`;
 }
 
 function editor(current) {
@@ -153,8 +154,9 @@ function editor(current) {
           <div class="grid-2"><label for="rss-include">包含关键词<textarea id="rss-include" name="include_keywords" rows="2">${escapeHtml(draft.include_keywords)}</textarea></label><label for="rss-exclude">排除关键词<textarea id="rss-exclude" name="exclude_keywords" rows="2">${escapeHtml(draft.exclude_keywords)}</textarea></label></div>
           <p class="muted">关键词用逗号、中文逗号、分号或换行分隔；包含列表留空则不过滤包含关键词。</p>
           <label for="rss-summary-length">摘要最大长度（字符）<input id="rss-summary-length" name="max_summary_length" type="number" required min="100" max="2000" step="1" value="${escapeHtml(draft.max_summary_length)}" /></label>
+          <label class="switch-line" for="rss-translate"><input id="rss-translate" name="translate" type="checkbox" ${draft.translate ? 'checked' : ''} /> 翻译成中文（源语言自动检测，非中文才翻译；译文显示在原文下方）</label>
           <label for="rss-template">消息模板<textarea id="rss-template" name="message_template" required rows="6">${escapeHtml(draft.message_template)}</textarea></label>
-          <p class="muted">默认变量：<code>{subscription_name}</code>、<code>{title}</code>、<code>{summary}</code>、<code>{link}</code>。QQ 转发规则使用 <code>{text}</code> 保留发布内容。</p>
+          <p class="muted">默认变量：<code>{subscription_name}</code>、<code>{title}</code>、<code>{published_at}</code>、<code>{summary}</code>、<code>{translation}</code>、<code>{link}</code>。<code>{published_at}</code> 渲染为本地时间（如 2026-10-13 08:30），源里没有时间时该行自动省略。<code>{translation}</code> 为译文（标题与摘要，原文非中文时才有内容），会排在原文下方。QQ 转发规则使用 <code>{text}</code> 保留发布内容。</p>
         </details>
         <p id="rss-form-error" class="rss-error-text" role="alert">${escapeHtml(ui.formError)}</p>
         <div class="card-actions"><button type="submit" class="primary">${ui.formBusy === 'save' ? '正在保存…' : ui.editId === null ? '创建订阅' : '保存配置'}</button><button type="button" data-rss-action="preview">${ui.formBusy === 'preview' ? '正在预览…' : '预览（不保存、不发送）'}</button></div>
@@ -169,7 +171,7 @@ function historyHtml() {
   if (!history) return '';
   const labels = { pending: ['待发送', 'warning'], sending: ['发送中', 'warning'], sent: ['已发送', 'good'], failed: ['失败', 'bad'], skipped: ['已跳过', 'muted'] };
   return `<section class="panel rss-history" aria-labelledby="rss-history-title"><div class="panel-head"><h2 id="rss-history-title">条目历史 · ${escapeHtml(history.name)}</h2><div class="card-actions"><button type="button" data-rss-action="refresh-history" ${history.loading ? 'disabled' : ''}>刷新历史</button><button type="button" data-rss-action="close-history">关闭</button></div></div><p class="muted">最近 50 条 · 手动刷新，不打断阅读。</p>${history.loading ? '<p role="status">正在读取条目…</p>' : ''}${history.error ? `<p class="rss-error-text" role="alert">${escapeHtml(history.error)}</p>` : ''}
-    ${(history.entries || []).map((entry) => { const [label, tone] = labels[entry.status] || [entry.status, 'neutral']; return `<article class="rss-history-entry"><div class="rss-entry-heading"><h3>${escapeHtml(entry.title || '无标题')}</h3>${statusPill(label, tone)}</div><p>${safeLink(entry.link)}</p><p class="muted">#${escapeHtml(entry.id)} · 尝试 ${escapeHtml(entry.attempts ?? 0)} 次 · 创建 ${escapeHtml(formatDate(entry.created_at))} · 发送 ${escapeHtml(formatDate(entry.sent_at))} · TG 消息 ${escapeHtml(entry.tg_message_id ?? '-')}</p>${entry.last_error ? `<pre class="rss-error-text">${escapeHtml(entry.last_error)}</pre>` : ''}</article>`; }).join('')}
+    ${(history.entries || []).map((entry) => { const [label, tone] = labels[entry.status] || [entry.status, 'neutral']; return `<article class="rss-history-entry"><div class="rss-entry-heading"><h3>${escapeHtml(entry.title || '无标题')}</h3>${statusPill(label, tone)}</div><p>${safeLink(entry.link)}</p><p class="muted">#${escapeHtml(entry.id)} · 发布 ${escapeHtml(formatDate(entry.published_at))} · 尝试 ${escapeHtml(entry.attempts ?? 0)} 次 · 创建 ${escapeHtml(formatDate(entry.created_at))} · 发送 ${escapeHtml(formatDate(entry.sent_at))} · TG 消息 ${escapeHtml(entry.tg_message_id ?? '-')}</p>${entry.last_error ? `<pre class="rss-error-text">${escapeHtml(entry.last_error)}</pre>` : ''}</article>`; }).join('')}
     ${!history.loading && !history.error && !history.entries?.length ? '<p class="muted">暂无条目；首次 skip 只建立基线，旧文章不会发送。</p>' : ''}
   </section>`;
 }
@@ -244,9 +246,10 @@ function updateFocusedCard(view, current) {
 
 function syncDraft(form) {
   if (!ui.draft) return;
+  const checkboxes = ['enabled', 'translate'];
   Object.keys(ui.draft).forEach((name) => {
     const control = form.elements.namedItem(name);
-    if (control) ui.draft[name] = name === 'enabled' ? control.checked : control.value;
+    if (control) ui.draft[name] = checkboxes.includes(name) ? control.checked : control.value;
   });
 }
 
@@ -284,6 +287,7 @@ function formPayload(form) {
     initial_count: draft.initial_policy === 'latest' || (Number.isInteger(Number(draft.initial_count)) && Number(draft.initial_count) >= 1 && Number(draft.initial_count) <= 20) ? Number(draft.initial_count) : 3,
     include_keywords: keywords(draft.include_keywords), exclude_keywords: keywords(draft.exclude_keywords),
     message_template: draft.message_template, max_summary_length: Number(draft.max_summary_length),
+    translate: Boolean(draft.translate),
   };
 }
 

@@ -108,7 +108,7 @@ def payload(**kwargs) -> SubscriptionInput:
 async def context(tmp_path):
     db = Database(f"sqlite+aiosqlite:///{tmp_path / 'rss.db'}")
     await db.init()
-    settings = Settings(_env_file=None, rss_send_interval_seconds=0.01)
+    settings = Settings(_env_file=None, rss_send_interval_seconds=0.01, rss_translate_enabled=False)
     fetcher = FakeFetcher(FeedResult("Feed", [entry(1), entry(2), entry(3)]))
     publisher = FakePublisher()
     service = RssService(db, settings, fetcher)

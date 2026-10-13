@@ -7,8 +7,18 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
-DEFAULT_MESSAGE_TEMPLATE = "[{subscription_name}]\n{title}\n\n{summary}\n\n{link}"
-TEMPLATE_FIELDS = {"subscription_name", "feed_title", "title", "summary", "link", "published_at"}
+DEFAULT_MESSAGE_TEMPLATE = (
+    "[{subscription_name}]\n{title}\n{published_at}\n\n{summary}\n\n{translation}\n\n{link}"
+)
+TEMPLATE_FIELDS = {
+    "subscription_name",
+    "feed_title",
+    "title",
+    "summary",
+    "link",
+    "published_at",
+    "translation",
+}
 
 
 def validate_http_url(value: str, *, allow_fragment: bool = False) -> str:
@@ -67,6 +77,7 @@ class SubscriptionInput(BaseModel):
     )
     message_template: str = Field(default=DEFAULT_MESSAGE_TEMPLATE, min_length=1, max_length=8000)
     max_summary_length: int = Field(default=600, ge=100, le=2000)
+    translate: bool = True
 
     @field_validator("feed_url", mode="before")
     @classmethod
