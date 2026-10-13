@@ -10,6 +10,11 @@ export const state = {
   options: null,
   dialogs: [],
   qqTargets: [],
+  rssSubscriptions: [],
+  rssStatus: null,
+  rssLoading: false,
+  rssSubscriptionsError: null,
+  rssStatusError: null,
   loading: false,
   error: null,
 };
@@ -23,11 +28,12 @@ export function subscribe(listener) {
 
 export function setState(patch) {
   Object.assign(state, patch);
-  listeners.forEach((listener) => listener(state));
+  listeners.forEach((listener) => listener(state, patch));
 }
 
 export async function bootstrapData() {
   setState({ loading: true, error: null });
+  const rssRefresh = refreshSubscriptions();
   try {
     const [me, status, rules, logs, options, qqTargets] = await Promise.all([
       api.me(),
@@ -41,6 +47,27 @@ export async function bootstrapData() {
   } catch (error) {
     setState({ error, loading: false });
   }
+  await rssRefresh;
+}
+
+let subscriptionsRefresh = null;
+
+export function refreshSubscriptions() {
+  if (subscriptionsRefresh) return subscriptionsRefresh;
+  setState({ rssLoading: true });
+  subscriptionsRefresh = (async () => {
+    const [subscriptions, status] = await Promise.allSettled([api.rssSubscriptions(), api.rssStatus()]);
+    const patch = {
+      rssLoading: false,
+      rssSubscriptionsError: subscriptions.status === 'rejected' ? subscriptions.reason : null,
+      rssStatusError: status.status === 'rejected' ? status.reason : null,
+    };
+    if (subscriptions.status === 'fulfilled') patch.rssSubscriptions = subscriptions.value;
+    if (status.status === 'fulfilled') patch.rssStatus = status.value;
+    setState(patch);
+    return subscriptions.status === 'fulfilled' ? subscriptions.value : null;
+  })().finally(() => { subscriptionsRefresh = null; });
+  return subscriptionsRefresh;
 }
 
 export async function refreshStatus() {

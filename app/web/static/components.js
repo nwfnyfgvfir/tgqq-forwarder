@@ -72,6 +72,7 @@ export function renderShell(inner, state) {
     ['dashboard', '总览', '◉'],
     ['studio', '规则工坊', '✦'],
     ['rules', '规则库', '▤'],
+    ['subscriptions', '订阅', '≋'],
     ['logs', '日志', '⌁'],
     ['system', '系统', '⌬'],
   ]

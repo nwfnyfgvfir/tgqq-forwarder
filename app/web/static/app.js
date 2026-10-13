@@ -1,11 +1,12 @@
 import { api } from './api.js?v=20260707-rule-studio-2';
 import { renderShell } from './components.js?v=20260707-rule-studio-2';
-import { bootstrapData, navigate, refreshLogs, refreshRules, refreshStatus, setState, state, subscribe } from './state.js?v=20260707-rule-studio-2';
+import { bootstrapData, navigate, refreshLogs, refreshRules, refreshStatus, refreshSubscriptions, setState, state, subscribe } from './state.js?v=20260707-rule-studio-2';
 import { renderDashboard } from './views/dashboard.js?v=20260707-rule-studio-2';
 import { renderLogs } from './views/logs.js?v=20260707-rule-studio-2';
 import { filterRules, renderRules } from './views/rules.js?v=20260707-rule-studio-2';
 import { bindRuleStudio, renderRuleStudio } from './views/rule-studio.js?v=20260707-rule-studio-2';
 import { renderSystem } from './views/system.js?v=20260707-rule-studio-2';
+import { bindSubscriptions, canRefreshSubscriptions, renderSubscriptions, updateSubscriptions } from './views/subscriptions.js?v=20260707-rule-studio-2';
 
 const tg = window.Telegram?.WebApp;
 const root = document.querySelector('#app');
@@ -14,20 +15,30 @@ function initTelegramShell() {
   if (!tg) return;
   tg.ready();
   tg.expand();
-  tg.setHeaderColor?.('#07100f');
-  tg.setBackgroundColor?.('#07100f');
   tg.BackButton.onClick(() => navigate('dashboard'));
 }
 
 function applyTelegramTheme() {
+  const prefersLight = window.matchMedia('(prefers-color-scheme: light)').matches;
+  const scheme = tg?.colorScheme || (prefersLight ? 'light' : 'dark');
+  document.documentElement.dataset.colorScheme = scheme;
   const params = tg?.themeParams || {};
   const rootStyle = document.documentElement.style;
   if (params.bg_color) rootStyle.setProperty('--tg-bg', params.bg_color);
   if (params.text_color) rootStyle.setProperty('--tg-text', params.text_color);
-  if (params.button_color) rootStyle.setProperty('--accent', params.button_color);
+  if (params.button_color && scheme === 'dark') rootStyle.setProperty('--accent', params.button_color);
+  else rootStyle.removeProperty('--accent');
+  const background = scheme === 'light' ? '#f4f6f8' : '#07100f';
+  tg?.setHeaderColor?.(background);
+  tg?.setBackgroundColor?.(background);
 }
 
-function render() {
+function render(_current, patch) {
+  if (patch && Object.keys(patch).every((key) => key.startsWith('rss')) && state.route !== 'subscriptions') return;
+  if (state.route === 'subscriptions' && root.querySelector('#subscriptions-view')) {
+    updateSubscriptions(root, state);
+    return;
+  }
   let inner;
   if (state.loading && !state.status) {
     inner = '<section class="launch-screen"><div class="orb"></div><h1>正在校验 Telegram 安全信号</h1><p>initData → HMAC → 管理员白名单</p></section>';
@@ -39,6 +50,8 @@ function render() {
     inner = renderRules(state);
   } else if (state.route === 'logs') {
     inner = renderLogs(state);
+  } else if (state.route === 'subscriptions') {
+    inner = renderSubscriptions(state);
   } else if (state.route === 'system') {
     inner = renderSystem(state);
   } else {
@@ -100,6 +113,7 @@ function bindPage() {
   root.querySelectorAll('[data-action="logs-filter"]').forEach((button) => {
     button.addEventListener('click', async () => refreshLogs(button.dataset.status));
   });
+  if (state.route === 'subscriptions') bindSubscriptions(root, navigate);
   if (state.route === 'studio') bindRuleStudio(root, navigate);
   if (state.route === 'rules') filterRules();
 }
@@ -107,8 +121,13 @@ function bindPage() {
 subscribe(render);
 initTelegramShell();
 applyTelegramTheme();
+tg?.onEvent?.('themeChanged', applyTelegramTheme);
+window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', applyTelegramTheme);
 bootstrapData();
 setInterval(() => {
+  if (state.route === 'subscriptions' && canRefreshSubscriptions(root)) {
+    refreshSubscriptions();
+  }
   if (state.route === 'dashboard' || state.route === 'system') {
     refreshStatus().catch((error) => setState({ error }));
   }

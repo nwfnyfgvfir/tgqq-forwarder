@@ -139,6 +139,14 @@ Rules and logs are SQLModel tables in `app/storage/models.py`, accessed through 
 
 `app/telegram_admin/commands.py` implements admin commands for status, dialog lookup, rule management, QQ target lookup, logs/errors, and pause/resume. `/add_rule` accepts rule names with spaces and can merge duplicate keyword rules through `ForwardRuleService.create_or_merge_rule()`.
 
+### RSS subscriptions
+
+`app/rss/` owns RSS/RSSHub subscriptions end to end: `schemas.py` validates `SubscriptionInput` (feed URL, TG target, interval, first-run policy, keywords, template), `fetcher.py` fetches/parses feeds with SSRF guards (public hosts only unless listed in `RSS_ALLOWED_PRIVATE_HOSTS`, per-hop DNS pinning, ETag/Last-Modified, size caps, HTTP `identity` only), `service.py` does CRUD plus entry bookkeeping, `worker.py` runs the in-process scheduler with per-subscription job locks, persistent dedupe (`rss_entry` unique on `subscription_id + entry_key`), retry/backoff, and `publisher.py` sends via a Bot token (`RSS_BOT_TOKEN`, falling back to the admin bot) with plain text and link preview disabled.
+
+`ApplicationRuntime` starts one `RssWorker` (`app/main.py`) and injects both `RssService` and `RssWorker` into the Mini App; `app/web/rss_routes.py` exposes `/api/rss/*` under the same admin auth. The worker keeps fetching while forwarding is paused or Telegram is disconnected, but only publishes when `can_publish()` is true.
+
+Known limits: single-instance in-process scheduling, no exactly-once guarantee (a lost send response may duplicate on retry), media/photo entries publish as text links only, and TG → QQ still depends on the existing `ForwardQueue` (in-memory dedupe, drop when full).
+
 ## Tests
 
 Existing tests are organized by subsystem:

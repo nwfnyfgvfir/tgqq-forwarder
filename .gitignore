@@ -18,6 +18,16 @@ __pycache__/
 *.egg-info/
 .venv/
 
+# Build output
+/build/
+/dist/
+
+# Local verification scratch (screenshots, probe server, probe pages)
+/.verify_rss/
+
+# WorkBuddy agent workspace data (project memory, not repo content)
+/.workbuddy-ai/
+
 # OS/editor
 .DS_Store
 .vscode/

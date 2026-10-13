@@ -9,7 +9,7 @@ export function renderRuleStudio(state) {
   return `
     ${pageHeader(
       'RULE STUDIO',
-      editRule ? `编辑规则 #${editRule.id}` : '规则工坊',
+      editRule?.id ? `编辑规则 #${editRule.id}` : '规则工坊',
       '用选择器、关键词芯片、模板预览完成高级规则配置，不再手写长命令。'
     )}
     <form id="rule-form" class="studio-layout" data-edit-id="${editRule?.id || ''}">
@@ -102,7 +102,7 @@ export function renderRuleStudio(state) {
         <label>测试文本<textarea name="preview_text" rows="5">AI news from Telegram\nhttps://example.com</textarea></label>
         <button type="button" class="primary" data-action="preview-rule">生成预览</button>
         <pre id="preview-output" class="preview-output">等待预览…</pre>
-        <button type="submit" class="save-button">${editRule ? '保存编辑' : '创建规则'}</button>
+        <button type="submit" class="save-button">${editRule?.id ? '保存编辑' : '创建规则'}</button>
       </aside>
     </form>
   `;

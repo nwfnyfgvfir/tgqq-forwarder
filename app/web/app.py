@@ -12,6 +12,9 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import Settings
 from app.qq_official.client import QQTargetInfo
+from app.rss.errors import RssError
+from app.rss.service import RssService
+from app.rss.worker import RssWorker
 from app.rules.keywords import detect_keyword_matches, keywords_from_text_include_regex
 from app.rules.models import TelegramForwardMessage, TelegramLink
 from app.rules.service import ForwardRuleService
@@ -19,6 +22,7 @@ from app.storage.models import ForwardStatus, QQTargetType
 from app.telegram_user.accounts import TelegramAccountManager
 from app.web.auth import MiniAppAuthError, MiniAppSession, validate_init_data
 from app.web.errors import api_error, auth_http_exception
+from app.web.rss_routes import create_rss_router, rss_error_response
 from app.web.schemas import (
     DialogResponse,
     ForwardLogResponse,
@@ -92,6 +96,8 @@ def create_mini_app(
     qq_status_getter: Callable[[], str],
     qq_targets_getter: Callable[[], list[QQTargetInfo]],
     queue_status_getter: Callable[[], dict[str, object]],
+    rss_service: RssService | None = None,
+    rss_worker: RssWorker | None = None,
 ) -> FastAPI:
     app = FastAPI(title="TGQQ Forwarder Mini App", docs_url=None, redoc_url=None)
     if settings.mini_app_allowed_origins:
@@ -109,6 +115,12 @@ def create_mini_app(
             return validate_init_data(init_data or "", settings)
         except MiniAppAuthError as exc:
             raise auth_http_exception(exc) from exc
+
+    rss_service = rss_service or RssService(service.db, settings)
+    app.add_exception_handler(RssError, rss_error_response)
+    app.include_router(create_rss_router(
+        rss_service, rss_worker, require_admin_session, service, account_manager_getter,
+    ))
 
     @app.get("/healthz")
     async def healthz() -> dict[str, bool]:

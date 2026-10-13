@@ -211,6 +211,51 @@ class Settings(BaseSettings):
     tg_admin_bot_poll_timeout: int = 30
     tg_admin_bot_poll_read_timeout: float = 45.0
 
+    rss_enabled: bool = True
+    rss_bot_token: str | None = Field(default=None, exclude=True, repr=False)
+    rss_poll_seconds: float = Field(default=10, ge=1, le=3600, allow_inf_nan=False)
+    rss_request_timeout_seconds: float = Field(default=20, gt=0, le=300, allow_inf_nan=False)
+    rss_max_feed_bytes: int = Field(default=2 * 1024 * 1024, ge=1024, le=32 * 1024 * 1024)
+    rss_max_entries_per_feed: int = Field(default=500, ge=1, le=10000)
+    rss_send_interval_seconds: float = Field(default=1.1, ge=0.01, le=60, allow_inf_nan=False)
+    rss_max_send_attempts: int = Field(default=5, ge=1, le=20)
+    rss_allowed_private_hosts: Annotated[list[str], NoDecode] = Field(default_factory=list)
+
+    @field_validator("rss_bot_token", mode="before")
+    @classmethod
+    def normalize_rss_bot_token(cls, value: object) -> object:
+        return value.strip() or None if isinstance(value, str) else value
+
+    @field_validator("rss_allowed_private_hosts", mode="before")
+    @classmethod
+    def parse_rss_allowed_private_hosts(cls, value: object) -> list[str]:
+        import ipaddress
+
+        if value is None or value == "":
+            return []
+        items = value.split(",") if isinstance(value, str) else value
+        if not isinstance(items, list):
+            raise ValueError("RSS 私有主机白名单必须是逗号分隔的主机名")
+        hosts = []
+        for item in items:
+            if not isinstance(item, str):
+                raise ValueError("RSS 白名单仅接受明确主机名或 IP")
+            host = item.strip().lower().rstrip(".")
+            if not host:
+                continue
+            try:
+                host = str(ipaddress.ip_address(host.strip("[]")))
+            except ValueError:
+                host = host.encode("idna").decode("ascii")
+                if any(c in host for c in "/:@*?# ") or not all(
+                    part and all(c.isalnum() or c == "-" for c in part)
+                    for part in host.split(".")
+                ):
+                    raise ValueError("RSS 白名单仅接受明确主机名，不接受 URL 或通配符") from None
+            if host not in hosts:
+                hosts.append(host)
+        return hosts
+
     mini_app_enabled: bool = False
     mini_app_host: str = "0.0.0.0"
     mini_app_port: int = 8000

@@ -16,6 +16,7 @@ TGQQ Forwarder 用于把指定 Telegram 消息自动转发到 QQ 官方机器人
 - 支持转发到 QQ 群、C2C、频道、频道私信场景。
 - 通过 Telegram 管理 Bot 查看状态、管理规则、查询日志。
 - 提供 Telegram Mini App 管理台，可用可视化规则工坊管理关键词、目标、模板、日志和暂停状态。
+- 内置 RSS / RSSHub 订阅：在管理台「订阅」入口统一管理，新条目自动发布到指定 Telegram 频道，再按既有规则转发到 QQ。
 - 使用 Docker Compose 部署到 VPS。
 - 推送 `v*` 标签时，GitHub Actions 自动构建 Docker 镜像并发布到 GitHub Container Registry。
 
@@ -27,6 +28,8 @@ TGQQ Forwarder 用于把指定 Telegram 消息自动转发到 QQ 官方机器人
 4. 媒体转发已支持常见图片、视频、语音、文件场景，但某些 QQ 目标类型不支持直接上传时会退化为文本说明。
 5. QQ 原生 markdown 能否显示取决于 QQ 官方机器人权限和消息场景；程序会优先尝试 markdown，失败后自动降级为纯文本。
 6. Telegram 匿名管理员消息、频道签名消息、隐私受限的转发消息，可能无法拿到真实发送者 ID。
+7. RSS 订阅为进程内单实例调度；Telegram 发送在“响应丢失 / 进程中断”后不能保证 exactly-once，重试可能造成重复发布。条目去重与“首次基线”策略可避免正常情况下的重复推送。
+8. RSS 抓取默认禁止访问非公网地址（SSRF 防护）。自建 RSSHub 与转发器同机时，需把主机名加入 `RSS_ALLOWED_PRIVATE_HOSTS` 白名单。
 
 ## 文件结构
 
@@ -37,8 +40,9 @@ app/
   telegram_admin/            # Telegram 管理 Bot
   qq_official/               # QQ 官方机器人 WebSocket 发送模块
   rules/                     # 转发规则匹配与格式化
+  rss/                       # RSS / RSSHub 订阅抓取、去重、发布与调度
   storage/                   # SQLite 数据库与 Repository
-  worker/                    # 转发队列
+  worker/                    # 转发队列与 RSS worker
 Dockerfile
 docker-compose.yml              # VPS 默认使用 GHCR 远程镜像
 docker-compose.build.yml        # 本地构建/调试使用
@@ -235,6 +239,19 @@ TELEGRAM_MAX_MEDIA_MB=20
 TELEGRAM_ALBUM_BUFFER_SECONDS=2.0
 MEDIA_CLEANUP_INTERVAL_SECONDS=3600
 MEDIA_RETENTION_SECONDS=86400
+
+# RSS / RSSHub 订阅（在 Mini App「订阅」入口管理，默认复用管理 Bot 发布）
+RSS_ENABLED=true
+# 可选：独立发布 Bot 的 token，只用于 sendMessage，不会开启 getUpdates
+# RSS_BOT_TOKEN=123456:请替换为发布BotToken
+RSS_POLL_SECONDS=10
+RSS_REQUEST_TIMEOUT_SECONDS=20
+RSS_MAX_FEED_BYTES=2097152
+RSS_MAX_ENTRIES_PER_FEED=500
+RSS_SEND_INTERVAL_SECONDS=1.1
+RSS_MAX_SEND_ATTEMPTS=5
+# 非公网地址默认拒绝；自建 RSSHub（如 docker-compose 服务名 rsshub）在此显式登记
+RSS_ALLOWED_PRIVATE_HOSTS=
 
 TG_ADMIN_BOT_TOKEN=123456:请替换为你的管理BotToken
 ADMIN_TELEGRAM_USER_IDS=11111111,22222222
@@ -467,6 +484,40 @@ MEDIA_RETENTION_SECONDS=86400
 ```
 
 含义：每 3600 秒检查一次 `data/media/`，删除修改时间超过 86400 秒的媒体文件。设置任一值为 `0` 可禁用清理任务。
+
+## RSS / RSSHub 订阅推送
+
+链路：**RSS 源 → 内置订阅 worker → Telegram 发布 Bot 发到专用频道 → 既有 Telethon 监听按规则转发到 QQ**。RSS 功能不需要单独的服务，随主程序一起运行。
+
+### 1. 配置订阅
+
+打开 Mini App 管理台，进入「订阅」→「新增订阅」：
+
+- **Feed URL**：RSSHub 路由（如 `https://rsshub.app/github/issue/…`）或任意标准 RSS/Atom 地址。
+- **Telegram 目标**：建议填专用频道的**数字 ID**（`-100…`），可从「从监听账号搜索频道」挑选；`@username` 无法作为 TG → QQ 规则的 `source_chat_id`。
+- **检查间隔**：60–86400 秒。
+- **首次处理策略**：默认「只建立基线」——首次检查只记录已有条目，不推送历史文章；选「发送最近 N 条」可把最新 N 条入队。
+- **消息模板**：默认 `[{subscription_name}] {title} {summary} {link}`，可改用 `feed_title`、`published_at` 等变量；原文链接总会附加在末尾。
+- 保存前可点「预览」真实抓取该源并渲染消息效果，**不保存、不建基线、不发送**。
+
+### 2. 让 Telegram 一侧能收到
+
+1. 用 BotFather 创建的 Bot（默认复用 `TG_ADMIN_BOT_TOKEN`，也可单独配 `RSS_BOT_TOKEN`）添加为目标频道管理员，允许发消息。
+2. 项目已登录的 Telegram 用户账号加入该频道（用于 TG → QQ 监听）。
+
+### 3. 让 QQ 一侧能收到
+
+在「订阅」卡片点「配置 QQ 转发规则」，会自动带上频道 ID、会话类型 `channel`、匹配模式“全部消息”、模板 `{text}`；只需在规则工坊选择 QQ 目标并保存。注意：
+
+- 按**频道数字 ID** 匹配，不要限制“发送者必须是 Bot”（频道消息在现有代码里不标记为 Bot）。
+- 若使用 `@username` 作为发布目标，需要先改成数字频道 ID 才能配置规则。
+
+### 4. 运行行为
+
+- 「立即检查」与「重试失败」只提交异步任务，页面提示“已排队”，之后刷新查看结果。
+- 抓取失败按指数退避；Telegram 发送失败自动重试，触达 `RSS_MAX_SEND_ATTEMPTS` 后标记失败，可一键重试。
+- 全局转发暂停或 Telegram 监听未就绪时，RSS 仍会抓取和入队，但**不会发布**，面板会显式提示。
+- 修改 Feed URL 会重建基线并跳过旧源未发送条目；修改 TG 目标只会影响之后待发送条目，已发布条目不会重发。
 
 ## Telegram 管理 Bot 命令
 

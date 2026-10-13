@@ -8,6 +8,8 @@ from contextlib import suppress
 from app.config import get_settings
 from app.logging_config import configure_logging
 from app.qq_official.sender import QQOfficialSender
+from app.rss.service import RssService
+from app.rss.worker import RssWorker
 from app.rules.service import ForwardRuleService
 from app.storage.db import Database
 from app.telegram_admin.bot import TelegramAdminBot
@@ -29,6 +31,10 @@ class ApplicationRuntime:
         self.forward_queue = ForwardQueue(self.settings, self.rule_service, self.qq_sender)
         self.media_cleanup = MediaCleanupWorker(self.settings)
         self.account_manager: TelegramAccountManager | None = None
+        self.rss_service = RssService(self.db, self.settings)
+        self.rss_worker = RssWorker(
+            self.settings, self.rss_service, can_publish=self._can_publish_rss,
+        )
         self.admin_bot = TelegramAdminBot(
             self.settings,
             self.rule_service,
@@ -44,8 +50,17 @@ class ApplicationRuntime:
             lambda: self.qq_sender.status,
             self.qq_sender.list_cached_targets,
             self.forward_queue.status_snapshot,
+            rss_service=self.rss_service,
+            rss_worker=self.rss_worker,
         )
         self.stop_event = asyncio.Event()
+
+    async def _can_publish_rss(self) -> bool:
+        return bool(
+            self.account_manager
+            and self.account_manager.is_any_connected()
+            and not await self.rule_service.is_paused()
+        )
 
     async def start(self) -> None:
         self.settings.validate_runtime_requirements()
@@ -59,6 +74,7 @@ class ApplicationRuntime:
         )
         await self.account_manager.start()
         await self.admin_bot.start()
+        await self.rss_worker.start()
         await self.mini_app_server.start()
         logger.info("TGQQ Forwarder started")
 
@@ -88,6 +104,7 @@ class ApplicationRuntime:
     async def stop(self) -> None:
         logger.info("Stopping TGQQ Forwarder")
         await self.mini_app_server.stop()
+        await self.rss_worker.stop()
         await self.admin_bot.stop()
         if self.account_manager:
             await self.account_manager.stop()
