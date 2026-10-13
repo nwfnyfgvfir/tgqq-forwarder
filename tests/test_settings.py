@@ -81,6 +81,25 @@ def test_telegram_accounts_json_keeps_explicit_session_paths() -> None:
     )
 
 
+def test_telegram_bot_proxy_parsing() -> None:
+    assert Settings(telegram_bot_proxy=None).telegram_bot_proxy is None
+    assert Settings(telegram_bot_proxy="   ").telegram_bot_proxy is None
+    assert (
+        Settings(telegram_bot_proxy="http://127.0.0.1:7890").telegram_bot_proxy
+        == "http://127.0.0.1:7890"
+    )
+    assert (
+        Settings(telegram_bot_proxy="socks5://user:pass@10.0.0.2:1080").telegram_bot_proxy
+        == "socks5://user:pass@10.0.0.2:1080"
+    )
+    try:
+        Settings(telegram_bot_proxy="127.0.0.1:7890")
+    except ValueError as exc:
+        assert "TELEGRAM_BOT_PROXY" in str(exc)
+    else:
+        raise AssertionError("proxy without scheme should be rejected")
+
+
 def test_telegram_accounts_json_directory_session_path_appends_account_file() -> None:
     settings = Settings(
         telegram_accounts_json='[{"id":"work","session_path":"data/sessions/work"}]',

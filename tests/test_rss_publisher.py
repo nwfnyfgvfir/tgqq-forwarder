@@ -80,6 +80,51 @@ async def test_sender_message_utf16_limit_keeps_complete_link() -> None:
     await publisher.stop()
 
 
+async def test_bot_proxy_applied_only_when_configured(monkeypatch) -> None:
+    captured: dict = {}
+
+    class FakeRequest:
+        def __init__(self, **kwargs) -> None:
+            captured.clear()
+            captured.update(kwargs)
+
+    class FakeClient:
+        def __init__(self, token=None, request=None) -> None:
+            self.token = token
+            self.request = request
+
+        async def initialize(self):
+            return None
+
+        async def shutdown(self):
+            return None
+
+        async def send_message(self, **kwargs):
+            return SimpleNamespace(message_id=1, chat=SimpleNamespace(id=-100))
+
+    monkeypatch.setattr("app.rss.publisher.HTTPXRequest", FakeRequest)
+    monkeypatch.setattr("app.rss.publisher.Bot", FakeClient)
+
+    proxied = RssPublisher(
+        Settings(
+            _env_file=None,
+            rss_bot_token="1:x",
+            telegram_bot_proxy="socks5://127.0.0.1:1080",
+        )
+    )
+    await proxied.send("-100", "text")
+    assert captured["proxy"] == "socks5://127.0.0.1:1080"
+    assert "httpx_kwargs" not in captured
+
+    await proxied.stop()
+
+    plain = RssPublisher(Settings(_env_file=None, rss_bot_token="1:x"))
+    await plain.send("-100", "text")
+    assert "proxy" not in captured
+    assert "httpx_kwargs" not in captured
+    await plain.stop()
+
+
 async def test_missing_token_and_admin_fallback() -> None:
     publisher = RssPublisher(Settings(_env_file=None, tg_admin_bot_token=None, rss_bot_token=None))
     assert not publisher.configured

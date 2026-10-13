@@ -53,7 +53,7 @@ class TelegramAdminBot:
             self.qq_targets_getter,
             self.queue_status_getter,
         )
-        app = (
+        builder = (
             Application.builder()
             .token(self.settings.tg_admin_bot_token)
             .connect_timeout(self.settings.tg_admin_bot_connect_timeout)
@@ -64,8 +64,11 @@ class TelegramAdminBot:
             .get_updates_read_timeout(self.settings.tg_admin_bot_poll_read_timeout)
             .get_updates_write_timeout(self.settings.tg_admin_bot_request_timeout)
             .get_updates_pool_timeout(self.settings.tg_admin_bot_pool_timeout)
-            .build()
         )
+        if self.settings.telegram_bot_proxy:
+            # 显式代理优先于环境变量；长轮询与普通请求都走同一代理。
+            builder = builder.proxy(self.settings.telegram_bot_proxy)
+        app = builder.build()
         app.add_error_handler(self._handle_error)
         app.add_handler(CommandHandler(["start", "help"], commands.start))
         app.add_handler(CommandHandler("status", commands.status))

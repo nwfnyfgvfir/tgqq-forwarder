@@ -62,13 +62,16 @@ class RssPublisher:
             if delay > 0:
                 await asyncio.sleep(delay)
             if self._bot is None:
-                request = HTTPXRequest(
-                    connect_timeout=self.settings.tg_admin_bot_connect_timeout,
-                    read_timeout=self.settings.tg_admin_bot_request_timeout,
-                    write_timeout=self.settings.tg_admin_bot_request_timeout,
-                    pool_timeout=self.settings.tg_admin_bot_pool_timeout,
-                    httpx_kwargs={"trust_env": False},
-                )
+                # 与管理 Bot 保持一致：默认沿用环境变量 HTTP(S)_PROXY，显式代理优先。
+                request_kwargs: dict[str, object] = {
+                    "connect_timeout": self.settings.tg_admin_bot_connect_timeout,
+                    "read_timeout": self.settings.tg_admin_bot_request_timeout,
+                    "write_timeout": self.settings.tg_admin_bot_request_timeout,
+                    "pool_timeout": self.settings.tg_admin_bot_pool_timeout,
+                }
+                if self.settings.telegram_bot_proxy:
+                    request_kwargs["proxy"] = self.settings.telegram_bot_proxy
+                request = HTTPXRequest(**request_kwargs)  # type: ignore[arg-type]
                 self._bot = Bot(token=self._token, request=request)
             if not self._initialized:
                 await self._bot.initialize()

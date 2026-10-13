@@ -116,6 +116,10 @@ TG_ADMIN_BOT_REQUEST_TIMEOUT=30
 TG_ADMIN_BOT_POOL_TIMEOUT=15
 TG_ADMIN_BOT_POLL_TIMEOUT=30
 TG_ADMIN_BOT_POLL_READ_TIMEOUT=45
+# 可选：Bot API（api.telegram.org）代理。留空则沿用容器 HTTP_PROXY / HTTPS_PROXY。
+# Telethon 走 MTProto，不受此项影响；RSS 发布与管理 Bot 共用该设置。
+# TELEGRAM_BOT_PROXY=http://host.docker.internal:7890
+# TELEGRAM_BOT_PROXY=socks5://host.docker.internal:1080
 QQ_BOT_APPID=请替换为你的QQ机器人AppID
 QQ_BOT_SECRET=请替换为你的QQ机器人Secret
 ```
@@ -260,6 +264,10 @@ TG_ADMIN_BOT_REQUEST_TIMEOUT=30
 TG_ADMIN_BOT_POOL_TIMEOUT=15
 TG_ADMIN_BOT_POLL_TIMEOUT=30
 TG_ADMIN_BOT_POLL_READ_TIMEOUT=45
+# 可选：Bot API（api.telegram.org）代理。留空则沿用容器 HTTP_PROXY / HTTPS_PROXY。
+# Telethon 走 MTProto，不受此项影响；RSS 发布与管理 Bot 共用该设置。
+# TELEGRAM_BOT_PROXY=http://host.docker.internal:7890
+# TELEGRAM_BOT_PROXY=socks5://host.docker.internal:1080
 
 QQ_BOT_APPID=请替换为你的QQ机器人AppID
 QQ_BOT_SECRET=请替换为你的QQ机器人Secret
@@ -672,6 +680,29 @@ git push origin v0.1.0
 ```
 
 GitHub Actions 使用仓库内置的 `GITHUB_TOKEN`，并已声明 `packages: write` 权限。
+
+## 常见故障排查
+
+### `telegram.error.NetworkError: httpx.ConnectError`（管理 Bot 轮询 / RSS 发布失败）
+
+现象：日志里管理 Bot 报 `Exception happened while polling for updates`，或者 RSS 订阅一直发布失败，但 Telegram 用户监听（Telethon）正常。
+
+原因：Telethon 走 **MTProto**，管理 Bot 与 RSS 发布走 **Bot API（api.telegram.org，HTTPS）**，两者是不同的通道。大陆 VPS 上常见“MTProto 可用、api.telegram.org 被阻断或间歇失败”。
+
+排查与处理：
+
+```bash
+# 1. 容器内直连 Bot API 是否可用（超时/报错即为不通）
+docker compose exec tgqq-forwarder python -c "import httpx;print(httpx.get('https://api.telegram.org',timeout=10).status_code)"
+
+# 2. 看是否只有某个地址族不通（IPv6 无路由是常见原因）
+docker compose exec tgqq-forwarder python -c "import socket;print(socket.getaddrinfo('api.telegram.org',443,proto=socket.IPPROTO_TCP))"
+```
+
+- **偶发一次**：PTB 自带指数退避重试，通常自愈，观察是否持续刷屏即可。
+- **持续失败**：给 Bot API 配代理，在 `.env` 设置 `TELEGRAM_BOT_PROXY`。容器要访问宿主机代理时，先在 `docker-compose.yml` 增加
+  `extra_hosts: ["host.docker.internal:host-gateway"]`，再写 `TELEGRAM_BOT_PROXY=http://host.docker.internal:7890`。
+- 该设置对管理 Bot 与 RSS 发布同时生效；`socks5://` 需要镜像内 `httpx[socks]`（本项目已声明该依赖）。
 
 ## 本地开发
 

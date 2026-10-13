@@ -210,6 +210,9 @@ class Settings(BaseSettings):
     tg_admin_bot_pool_timeout: float = 15.0
     tg_admin_bot_poll_timeout: int = 30
     tg_admin_bot_poll_read_timeout: float = 45.0
+    # 可选：Bot API（api.telegram.org）专用代理，形如 http://host:port 或 socks5://host:port。
+    # 留空时沿用进程环境变量 HTTP(S)_PROXY；Telethon 走 MTProto，不受此项影响。
+    telegram_bot_proxy: str | None = None
 
     rss_enabled: bool = True
     rss_bot_token: str | None = Field(default=None, exclude=True, repr=False)
@@ -220,6 +223,23 @@ class Settings(BaseSettings):
     rss_send_interval_seconds: float = Field(default=1.1, ge=0.01, le=60, allow_inf_nan=False)
     rss_max_send_attempts: int = Field(default=5, ge=1, le=20)
     rss_allowed_private_hosts: Annotated[list[str], NoDecode] = Field(default_factory=list)
+
+    @field_validator("telegram_bot_proxy", mode="before")
+    @classmethod
+    def normalize_bot_proxy(cls, value: object) -> object:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise TypeError("TELEGRAM_BOT_PROXY must be a proxy URL string")
+        text = value.strip()
+        if not text:
+            return None
+        scheme = text.split("://", 1)[0].lower() if "://" in text else ""
+        if scheme not in {"http", "https", "socks5", "socks5h"}:
+            raise ValueError(
+                "TELEGRAM_BOT_PROXY must start with http://, https://, socks5:// or socks5h://"
+            )
+        return text
 
     @field_validator("rss_bot_token", mode="before")
     @classmethod
