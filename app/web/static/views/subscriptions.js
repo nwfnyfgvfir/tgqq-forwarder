@@ -86,7 +86,7 @@ function card(subscription) {
     <div class="rss-counts"><span>已发送 <b>${escapeHtml(subscription.sent_count ?? 0)}</b></span><span>待发送 <b>${escapeHtml(subscription.pending_count ?? 0)}</b></span><span class="${subscription.failed_count ? 'rss-error-text' : ''}">失败 <b>${escapeHtml(subscription.failed_count ?? 0)}</b></span></div>
     ${subscription.last_error ? `<p class="rss-error-text rss-last-error">最近错误：${escapeHtml(subscription.last_error)}</p>` : ''}
     <div class="card-actions">
-      ${[['edit', '编辑'], ['toggle', subscription.enabled ? '停用' : '启用'], ['check', '立即检查'], ...(subscription.failed_count > 0 ? [['retry', '重试失败']] : []), ['history', '条目历史'], ['rule', '配置QQ转发规则'], ['delete', '删除']].map(([action, label]) => `<button type="button" ${busy ? 'disabled' : ''} class="${action === 'delete' ? 'danger' : ''}" data-rss-action="${action}" data-id="${escapeHtml(id)}">${label}</button>`).join('')}
+      ${[['edit', '编辑'], ['toggle', subscription.enabled ? '停用' : '启用'], ['check', '立即检查'], ['test', '立即试发'], ...(subscription.failed_count > 0 ? [['retry', '重试失败']] : []), ['history', '条目历史'], ['rule', '配置QQ转发规则'], ['delete', '删除']].map(([action, label]) => `<button type="button" ${busy ? 'disabled' : ''} class="${action === 'delete' ? 'danger' : ''}" data-rss-action="${action}" data-id="${escapeHtml(id)}">${label}</button>`).join('')}
     </div>
     <p class="rss-card-notice ${notice?.error ? 'rss-error-text' : 'muted'}" role="status" data-rss-notice>${escapeHtml(busy ? ui.busy.get(id) : notice?.text || '')}</p>
   </article>`;
@@ -516,6 +516,21 @@ async function cardAction(view, subscription, action, navigate) {
     } else if (action === 'check') {
       const result = await api.checkRssSubscription(id);
       ui.notices.set(id, { text: `${result.scheduled ? '检查已排队' : '检查请求已提交'}，稍后刷新查看结果。${!state.rssStatus?.publisher_configured || state.rssStatus?.publishing_paused || !state.rssStatus?.enabled ? '当前发布不可用或状态未知，抓取检查不代表会发布。' : ''}` });
+    } else if (action === 'test') {
+      ui.busy.set(id, '正在抓取并试发最新一条…');
+      paintCard(view, id);
+      const result = await api.testSendRssSubscription(id);
+      const bits = [];
+      if (result.sent) {
+        bits.push(`已试发最新一条到频道（消息 #${result.message_id}）：${result.entry?.title || '无标题'}。`);
+        bits.push(result.matched ? '命中关键词。' : '未命中关键词（本次强制发送，正式发布会被跳过）。');
+        bits.push(result.translated ? '已附加译文。' : '未附加译文。');
+      } else {
+        bits.push(`试发失败：${result.error || '未知错误'}`);
+      }
+      for (const warning of result.warnings || []) bits.push(warning);
+      bits.push('请到目标频道确认，并检查 TG → QQ 是否已转发。');
+      ui.notices.set(id, { error: !result.sent, text: bits.join(' ') });
     } else if (action === 'retry') {
       const result = await api.retryRssSubscription(id);
       ui.notices.set(id, { text: `重试已排队，共 ${result.retried_count ?? 0} 条；不代表已发送成功。` });

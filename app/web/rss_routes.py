@@ -40,6 +40,12 @@ def create_rss_router(
             raise api_error(503, "rss_worker_not_ready", "RSS 工作器尚未运行，请等待服务恢复")
         return worker
 
+    def available_worker() -> RssWorker:
+        # 手动试发为同步直连，不依赖调度器运行；只需工作器实例存在。
+        if worker is None:
+            raise api_error(503, "rss_worker_not_ready", "RSS 工作器尚未就绪")
+        return worker
+
     @router.get("/status")
     async def rss_status() -> dict:
         manager = account_manager_getter()
@@ -96,5 +102,17 @@ def create_rss_router(
     @router.post("/subscriptions/{subscription_id}/retry", status_code=202)
     async def retry(subscription_id: int) -> dict:
         return await running_worker().retry_failed(subscription_id)
+
+    @router.post("/subscriptions/{subscription_id}/test-send")
+    async def test_send(subscription_id: int) -> dict:
+        # 同步执行完整链路并立即返回结果；附带 TG → QQ 前置条件提醒。
+        result = await available_worker().test_send_latest(subscription_id)
+        warnings = list(result.get("warnings") or [])
+        manager = account_manager_getter()
+        if not (manager and manager.is_any_connected()):
+            warnings.append("Telegram 监听账号尚未就绪，TG → QQ 转发可能不会触发。")
+        if await rule_service.is_paused():
+            warnings.append("全局转发已暂停，TG → QQ 转发不会执行。")
+        return {**result, "warnings": warnings}
 
     return router

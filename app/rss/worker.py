@@ -131,6 +131,113 @@ class RssWorker:
         self._schedule(subscription_id)
         return {"scheduled": True, "subscription_id": subscription_id, "retried_count": count}
 
+    async def test_send_latest(self, subscription_id: int) -> dict:
+        """手动试发当前源最新一条，用于端到端自检整条链路。
+
+        同步执行：抓取 → 翻译 → 渲染 → 发布到 TG 频道。绕过首次基线与去重，
+        关键词未命中时仍强制发送（在 warnings 中提示）；不写条目历史，避免污染
+        去重基线。返回结构化结果，发布失败不抛异常，交由调用方展示。
+        """
+        async with self.service.db.session() as session:
+            sub = await session.get(RssSubscription, subscription_id)
+        if sub is None:
+            raise RssError("rss_not_found", 404, "RSS 订阅不存在")
+        if not getattr(self.publisher, "configured", True):
+            raise RssError("rss_publisher_missing", 409, "RSS 发布 Bot 尚未配置，无法试发")
+        try:
+            result = await self.service.fetcher.fetch(sub.feed_url)
+        except RssError:
+            raise
+        except Exception:
+            raise RssError("rss_fetch_failed", 502, "订阅抓取失败或超时") from None
+        candidates = [entry for entry in result.entries if entry.link]
+        if not candidates:
+            raise RssError("rss_no_entries", 422, "该订阅源当前没有可试发的条目（缺少有效链接）")
+        entry = candidates[-1]
+        warnings = list(result.warnings)
+        translation: dict[str, str] = {}
+        if sub.translate and self.settings.rss_translate_enabled:
+            translation = await self._translate_for_test(entry, warnings)
+        target = RssService._with_translation(entry, translation)
+        try:
+            text = render_entry(sub, target, result.feed_title)
+        except RssError:
+            raise
+        except ValueError:
+            raise RssError(
+                "rss_template_invalid", 422, "订阅消息模板无效，无法渲染试发内容"
+            ) from None
+        matched = matches_keywords(sub, entry)
+        if not matched:
+            warnings.append("该条目未命中订阅关键词过滤，正式发布会跳过；本次为手动试发，已强制发送。")
+        base = {
+            "matched": matched,
+            "translated": bool(translation),
+            "entry": self._entry_summary(entry),
+        }
+        try:
+            published = await self.publisher.send(sub.tg_chat_id, text, entry.link)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            return {
+                **base,
+                "sent": False,
+                "error": self._test_send_error(error),
+                "warnings": warnings,
+            }
+        return {
+            **base,
+            "sent": True,
+            "message_id": published.message_id,
+            "chat_id": published.chat_id,
+            "rendered_text": text,
+            "warnings": warnings,
+        }
+
+    async def _translate_for_test(self, entry, warnings: list[str]) -> dict[str, str]:
+        """试发路径的翻译：失败只记 warning 并按原文发送，不阻断试发。"""
+        fields = self._translation_fields(entry.title, entry.summary)
+        if not fields:
+            return {}
+        try:
+            outcomes = await self.translator.translate(
+                [text for _, text in fields], target=self.settings.rss_translate_target
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            warnings.append("翻译失败，本次试发按原文发送。")
+            return {}
+        if len(outcomes) != len(fields) or any(outcome.error for outcome in outcomes):
+            warnings.append("翻译失败，本次试发按原文发送。")
+            return {}
+        values: dict[str, str] = {}
+        for (name, _), outcome in zip(fields, outcomes, strict=True):
+            if not outcome.skipped and outcome.text:
+                values[f"translated_{name}"] = outcome.text
+        if not values:
+            warnings.append("原文已是目标语言，本次试发未附加译文。")
+        return values
+
+    @staticmethod
+    def _entry_summary(entry) -> dict:
+        return {"title": entry.title, "link": entry.link, "published_at": entry.published_at}
+
+    @staticmethod
+    def _test_send_error(error: Exception) -> str:
+        if isinstance(error, RssError):
+            return error.message
+        if isinstance(error, RetryAfter):
+            return "TG 发送被限流，请稍后重试。"
+        if isinstance(error, Forbidden):
+            return "TG 拒绝发送：发布 Bot 需为目标频道管理员并具备发消息权限。"
+        if isinstance(error, BadRequest):
+            return "TG 拒绝发送：目标频道或消息内容无效。"
+        if isinstance(error, NetworkError | TimeoutError | OSError):
+            return "TG 发送失败：网络错误或超时。"
+        return "TG 发送失败，请检查发布 Bot 配置。"
+
     def _schedule(self, subscription_id: int) -> None:
         task = self._jobs.get(subscription_id)
         if task is not None and not task.done():

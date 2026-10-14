@@ -61,6 +61,7 @@ export const api = {
   deleteRssSubscription: (id) => request(`/api/rss/subscriptions/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   setRssEnabled: (id, enabled) => request(`/api/rss/subscriptions/${encodeURIComponent(id)}/enabled`, { method: 'PATCH', body: { enabled } }),
   checkRssSubscription: (id) => request(`/api/rss/subscriptions/${encodeURIComponent(id)}/check`, { method: 'POST' }),
+  testSendRssSubscription: (id) => request(`/api/rss/subscriptions/${encodeURIComponent(id)}/test-send`, { method: 'POST' }),
   retryRssSubscription: (id) => request(`/api/rss/subscriptions/${encodeURIComponent(id)}/retry`, { method: 'POST' }),
   rssEntries: (id, limit = 50) => request(`/api/rss/subscriptions/${encodeURIComponent(id)}/entries?${new URLSearchParams({ limit })}`),
   previewRss: (payload) => request('/api/rss/preview', { method: 'POST', body: payload }),

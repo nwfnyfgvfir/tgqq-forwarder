@@ -11,6 +11,7 @@ from sqlalchemy import select
 from telegram.error import NetworkError
 
 from app.config import DEFAULT_RSS_TRANSLATE_API_URL, Settings
+from app.rss.errors import RssError
 from app.rss.fetcher import FeedEntry, FeedResult
 from app.rss.formatting import build_translation_block, render_entry
 from app.rss.publisher import PublishResult
@@ -328,9 +329,12 @@ class FakeFetcher:
     def __init__(self, result: FeedResult | None = None) -> None:
         self.result = result or FeedResult()
         self.calls: list = []
+        self.error: Exception | None = None
 
     async def fetch(self, url, **kwargs):
         self.calls.append((url, kwargs))
+        if self.error is not None:
+            raise self.error
         return self.result
 
     async def close(self) -> None:
@@ -547,6 +551,122 @@ async def test_preview_skips_translation_when_disabled(rss_context) -> None:
     result = await service.preview(payload(translate=False))
     assert translator.calls == []
     assert result["entries"][0]["translated_title"] is None
+
+
+# --------------------------------------------------------------------------- #
+# 手动试发最新一条
+# --------------------------------------------------------------------------- #
+
+
+async def test_test_send_latest_publishes_newest_entry(rss_context) -> None:
+    _, _, fetcher, publisher, translator, service, worker = rss_context
+    fetcher.result = FeedResult("Feed", [english_entry(n) for n in range(1, 4)])
+    # initial_policy=skip：正式流程首次只建基线不发送，试发必须绕过该限制。
+    sub = await service.create_subscription(payload(initial_policy="skip"))
+    result = await worker.test_send_latest(sub["id"])
+    assert result["sent"] is True
+    assert result["matched"] is True
+    assert result["translated"] is True
+    assert result["entry"]["title"] == "English Title 3"
+    assert result["message_id"] == 1
+    assert len(publisher.calls) == 1
+    text = publisher.calls[0][1]
+    assert "English Title 3" in text and "ZH:English Title 3" in text
+    # 试发不写条目历史，避免污染去重基线。
+    assert await service.list_entries(sub["id"]) == []
+
+
+async def test_test_send_latest_reports_keyword_mismatch_but_sends(rss_context) -> None:
+    _, _, fetcher, publisher, translator, service, worker = rss_context
+    fetcher.result = FeedResult("Feed", [english_entry(1)])
+    sub = await service.create_subscription(payload(include_keywords=["不会命中"]))
+    result = await worker.test_send_latest(sub["id"])
+    assert result["sent"] is True
+    assert result["matched"] is False
+    assert any("未命中" in warning for warning in result["warnings"])
+    assert len(publisher.calls) == 1
+
+
+async def test_test_send_latest_respects_translate_toggle(rss_context) -> None:
+    _, _, fetcher, publisher, translator, service, worker = rss_context
+    fetcher.result = FeedResult("Feed", [english_entry(1)])
+    sub = await service.create_subscription(payload(translate=False))
+    result = await worker.test_send_latest(sub["id"])
+    assert result["sent"] is True
+    assert result["translated"] is False
+    assert translator.calls == []
+    assert "ZH:" not in publisher.calls[0][1]
+
+
+async def test_test_send_latest_translation_failure_sends_original(rss_context) -> None:
+    _, _, fetcher, publisher, translator, service, worker = rss_context
+    fetcher.result = FeedResult("Feed", [english_entry(1)])
+    translator.error = RuntimeError("boom")
+    sub = await service.create_subscription(payload())
+    result = await worker.test_send_latest(sub["id"])
+    assert result["sent"] is True
+    assert result["translated"] is False
+    assert any("翻译失败" in warning for warning in result["warnings"])
+    assert "ZH:" not in publisher.calls[0][1]
+
+
+async def test_test_send_latest_reports_send_failure(rss_context) -> None:
+    _, _, fetcher, publisher, translator, service, worker = rss_context
+    fetcher.result = FeedResult("Feed", [english_entry(1)])
+    publisher.error = NetworkError("boom")
+    sub = await service.create_subscription(payload())
+    result = await worker.test_send_latest(sub["id"])
+    assert result["sent"] is False
+    assert "网络" in result["error"]
+    assert result["entry"]["title"] == "English Title 1"
+
+
+async def test_test_send_latest_skips_entries_without_link(rss_context) -> None:
+    _, _, fetcher, _, _, service, worker = rss_context
+    fetcher.result = FeedResult(
+        "Feed",
+        [
+            FeedEntry("a", "无链接", "", "摘要", utc_now()),
+            FeedEntry("b", "有链接", "https://example.com/b", "摘要", utc_now()),
+        ],
+    )
+    sub = await service.create_subscription(payload())
+    result = await worker.test_send_latest(sub["id"])
+    assert result["entry"]["title"] == "有链接"
+
+
+async def test_test_send_latest_requires_publisher_configured(rss_context) -> None:
+    _, _, _, publisher, _, service, worker = rss_context
+    publisher.configured = False
+    sub = await service.create_subscription(payload())
+    with pytest.raises(RssError) as excinfo:
+        await worker.test_send_latest(sub["id"])
+    assert excinfo.value.code == "rss_publisher_missing"
+
+
+async def test_test_send_latest_no_entries_raises(rss_context) -> None:
+    _, _, fetcher, _, _, service, worker = rss_context
+    fetcher.result = FeedResult("Feed", [])
+    sub = await service.create_subscription(payload())
+    with pytest.raises(RssError) as excinfo:
+        await worker.test_send_latest(sub["id"])
+    assert excinfo.value.code == "rss_no_entries"
+
+
+async def test_test_send_latest_fetch_failure_raises(rss_context) -> None:
+    _, _, fetcher, _, _, service, worker = rss_context
+    fetcher.error = RssError("rss_fetch_failed", 502, "订阅抓取失败或超时")
+    sub = await service.create_subscription(payload())
+    with pytest.raises(RssError) as excinfo:
+        await worker.test_send_latest(sub["id"])
+    assert excinfo.value.code == "rss_fetch_failed"
+
+
+async def test_test_send_latest_missing_subscription_raises(rss_context) -> None:
+    _, _, _, _, _, _, worker = rss_context
+    with pytest.raises(RssError) as excinfo:
+        await worker.test_send_latest(999)
+    assert excinfo.value.code == "rss_not_found"
 
 
 # --------------------------------------------------------------------------- #

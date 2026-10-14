@@ -41,6 +41,7 @@ ENDPOINTS = [
     ("GET", "/subscriptions/1/entries", None),
     ("POST", "/subscriptions/1/check", None),
     ("POST", "/subscriptions/1/retry", None),
+    ("POST", "/subscriptions/1/test-send", None),
 ]
 
 
@@ -726,3 +727,127 @@ async def test_pause_or_tg_disconnect_keeps_pending_until_ready(api_context, blo
     await context.worker.process_subscription(created["id"])
     assert len(context.fetcher.calls) == 1 and len(context.publisher.calls) == 1
     assert (await context.service.get_subscription(created["id"]))["sent_count"] == 1
+
+
+# --------------------------------------------------------------------------- #
+# 手动试发最新一条
+# --------------------------------------------------------------------------- #
+
+
+async def test_test_send_returns_result_without_persisting_entries(api_context):
+    context = api_context
+    created = await create_subscription(context)
+    response = await context.client.post(f"{PREFIX}/subscriptions/{created['id']}/test-send")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["sent"] is True
+    assert body["matched"] is True and body["translated"] is False
+    assert body["entry"]["title"] == "Python 条目 3"
+    assert body["message_id"] == 1
+    assert body["warnings"] == []
+    assert len(context.publisher.calls) == 1
+    chat_id, text, link = context.publisher.calls[0]
+    assert chat_id == "-100123" and link == "https://example.com/articles/3"
+    assert text == body["rendered_text"] and "Python 条目 3" in text
+    # 试发不写条目历史，避免污染去重基线。
+    entries = (await context.client.get(
+        f"{PREFIX}/subscriptions/{created['id']}/entries"
+    )).json()
+    assert entries == []
+    assert_safe_response(response)
+
+
+async def test_test_send_allowed_for_disabled_subscription(api_context):
+    context = api_context
+    created = await create_subscription(context, enabled=False)
+    response = await context.client.post(f"{PREFIX}/subscriptions/{created['id']}/test-send")
+    assert response.status_code == 200
+    assert response.json()["sent"] is True
+
+
+async def test_test_send_warns_when_forwarding_unavailable(api_context):
+    context = api_context
+    created = await create_subscription(context)
+    context.manager_slot["manager"] = None
+    await context.rules.set_paused(True)
+    response = await context.client.post(f"{PREFIX}/subscriptions/{created['id']}/test-send")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["sent"] is True
+    assert any("监听账号" in warning for warning in body["warnings"])
+    assert any("暂停" in warning for warning in body["warnings"])
+
+
+async def test_test_send_reports_fetch_failure(api_context):
+    context = api_context
+    created = await create_subscription(context)
+    context.fetcher.error = RssError("rss_fetch_failed", 502, "订阅抓取失败或超时")
+    response = await context.client.post(f"{PREFIX}/subscriptions/{created['id']}/test-send")
+    assert response.status_code == 502
+    assert response.json()["detail"]["code"] == "rss_fetch_failed"
+    assert context.publisher.calls == []
+    assert_safe_response(response)
+
+
+async def test_test_send_sanitizes_unexpected_fetch_error(api_context):
+    context = api_context
+    created = await create_subscription(context)
+    context.fetcher.error = RuntimeError(f"private-error-secret {TOKEN} {RSS_TOKEN}")
+    response = await context.client.post(f"{PREFIX}/subscriptions/{created['id']}/test-send")
+    assert response.status_code == 502
+    assert response.json() == {
+        "detail": {"code": "rss_fetch_failed", "message": "订阅抓取失败或超时"}
+    }
+    assert_safe_response(response)
+
+
+async def test_test_send_with_empty_feed_returns_422(api_context):
+    context = api_context
+    created = await create_subscription(context)
+    context.fetcher.result = FeedResult("测试 Feed", [])
+    response = await context.client.post(f"{PREFIX}/subscriptions/{created['id']}/test-send")
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "rss_no_entries"
+    assert context.publisher.calls == []
+
+
+async def test_test_send_requires_configured_publisher(api_context):
+    context = api_context
+    created = await create_subscription(context)
+    context.publisher.configured = False
+    response = await context.client.post(f"{PREFIX}/subscriptions/{created['id']}/test-send")
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "rss_publisher_missing"
+    assert context.fetcher.calls == []
+
+
+async def test_test_send_reports_send_failure(api_context):
+    context = api_context
+    created = await create_subscription(context)
+    context.publisher.error = BadRequest("bad request")
+    response = await context.client.post(f"{PREFIX}/subscriptions/{created['id']}/test-send")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["sent"] is False
+    assert "TG 拒绝发送" in body["error"]
+    assert body["entry"]["title"] == "Python 条目 3"
+    assert_safe_response(response)
+
+
+async def test_test_send_without_worker_returns_503(api_context):
+    context = api_context
+    created = await create_subscription(context)
+    app = create_mini_app(
+        settings=context.settings, service=context.rules,
+        account_manager_getter=lambda: context.manager,
+        qq_status_getter=lambda: "running", qq_targets_getter=lambda: [],
+        queue_status_getter=lambda: {}, rss_service=context.service,
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test",
+        headers={"X-Telegram-Init-Data": make_init_data()},
+    ) as client:
+        response = await client.post(f"{PREFIX}/subscriptions/{created['id']}/test-send")
+        assert response.status_code == 503
+        assert response.json()["detail"]["code"] == "rss_worker_not_ready"
+    assert context.publisher.calls == []
