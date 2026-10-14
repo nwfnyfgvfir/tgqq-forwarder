@@ -30,7 +30,7 @@ TGQQ Forwarder 用于把指定 Telegram 消息自动转发到 QQ 官方机器人
 6. Telegram 匿名管理员消息、频道签名消息、隐私受限的转发消息，可能无法拿到真实发送者 ID。
 7. RSS 订阅为进程内单实例调度；Telegram 发送在“响应丢失 / 进程中断”后不能保证 exactly-once，重试可能造成重复发布。条目去重与“首次基线”策略可避免正常情况下的重复推送。
 8. RSS 抓取默认禁止访问非公网地址（SSRF 防护）。自建 RSSHub 与转发器同机时，需把主机名加入 `RSS_ALLOWED_PRIVATE_HOSTS` 白名单。
-9. RSS 自动翻译使用 Edge 浏览器内置翻译的**免密钥非官方端点**，无 SLA、可能限流或变更，且不保证译文质量；翻译失败会自动回退原文，不影响发布。
+9. RSS 自动翻译使用 DeepLX 后端（默认第三方网关，可自建），免费实例有限流、可能不稳定，且不保证译文质量；翻译失败会自动回退原文，不影响发布。
 
 ## 文件结构
 
@@ -258,9 +258,12 @@ RSS_MAX_SEND_ATTEMPTS=5
 # 非公网地址默认拒绝；自建 RSSHub（如 docker-compose 服务名 rsshub）在此显式登记
 RSS_ALLOWED_PRIVATE_HOSTS=
 # RSS 条目自动翻译：源语言自动检测，非中文才翻译，原文在上、译文在下。
-# 使用 Edge 浏览器内置翻译的免密钥非官方端点，无 SLA、可能限流或变更，失败自动回退原文。
+# 翻译后端为 DeepLX。默认第三方网关 https://api.deeplx.org/<apikey>/translate 有限流、
+# 可能不稳定，建议自建 DeepLX 后把 RSS_TRANSLATE_API_URL 指向自己的地址。
+# URL 含 apikey，视为凭据不要外泄；翻译失败自动回退原文，可整体关闭。
 RSS_TRANSLATE_ENABLED=true
-RSS_TRANSLATE_TARGET=zh-Hans
+RSS_TRANSLATE_TARGET=ZH
+RSS_TRANSLATE_API_URL=https://api.deeplx.org/yourapikey/translate
 RSS_TRANSLATE_TIMEOUT_SECONDS=10
 RSS_TRANSLATE_MAX_CHARS=1200
 
@@ -528,11 +531,12 @@ MEDIA_RETENTION_SECONDS=86400
 - **翻译成中文**：默认勾选。源语言自动检测，**仅当原文不是中文**时才翻译，消息里**原文在上、译文在下**（译文为标题与摘要）。译文会缓存到条目上，重试不会重复请求。
 - 保存前可点「预览」真实抓取该源并渲染消息效果，**不保存、不建基线、不发送**；预览同样会展示译文。
 
-> 翻译使用 **Edge 浏览器内置翻译的免密钥非官方端点**，**无 SLA**，可能限流或随时变更；**翻译失败会自动回退原文**，不影响抓取与发布。可在 `.env` 关闭或调整：
+> 翻译使用 **DeepLX** 后端。默认走第三方网关 `https://api.deeplx.org/<apikey>/translate`：**免费实例有限流、可能不稳定**，建议自建 DeepLX 后把 `RSS_TRANSLATE_API_URL` 指向自己的地址。URL 里含 `apikey`，**视为凭据，不要外泄**；中文源由本地判定直接跳过，不消耗额度；**翻译失败会自动回退原文**，不影响抓取与发布。可在 `.env` 关闭或调整：
 >
 > ```env
 > RSS_TRANSLATE_ENABLED=true
-> RSS_TRANSLATE_TARGET=zh-Hans
+> RSS_TRANSLATE_TARGET=ZH
+> RSS_TRANSLATE_API_URL=https://api.deeplx.org/yourapikey/translate
 > RSS_TRANSLATE_TIMEOUT_SECONDS=10
 > RSS_TRANSLATE_MAX_CHARS=1200
 > ```

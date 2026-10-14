@@ -12,7 +12,7 @@ from app.rss.errors import RssError
 from app.rss.fetcher import RssFetcher
 from app.rss.formatting import matches_keywords, render_entry
 from app.rss.schemas import SubscriptionInput
-from app.rss.translator import BingTranslator
+from app.rss.translator import DeepLXTranslator
 from app.storage.db import Database
 from app.storage.models import RssEntry, RssSubscription, utc_now
 
@@ -26,7 +26,7 @@ class RssService:
         self.db = db
         self.settings = settings
         self.fetcher = fetcher if fetcher is not None else RssFetcher(settings)
-        self.translator = translator if translator is not None else BingTranslator(settings)
+        self.translator = translator if translator is not None else DeepLXTranslator(settings)
         self._locks: dict[int, asyncio.Lock] = {}
 
     def subscription_lock(self, subscription_id: int) -> asyncio.Lock:

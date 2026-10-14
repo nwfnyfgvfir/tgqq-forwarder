@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app.config import Settings
+import pytest
+from pydantic import ValidationError
+
+from app.config import DEFAULT_RSS_TRANSLATE_API_URL, Settings
 
 
 def test_admin_user_ids_parse_csv() -> None:
@@ -107,3 +110,54 @@ def test_telegram_accounts_json_directory_session_path_appends_account_file() ->
     assert settings.get_telegram_account("work").session_path == Path(
         "data/sessions/work/account.session"
     )
+
+
+def test_rss_translate_api_url_default_and_empty_falls_back() -> None:
+    assert Settings(_env_file=None).rss_translate_api_url == DEFAULT_RSS_TRANSLATE_API_URL
+    assert (
+        Settings(_env_file=None, rss_translate_api_url="").rss_translate_api_url
+        == DEFAULT_RSS_TRANSLATE_API_URL
+    )
+    assert (
+        Settings(_env_file=None, rss_translate_api_url="   ").rss_translate_api_url
+        == DEFAULT_RSS_TRANSLATE_API_URL
+    )
+    custom = "http://127.0.0.1:1188/translate"
+    assert Settings(_env_file=None, rss_translate_api_url=custom).rss_translate_api_url == custom
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "ftp://api.example.com/translate",
+        "api.deeplx.org/translate",
+        "https://",
+        "https:///translate",
+        "not a url",
+        "x" * 3000,
+    ],
+)
+def test_rss_translate_api_url_rejects_invalid(value) -> None:
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, rss_translate_api_url=value)
+
+
+def test_rss_translate_api_url_is_treated_as_credential() -> None:
+    settings = Settings(
+        _env_file=None,
+        rss_translate_api_url="https://api.deeplx.org/secretkey/translate",
+    )
+    assert "secretkey" not in repr(settings)
+    assert "rss_translate_api_url" not in settings.model_dump()
+
+
+def test_rss_translate_target_default_and_validation() -> None:
+    assert Settings(_env_file=None).rss_translate_target == "ZH"
+    assert Settings(_env_file=None, rss_translate_target=" en ").rss_translate_target == "en"
+    assert (
+        Settings(_env_file=None, rss_translate_target="zh-Hant").rss_translate_target == "zh-Hant"
+    )
+    for bad in ["zh_Hans", "", "zh-Hans-CN", "1", "zhhans!"]:
+        with pytest.raises(ValidationError):
+            Settings(_env_file=None, rss_translate_target=bad)
+

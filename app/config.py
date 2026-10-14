@@ -6,11 +6,15 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Any
+from urllib.parse import urlsplit
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from app.rules.templates import DEFAULT_MESSAGE_TEMPLATE
+
+# DeepLX 翻译后端默认地址：第三方网关，key 位于 URL 路径中，等同凭据。
+DEFAULT_RSS_TRANSLATE_API_URL = "https://api.deeplx.org/yourapikey/translate"
 
 
 @dataclass(slots=True)
@@ -225,9 +229,14 @@ class Settings(BaseSettings):
     rss_max_send_attempts: int = Field(default=5, ge=1, le=20)
     rss_allowed_private_hosts: Annotated[list[str], NoDecode] = Field(default_factory=list)
 
-    # RSS 条目自动翻译：Edge 浏览器内置翻译的免密钥非官方端点，无 SLA、可能限流或变更。
+    # RSS 条目自动翻译：使用 DeepLX 后端（默认第三方网关，可自建）。失败自动回退原文。
     rss_translate_enabled: bool = True
-    rss_translate_target: str = "zh-Hans"
+    rss_translate_target: str = "ZH"
+    # DeepLX 接口地址，形如 https://api.deeplx.org/<apikey>/translate；key 在 URL 路径中，
+    # 属凭据，故 exclude/repr=False，不进入序列化或 repr。
+    rss_translate_api_url: str = Field(
+        default=DEFAULT_RSS_TRANSLATE_API_URL, exclude=True, repr=False
+    )
     rss_translate_timeout_seconds: float = Field(
         default=10, gt=0, le=120, allow_inf_nan=False
     )
@@ -259,9 +268,35 @@ class Settings(BaseSettings):
     @classmethod
     def validate_rss_translate_target(cls, value: str) -> str:
         text = value.strip()
-        if re.fullmatch(r"[a-zA-Z]{2,3}(-[A-Za-z]{2,4})?", text) is None:
-            raise ValueError("RSS_TRANSLATE_TARGET 仅接受简单语言标签，如 zh-Hans、zh-Hant、en")
+        if re.fullmatch(r"[A-Za-z]{2,5}(-[A-Za-z]{2,4})?", text) is None:
+            raise ValueError("RSS_TRANSLATE_TARGET 仅接受简单语言标签，如 ZH、EN、zh-Hant")
         return text
+
+    @field_validator("rss_translate_api_url", mode="before")
+    @classmethod
+    def normalize_rss_translate_api_url(cls, value: object) -> object:
+        # 空串/空白视为未配置，回退默认地址；None 同理。
+        if value is None:
+            return DEFAULT_RSS_TRANSLATE_API_URL
+        if not isinstance(value, str):
+            raise TypeError("RSS_TRANSLATE_API_URL must be a URL string")
+        if not value.strip():
+            return DEFAULT_RSS_TRANSLATE_API_URL
+        return value
+
+    @field_validator("rss_translate_api_url")
+    @classmethod
+    def validate_rss_translate_api_url(cls, value: str) -> str:
+        if len(value) > 2048:
+            raise ValueError("RSS_TRANSLATE_API_URL 长度不能超过 2048")
+        try:
+            parts = urlsplit(value)
+            host = parts.hostname
+        except ValueError:
+            raise ValueError("RSS_TRANSLATE_API_URL 必须是有效的 HTTP(S) URL") from None
+        if parts.scheme.lower() not in {"http", "https"} or not host:
+            raise ValueError("RSS_TRANSLATE_API_URL 必须以 http:// 或 https:// 开头并包含主机名")
+        return value
 
     @field_validator("rss_allowed_private_hosts", mode="before")
     @classmethod
