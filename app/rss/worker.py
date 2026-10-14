@@ -15,7 +15,7 @@ from app.rss.errors import RssError
 from app.rss.formatting import matches_keywords, render_entry
 from app.rss.publisher import RssPublisher
 from app.rss.service import RssService
-from app.rss.translator import DeepLXTranslator
+from app.rss.translator import AITranslator
 from app.storage.models import RssEntry, RssSubscription, utc_now
 
 logger = logging.getLogger(__name__)
@@ -36,7 +36,7 @@ class RssWorker:
         self.service = service
         self.publisher = publisher if publisher is not None else RssPublisher(settings)
         self.can_publish = can_publish
-        self.translator = translator if translator is not None else DeepLXTranslator(settings)
+        self.translator = translator if translator is not None else AITranslator(settings)
         self._task: asyncio.Task | None = None
         self._jobs: dict[int, asyncio.Task] = {}
         self._job_locks: dict[int, asyncio.Lock] = {}

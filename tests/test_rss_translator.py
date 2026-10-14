@@ -10,31 +10,39 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from telegram.error import NetworkError
 
-from app.config import Settings
+from app.config import DEFAULT_RSS_TRANSLATE_API_URL, Settings
 from app.rss.fetcher import FeedEntry, FeedResult
 from app.rss.formatting import build_translation_block, render_entry
 from app.rss.publisher import PublishResult
 from app.rss.schemas import DEFAULT_MESSAGE_TEMPLATE, TEMPLATE_FIELDS, SubscriptionInput
 from app.rss.service import RssService
-from app.rss.translator import DeepLXTranslator, TranslationOutcome, detect_is_chinese
+from app.rss.translator import (
+    AITranslator,
+    TranslationOutcome,
+    detect_is_chinese,
+    resolve_endpoint_url,
+)
 from app.rss.worker import RssWorker
 from app.storage.db import Database
 from app.storage.models import RssEntry, RssSubscription, utc_now
 
-DEFAULT_URL = "https://api.deeplx.org/yourapikey/translate"
-TEST_URL = "https://api.deeplx.org/testkey/translate"
+DEFAULT_URL = DEFAULT_RSS_TRANSLATE_API_URL
+TEST_URL = "https://api.openai.com/v1/chat/completions"
 
 # --------------------------------------------------------------------------- #
-# 假 DeepLX 端点与工具
+# 假 Chat Completions 端点与工具
 # --------------------------------------------------------------------------- #
 
 
 def ok(text: str) -> httpx.Response:
-    """标准 DeepLX 成功响应：{"code":200,"data":...}。"""
-    return httpx.Response(200, json={"code": 200, "data": text, "id": 123456})
+    """标准 Chat Completions 成功响应：choices[0].message.content。"""
+    return httpx.Response(
+        200,
+        json={"choices": [{"index": 0, "message": {"role": "assistant", "content": text}}]},
+    )
 
 
-class DeepLXEndpoint:
+class AIEndpoint:
     """记录请求的假端点：按脚本顺序返回响应，用尽后返回成功空串。"""
 
     def __init__(self, responses=None) -> None:
@@ -42,11 +50,13 @@ class DeepLXEndpoint:
         self.calls = 0
         self.urls: list[str] = []
         self.bodies: list[dict] = []
+        self.headers: list[dict] = []
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.calls += 1
         self.urls.append(str(request.url))
         self.bodies.append(json.loads(request.content))
+        self.headers.append(dict(request.headers))
         if self.responses:
             response = self.responses.pop(0)
             if isinstance(response, Exception):
@@ -54,22 +64,24 @@ class DeepLXEndpoint:
             return response
         return ok("")
 
-    def translator(self, **settings_kwargs) -> DeepLXTranslator:
+    def translator(self, **settings_kwargs) -> AITranslator:
         settings_kwargs.setdefault("rss_translate_api_url", TEST_URL)
-        return DeepLXTranslator(
+        return AITranslator(
             Settings(_env_file=None, **settings_kwargs),
             transport=httpx.MockTransport(self.handler),
         )
 
 
 # --------------------------------------------------------------------------- #
-# DeepLXTranslator 单元测试
+# AITranslator 单元测试
 # --------------------------------------------------------------------------- #
 
 
-async def test_code200_data_returns_translation_and_request_contract() -> None:
-    endpoint = DeepLXEndpoint([ok("你好")])
-    translator = endpoint.translator()
+async def test_chat_completions_contract_returns_translation() -> None:
+    endpoint = AIEndpoint([ok("你好")])
+    translator = endpoint.translator(
+        rss_translate_api_key="sk-test", rss_translate_model="gpt-4o-mini"
+    )
     try:
         outcomes = await translator.translate(["hello"])
     finally:
@@ -78,17 +90,43 @@ async def test_code200_data_returns_translation_and_request_contract() -> None:
     assert outcomes[0].language == "auto"
     assert outcomes[0].skipped is False and outcomes[0].error is None
     assert endpoint.urls == [TEST_URL]
-    assert endpoint.bodies[0] == {"text": "hello", "source_lang": "auto", "target_lang": "ZH"}
+    body = endpoint.bodies[0]
+    assert body["model"] == "gpt-4o-mini"
+    assert body["temperature"] == 0 and body["stream"] is False
+    assert body["messages"][0]["role"] == "system"
+    assert "简体中文" in body["messages"][0]["content"]
+    assert body["messages"][1] == {"role": "user", "content": "hello"}
+    assert endpoint.headers[0]["authorization"] == "Bearer sk-test"
 
 
-async def test_target_override_used_in_body() -> None:
-    endpoint = DeepLXEndpoint([ok("你好")])
+async def test_missing_api_key_sends_no_authorization_header() -> None:
+    endpoint = AIEndpoint([ok("你好")])
     translator = endpoint.translator()
     try:
-        await translator.translate(["hello"], target="EN")
+        await translator.translate(["hello"])
     finally:
         await translator.close()
-    assert endpoint.bodies[0]["target_lang"] == "EN"
+    assert "authorization" not in endpoint.headers[0]
+
+
+async def test_target_override_in_system_prompt() -> None:
+    endpoint = AIEndpoint([ok("Hello")])
+    translator = endpoint.translator()
+    try:
+        await translator.translate(["Bonjour"], target="EN")
+    finally:
+        await translator.close()
+    assert "English" in endpoint.bodies[0]["messages"][0]["content"]
+
+
+async def test_unknown_target_tag_is_used_verbatim() -> None:
+    endpoint = AIEndpoint([ok("translated")])
+    translator = endpoint.translator()
+    try:
+        await translator.translate(["hello"], target="sw")
+    finally:
+        await translator.close()
+    assert "sw" in endpoint.bodies[0]["messages"][0]["content"]
 
 
 @pytest.mark.parametrize(
@@ -96,39 +134,44 @@ async def test_target_override_used_in_body() -> None:
     [
         httpx.Response(
             200,
-            json={"translations": [{"detected_source_language": "EN", "text": "世界"}]},
+            json={
+                "choices": [
+                    {"message": {"content": [{"type": "text", "text": "世界"}]}}
+                ]
+            },
         ),
-        httpx.Response(200, json="裸字符串译文"),
+        httpx.Response(200, json={"choices": [{"message": {"content": "世界"}}]}),
     ],
 )
 async def test_alternative_payloads_are_parsed(response) -> None:
-    endpoint = DeepLXEndpoint([response])
+    endpoint = AIEndpoint([response])
     translator = endpoint.translator()
     try:
         outcomes = await translator.translate(["hello"])
     finally:
         await translator.close()
     assert outcomes[0].error is None
-    assert outcomes[0].text in {"世界", "裸字符串译文"}
+    assert outcomes[0].text == "世界"
     assert outcomes[0].language == "auto"
 
 
 @pytest.mark.parametrize(
     "response",
     [
-        httpx.Response(200, json={"code": 429, "message": "rate limited"}),
-        httpx.Response(200, json={"code": 200}),
-        httpx.Response(200, json={"code": 200, "data": 123}),
-        httpx.Response(200, json={"unexpected": True}),
+        httpx.Response(200, json={"choices": []}),
+        httpx.Response(200, json={"choices": [{"message": {"content": ""}}]}),
+        httpx.Response(200, json={"choices": [{"message": {"content": 123}}]}),
+        httpx.Response(200, json={"choices": [{"message": {}}]}),
+        httpx.Response(200, json={"error": {"message": "rate limited"}}),
         httpx.Response(200, text="not json"),
         httpx.Response(500, text="boom"),
         httpx.Response(429, text="too many requests"),
-        httpx.Response(403, text="forbidden"),
+        httpx.Response(401, text="unauthorized"),
         httpx.ConnectTimeout("timed out"),
     ],
 )
 async def test_failures_return_error_without_raising(response) -> None:
-    endpoint = DeepLXEndpoint([response])
+    endpoint = AIEndpoint([response])
     translator = endpoint.translator()
     try:
         outcomes = await translator.translate(["hello"])
@@ -141,7 +184,7 @@ async def test_failures_return_error_without_raising(response) -> None:
 
 
 async def test_chinese_text_skipped_without_any_request() -> None:
-    endpoint = DeepLXEndpoint()
+    endpoint = AIEndpoint()
     translator = endpoint.translator()
     try:
         outcomes = await translator.translate(["你好，世界！", "hello"])
@@ -152,13 +195,13 @@ async def test_chinese_text_skipped_without_any_request() -> None:
     assert outcomes[0].text is None and outcomes[0].error is None
     # 中文不发请求；仅非中文的 "hello" 触发一次请求。
     assert endpoint.calls == 1
-    assert [body["text"] for body in endpoint.bodies] == ["hello"]
+    assert [body["messages"][1]["content"] for body in endpoint.bodies] == ["hello"]
 
 
 @pytest.mark.parametrize("text", ["こんにちは", "テストです", "안녕하세요"])
 async def test_kana_and_other_scripts_are_not_chinese(text) -> None:
     assert detect_is_chinese(text) is False
-    endpoint = DeepLXEndpoint([ok("译文")])
+    endpoint = AIEndpoint([ok("译文")])
     translator = endpoint.translator()
     try:
         outcomes = await translator.translate([text])
@@ -178,7 +221,7 @@ def test_detect_is_chinese_boundaries() -> None:
 
 
 async def test_identical_translation_is_skipped() -> None:
-    endpoint = DeepLXEndpoint([ok("hello")])
+    endpoint = AIEndpoint([ok("hello")])
     translator = endpoint.translator()
     try:
         outcomes = await translator.translate(["hello"])
@@ -191,18 +234,18 @@ async def test_identical_translation_is_skipped() -> None:
 
 
 async def test_long_text_truncated_before_sending() -> None:
-    endpoint = DeepLXEndpoint([ok("译文")])
+    endpoint = AIEndpoint([ok("译文")])
     translator = endpoint.translator(rss_translate_max_chars=100)
     try:
         outcomes = await translator.translate(["a" * 500])
     finally:
         await translator.close()
-    assert len(endpoint.bodies[0]["text"]) == 100
+    assert len(endpoint.bodies[0]["messages"][1]["content"]) == 100
     assert outcomes[0].text == "译文"
 
 
 async def test_blank_text_skipped_without_any_request() -> None:
-    endpoint = DeepLXEndpoint()
+    endpoint = AIEndpoint()
     translator = endpoint.translator()
     try:
         outcomes = await translator.translate(["   ", "", "\n"])
@@ -213,7 +256,7 @@ async def test_blank_text_skipped_without_any_request() -> None:
 
 
 async def test_empty_batch_returns_empty_list() -> None:
-    endpoint = DeepLXEndpoint()
+    endpoint = AIEndpoint()
     translator = endpoint.translator()
     try:
         assert await translator.translate([]) == []
@@ -223,18 +266,22 @@ async def test_empty_batch_returns_empty_list() -> None:
 
 
 async def test_requests_are_sequential_in_order() -> None:
-    endpoint = DeepLXEndpoint([ok("一"), ok("二"), ok("三")])
+    endpoint = AIEndpoint([ok("一"), ok("二"), ok("三")])
     translator = endpoint.translator()
     try:
         outcomes = await translator.translate(["one", "two", "three"])
     finally:
         await translator.close()
-    assert [body["text"] for body in endpoint.bodies] == ["one", "two", "three"]
+    assert [body["messages"][1]["content"] for body in endpoint.bodies] == [
+        "one",
+        "two",
+        "three",
+    ]
     assert [outcome.text for outcome in outcomes] == ["一", "二", "三"]
 
 
 async def test_client_reused_across_calls() -> None:
-    endpoint = DeepLXEndpoint([ok("一"), ok("二")])
+    endpoint = AIEndpoint([ok("一"), ok("二")])
     translator = endpoint.translator()
     try:
         await translator.translate(["one"])
@@ -244,6 +291,32 @@ async def test_client_reused_across_calls() -> None:
     finally:
         await translator.close()
     assert endpoint.calls == 2
+
+
+async def test_base_url_is_completed_to_chat_completions_endpoint() -> None:
+    endpoint = AIEndpoint([ok("译文")])
+    translator = endpoint.translator(rss_translate_api_url="https://api.deepseek.com/v1")
+    try:
+        await translator.translate(["hello"])
+    finally:
+        await translator.close()
+    assert endpoint.urls == ["https://api.deepseek.com/v1/chat/completions"]
+
+
+def test_resolve_endpoint_url_variants() -> None:
+    full = "https://api.openai.com/v1/chat/completions"
+    assert resolve_endpoint_url(full) == full
+    assert (
+        resolve_endpoint_url("https://api.deepseek.com/v1")
+        == "https://api.deepseek.com/v1/chat/completions"
+    )
+    assert (
+        resolve_endpoint_url("https://api.deepseek.com")
+        == "https://api.deepseek.com/chat/completions"
+    )
+    assert resolve_endpoint_url("https://gateway/v1/") == "https://gateway/v1/chat/completions"
+    with_query = "https://gateway/v1/chat/completions?api-version=2024-01-01"
+    assert resolve_endpoint_url(with_query) == with_query
 
 
 # --------------------------------------------------------------------------- #
@@ -535,12 +608,26 @@ def test_valid_translation_settings() -> None:
     assert settings.rss_translate_enabled is True
     assert settings.rss_translate_target == "ZH"
     assert settings.rss_translate_api_url == DEFAULT_URL
-    assert settings.rss_translate_timeout_seconds == 10
+    assert settings.rss_translate_api_key is None
+    assert settings.rss_translate_model == "gpt-4o-mini"
+    assert settings.rss_translate_timeout_seconds == 30
     assert settings.rss_translate_max_chars == 1200
     assert Settings(_env_file=None, rss_translate_target="zh-Hant").rss_translate_target == (
         "zh-Hant"
     )
     assert Settings(_env_file=None, rss_translate_target=" en ").rss_translate_target == "en"
+
+
+def test_api_key_and_model_normalization() -> None:
+    assert Settings(_env_file=None, rss_translate_api_key="  ").rss_translate_api_key is None
+    assert (
+        Settings(_env_file=None, rss_translate_api_key=" sk-1 ").rss_translate_api_key == "sk-1"
+    )
+    assert Settings(_env_file=None, rss_translate_model="   ").rss_translate_model == "gpt-4o-mini"
+    assert (
+        Settings(_env_file=None, rss_translate_model=" deepseek-chat ").rss_translate_model
+        == "deepseek-chat"
+    )
 
 
 @pytest.mark.parametrize(
@@ -554,6 +641,8 @@ def test_valid_translation_settings() -> None:
         {"rss_translate_timeout_seconds": 121},
         {"rss_translate_max_chars": 99},
         {"rss_translate_max_chars": 5001},
+        {"rss_translate_model": "m" * 201},
+        {"rss_translate_api_key": "k" * 4097},
     ],
 )
 def test_invalid_translation_settings(overrides) -> None:

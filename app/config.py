@@ -13,8 +13,9 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from app.rules.templates import DEFAULT_MESSAGE_TEMPLATE
 
-# DeepLX 翻译后端默认地址：第三方网关，key 位于 URL 路径中，等同凭据。
-DEFAULT_RSS_TRANSLATE_API_URL = "https://api.deeplx.org/yourapikey/translate"
+# AI 翻译后端默认地址：OpenAI 兼容的 Chat Completions 端点，可换成任意兼容服务。
+DEFAULT_RSS_TRANSLATE_API_URL = "https://api.openai.com/v1/chat/completions"
+DEFAULT_RSS_TRANSLATE_MODEL = "gpt-4o-mini"
 
 
 @dataclass(slots=True)
@@ -229,16 +230,17 @@ class Settings(BaseSettings):
     rss_max_send_attempts: int = Field(default=5, ge=1, le=20)
     rss_allowed_private_hosts: Annotated[list[str], NoDecode] = Field(default_factory=list)
 
-    # RSS 条目自动翻译：使用 DeepLX 后端（默认第三方网关，可自建）。失败自动回退原文。
+    # RSS 条目自动翻译：使用 OpenAI 兼容的 /v1/chat/completions 接口。失败自动回退原文。
     rss_translate_enabled: bool = True
     rss_translate_target: str = "ZH"
-    # DeepLX 接口地址，形如 https://api.deeplx.org/<apikey>/translate；key 在 URL 路径中，
-    # 属凭据，故 exclude/repr=False，不进入序列化或 repr。
-    rss_translate_api_url: str = Field(
-        default=DEFAULT_RSS_TRANSLATE_API_URL, exclude=True, repr=False
-    )
+    # AI 接口地址，可填完整端点（.../v1/chat/completions）或基础地址（.../v1，自动补全）。
+    rss_translate_api_url: str = Field(default=DEFAULT_RSS_TRANSLATE_API_URL)
+    # 接口凭据；属敏感信息，exclude/repr=False，不进入序列化或 repr。本地无鉴权端点可留空。
+    rss_translate_api_key: str | None = Field(default=None, exclude=True, repr=False)
+    # 使用的模型名，如 gpt-4o-mini、deepseek-chat、qwen-plus 等。
+    rss_translate_model: str = DEFAULT_RSS_TRANSLATE_MODEL
     rss_translate_timeout_seconds: float = Field(
-        default=10, gt=0, le=120, allow_inf_nan=False
+        default=30, gt=0, le=120, allow_inf_nan=False
     )
     rss_translate_max_chars: int = Field(default=1200, ge=100, le=5000)
 
@@ -296,6 +298,41 @@ class Settings(BaseSettings):
             raise ValueError("RSS_TRANSLATE_API_URL 必须是有效的 HTTP(S) URL") from None
         if parts.scheme.lower() not in {"http", "https"} or not host:
             raise ValueError("RSS_TRANSLATE_API_URL 必须以 http:// 或 https:// 开头并包含主机名")
+        return value
+
+    @field_validator("rss_translate_api_key", mode="before")
+    @classmethod
+    def normalize_rss_translate_api_key(cls, value: object) -> object:
+        # 空串/空白视为未配置（本地无鉴权端点），返回 None。
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise TypeError("RSS_TRANSLATE_API_KEY must be a string")
+        text = value.strip()
+        return text or None
+
+    @field_validator("rss_translate_api_key")
+    @classmethod
+    def validate_rss_translate_api_key(cls, value: str | None) -> str | None:
+        if value is not None and len(value) > 4096:
+            raise ValueError("RSS_TRANSLATE_API_KEY 长度不能超过 4096")
+        return value
+
+    @field_validator("rss_translate_model", mode="before")
+    @classmethod
+    def normalize_rss_translate_model(cls, value: object) -> object:
+        # 空串/空白回退默认模型。
+        if value is None:
+            return DEFAULT_RSS_TRANSLATE_MODEL
+        if not isinstance(value, str):
+            raise TypeError("RSS_TRANSLATE_MODEL must be a string")
+        return value.strip() or DEFAULT_RSS_TRANSLATE_MODEL
+
+    @field_validator("rss_translate_model")
+    @classmethod
+    def validate_rss_translate_model(cls, value: str) -> str:
+        if len(value) > 200:
+            raise ValueError("RSS_TRANSLATE_MODEL 长度不能超过 200")
         return value
 
     @field_validator("rss_allowed_private_hosts", mode="before")

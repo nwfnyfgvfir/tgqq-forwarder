@@ -122,15 +122,20 @@ def test_rss_translate_api_url_default_and_empty_falls_back() -> None:
         Settings(_env_file=None, rss_translate_api_url="   ").rss_translate_api_url
         == DEFAULT_RSS_TRANSLATE_API_URL
     )
-    custom = "http://127.0.0.1:1188/translate"
+    custom = "http://127.0.0.1:11434/v1/chat/completions"
     assert Settings(_env_file=None, rss_translate_api_url=custom).rss_translate_api_url == custom
+    # 接口地址是普通字段，会进入序列化；凭据是 API Key。
+    assert (
+        Settings(_env_file=None).model_dump()["rss_translate_api_url"]
+        == DEFAULT_RSS_TRANSLATE_API_URL
+    )
 
 
 @pytest.mark.parametrize(
     "value",
     [
-        "ftp://api.example.com/translate",
-        "api.deeplx.org/translate",
+        "ftp://api.example.com/v1/chat/completions",
+        "api.openai.com/v1/chat/completions",
         "https://",
         "https:///translate",
         "not a url",
@@ -142,13 +147,11 @@ def test_rss_translate_api_url_rejects_invalid(value) -> None:
         Settings(_env_file=None, rss_translate_api_url=value)
 
 
-def test_rss_translate_api_url_is_treated_as_credential() -> None:
-    settings = Settings(
-        _env_file=None,
-        rss_translate_api_url="https://api.deeplx.org/secretkey/translate",
-    )
-    assert "secretkey" not in repr(settings)
-    assert "rss_translate_api_url" not in settings.model_dump()
+def test_rss_translate_api_key_is_treated_as_credential() -> None:
+    settings = Settings(_env_file=None, rss_translate_api_key="sk-secret-value")
+    assert settings.rss_translate_api_key == "sk-secret-value"
+    assert "sk-secret-value" not in repr(settings)
+    assert "rss_translate_api_key" not in settings.model_dump()
 
 
 def test_rss_translate_target_default_and_validation() -> None:
