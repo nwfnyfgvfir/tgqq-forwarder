@@ -243,6 +243,15 @@ class Settings(BaseSettings):
         default=30, gt=0, le=120, allow_inf_nan=False
     )
     rss_translate_max_chars: int = Field(default=1200, ge=100, le=5000)
+    # 同一进程内翻译请求的并发上限，所有 translator 实例（预览/发送/试发）共享；
+    # 1 表示完全串行，最不容易触发上游限流。
+    rss_translate_max_concurrency: int = Field(default=1, ge=1, le=16)
+    # 单条翻译遇瞬时错误（限流/超时/5xx）时的总尝试次数，含首次请求。
+    rss_translate_max_attempts: int = Field(default=3, ge=1, le=10)
+    # 重试退避基数（秒），按指数增长；上游返回 Retry-After 时优先遵循。
+    rss_translate_retry_backoff_seconds: float = Field(
+        default=1.0, ge=0.0, le=60.0, allow_inf_nan=False
+    )
 
     @field_validator("telegram_bot_proxy", mode="before")
     @classmethod

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import timedelta
 from types import SimpleNamespace
@@ -20,6 +21,9 @@ from app.rss.service import RssService
 from app.rss.translator import (
     AITranslator,
     TranslationOutcome,
+    _is_retryable,
+    _retry_delay,
+    _translation_gate,
     detect_is_chinese,
     resolve_endpoint_url,
 )
@@ -67,10 +71,34 @@ class AIEndpoint:
 
     def translator(self, **settings_kwargs) -> AITranslator:
         settings_kwargs.setdefault("rss_translate_api_url", TEST_URL)
+        # 默认不重试，保证失败类用例的调用次数确定；重试单独用下面的用例验证。
+        settings_kwargs.setdefault("rss_translate_max_attempts", 1)
         return AITranslator(
             Settings(_env_file=None, **settings_kwargs),
             transport=httpx.MockTransport(self.handler),
         )
+
+
+class ConcurrencyTransport(httpx.AsyncBaseTransport):
+    """记录同时在建请求数的异步传输，用于验证全局并发闸门。"""
+
+    def __init__(self, delay: float = 0.03) -> None:
+        self.delay = delay
+        self.calls = 0
+        self.in_flight = 0
+        self.max_in_flight = 0
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        self.calls += 1
+        self.in_flight += 1
+        self.max_in_flight = max(self.max_in_flight, self.in_flight)
+        try:
+            await asyncio.sleep(self.delay)
+            body = json.loads(request.content)
+            text = body["messages"][1]["content"]
+            return ok(f"译:{text}")
+        finally:
+            self.in_flight -= 1
 
 
 # --------------------------------------------------------------------------- #
@@ -318,6 +346,126 @@ def test_resolve_endpoint_url_variants() -> None:
     assert resolve_endpoint_url("https://gateway/v1/") == "https://gateway/v1/chat/completions"
     with_query = "https://gateway/v1/chat/completions?api-version=2024-01-01"
     assert resolve_endpoint_url(with_query) == with_query
+
+
+# --------------------------------------------------------------------------- #
+# 并发闸门与重试
+# --------------------------------------------------------------------------- #
+
+
+async def test_translation_concurrency_gate_is_shared_across_instances() -> None:
+    transport = ConcurrencyTransport()
+    settings = Settings(_env_file=None, rss_translate_api_url=TEST_URL)
+    first = AITranslator(settings, transport=transport)
+    second = AITranslator(settings, transport=transport)
+    try:
+        await asyncio.gather(
+            first.translate(["one", "two", "three"]),
+            second.translate(["four", "five", "six"]),
+        )
+    finally:
+        await first.close()
+        await second.close()
+    # 两个实例（模拟 service 预览与 worker 发送）共享闸门，任一时刻最多一个在途请求。
+    assert transport.calls == 6
+    assert transport.max_in_flight == 1
+
+
+async def test_translation_gate_is_shared_per_loop_and_limit() -> None:
+    assert _translation_gate(1) is _translation_gate(1)
+    assert _translation_gate(2) is not _translation_gate(1)
+
+
+def test_is_retryable_classification() -> None:
+    request = httpx.Request("POST", TEST_URL)
+    assert _is_retryable(
+        httpx.HTTPStatusError("429", request=request, response=httpx.Response(429))
+    )
+    assert _is_retryable(
+        httpx.HTTPStatusError("503", request=request, response=httpx.Response(503))
+    )
+    assert _is_retryable(httpx.ConnectTimeout("timed out"))
+    assert not _is_retryable(
+        httpx.HTTPStatusError("401", request=request, response=httpx.Response(401))
+    )
+    assert not _is_retryable(ValueError("unexpected chat completions payload"))
+
+
+def test_retry_delay_honors_retry_after_and_backoff() -> None:
+    request = httpx.Request("POST", TEST_URL)
+    limited = httpx.HTTPStatusError(
+        "429", request=request, response=httpx.Response(429, headers={"retry-after": "7"})
+    )
+    assert _retry_delay(limited, 0, 1.0) == 7.0
+    server = httpx.HTTPStatusError("503", request=request, response=httpx.Response(503))
+    assert _retry_delay(server, 0, 1.0) == 1.0
+    assert _retry_delay(server, 1, 1.0) == 2.0
+    assert _retry_delay(server, 2, 1.0) == 4.0
+
+
+async def test_retries_on_429_then_succeeds() -> None:
+    endpoint = AIEndpoint([httpx.Response(429, headers={"retry-after": "0"}), ok("你好")])
+    translator = endpoint.translator(
+        rss_translate_max_attempts=3, rss_translate_retry_backoff_seconds=0.01
+    )
+    try:
+        outcomes = await translator.translate(["hello"])
+    finally:
+        await translator.close()
+    assert outcomes[0].text == "你好" and outcomes[0].error is None
+    assert endpoint.calls == 2
+
+
+async def test_retries_on_server_error_then_succeeds() -> None:
+    endpoint = AIEndpoint([httpx.Response(503, text="unavailable"), ok("世界")])
+    translator = endpoint.translator(
+        rss_translate_max_attempts=3, rss_translate_retry_backoff_seconds=0.01
+    )
+    try:
+        outcomes = await translator.translate(["hello"])
+    finally:
+        await translator.close()
+    assert outcomes[0].text == "世界"
+    assert endpoint.calls == 2
+
+
+async def test_does_not_retry_on_client_error() -> None:
+    endpoint = AIEndpoint([httpx.Response(401, text="unauthorized")])
+    translator = endpoint.translator(
+        rss_translate_max_attempts=3, rss_translate_retry_backoff_seconds=0.01
+    )
+    try:
+        outcomes = await translator.translate(["hello"])
+    finally:
+        await translator.close()
+    assert outcomes[0].error == "翻译服务暂时不可用"
+    assert endpoint.calls == 1
+
+
+async def test_retry_exhausted_returns_error() -> None:
+    endpoint = AIEndpoint([httpx.Response(503), httpx.Response(503), httpx.Response(503)])
+    translator = endpoint.translator(
+        rss_translate_max_attempts=3, rss_translate_retry_backoff_seconds=0.01
+    )
+    try:
+        outcomes = await translator.translate(["hello"])
+    finally:
+        await translator.close()
+    assert outcomes[0].error == "翻译服务暂时不可用"
+    assert endpoint.calls == 3
+
+
+async def test_malformed_payload_is_not_retried() -> None:
+    endpoint = AIEndpoint([httpx.Response(200, json={"choices": []})])
+    translator = endpoint.translator(
+        rss_translate_max_attempts=3, rss_translate_retry_backoff_seconds=0.01
+    )
+    try:
+        outcomes = await translator.translate(["hello"])
+    finally:
+        await translator.close()
+    assert outcomes[0].error == "翻译服务暂时不可用"
+    assert endpoint.calls == 1
 
 
 # --------------------------------------------------------------------------- #
@@ -732,6 +880,9 @@ def test_valid_translation_settings() -> None:
     assert settings.rss_translate_model == "gpt-4o-mini"
     assert settings.rss_translate_timeout_seconds == 30
     assert settings.rss_translate_max_chars == 1200
+    assert settings.rss_translate_max_concurrency == 1
+    assert settings.rss_translate_max_attempts == 3
+    assert settings.rss_translate_retry_backoff_seconds == 1.0
     assert Settings(_env_file=None, rss_translate_target="zh-Hant").rss_translate_target == (
         "zh-Hant"
     )
@@ -763,6 +914,12 @@ def test_api_key_and_model_normalization() -> None:
         {"rss_translate_max_chars": 5001},
         {"rss_translate_model": "m" * 201},
         {"rss_translate_api_key": "k" * 4097},
+        {"rss_translate_max_concurrency": 0},
+        {"rss_translate_max_concurrency": 17},
+        {"rss_translate_max_attempts": 0},
+        {"rss_translate_max_attempts": 11},
+        {"rss_translate_retry_backoff_seconds": -0.1},
+        {"rss_translate_retry_backoff_seconds": 61},
     ],
 )
 def test_invalid_translation_settings(overrides) -> None:

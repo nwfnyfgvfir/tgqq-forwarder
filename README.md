@@ -268,6 +268,9 @@ RSS_TRANSLATE_API_KEY=
 RSS_TRANSLATE_MODEL=gpt-4o-mini
 RSS_TRANSLATE_TIMEOUT_SECONDS=30
 RSS_TRANSLATE_MAX_CHARS=1200
+RSS_TRANSLATE_MAX_CONCURRENCY=1
+RSS_TRANSLATE_MAX_ATTEMPTS=3
+RSS_TRANSLATE_RETRY_BACKOFF_SECONDS=1
 
 TG_ADMIN_BOT_TOKEN=123456:请替换为你的管理BotToken
 ADMIN_TELEGRAM_USER_IDS=11111111,22222222
@@ -567,6 +570,7 @@ MEDIA_RETENTION_SECONDS=86400
 - 全局转发暂停或 Telegram 监听未就绪时，RSS 仍会抓取和入队，但**不会发布**，面板会显式提示。
 - 修改 Feed URL 会重建基线并跳过旧源未发送条目；修改 TG 目标只会影响之后待发送条目，已发布条目不会重发。
 - 翻译在发送前完成并缓存到条目上：已缓存的译文不会重复请求；翻译失败会记录 warning 并按原文发布，不会因此重试或标记失败。
+- 翻译请求**全局限流**：所有翻译调用（预览 / 发送 / 试发）共享 `RSS_TRANSLATE_MAX_CONCURRENCY`（默认 `1`，即串行），避免并发过高触发上游限流；遇 `429` / 超时 / `5xx` 会按 `RSS_TRANSLATE_MAX_ATTEMPTS` 与 `RSS_TRANSLATE_RETRY_BACKOFF_SECONDS` **指数退避重试**（并遵循上游 `Retry-After`），`4xx`（鉴权/参数/模型不存在）与响应格式错误不重试。
 
 ## Telegram 管理 Bot 命令
 

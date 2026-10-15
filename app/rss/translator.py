@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import weakref
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
@@ -14,6 +15,58 @@ logger = logging.getLogger(__name__)
 # choices[0].message.content。API Key 与接口地址均视为凭据，禁止记录/回显
 # 请求头、请求体、响应体或完整 URL。
 SAFE_ERROR = "翻译服务暂时不可用"
+
+# 可重试的瞬时状态码：限流、超时与上游故障。
+_RETRYABLE_STATUS = {408, 425, 429, 500, 502, 503, 504}
+# 单次退避上限，避免上游长时间不可用时无限等待。
+_MAX_BACKOFF_SECONDS = 30.0
+# 尊重 Retry-After 时的等待上限。
+_MAX_RETRY_AFTER_SECONDS = 60.0
+
+# 同一事件循环内所有 AITranslator 实例共享的并发闸门：service 的预览与 worker 的
+# 发送/试发各自持有实例，只有共享闸门才能避免同时压垮上游。key 为事件循环，
+# 测试各自建循环时互不影响（与 RssPublisher 的 bot 限流闸门同一模式）。
+_GATES: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
+def _translation_gate(limit: int) -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    entry = _GATES.get(loop)
+    if entry is None or entry[0] != limit:
+        entry = (limit, asyncio.Semaphore(limit))
+        _GATES[loop] = entry
+    return entry[1]
+
+
+def _is_retryable(error: Exception) -> bool:
+    """仅瞬时故障可重试；4xx（鉴权、参数、模型不存在等）立即失败。"""
+    if isinstance(error, httpx.HTTPStatusError):
+        return error.response.status_code in _RETRYABLE_STATUS
+    return isinstance(error, httpx.TransportError)
+
+
+def _retry_delay(error: Exception, attempt: int, backoff: float) -> float:
+    """优先尊重上游 Retry-After，否则按指数退避。"""
+    if isinstance(error, httpx.HTTPStatusError):
+        header = error.response.headers.get("retry-after")
+        if header:
+            try:
+                return max(0.0, min(_MAX_RETRY_AFTER_SECONDS, float(header)))
+            except ValueError:
+                pass
+    return min(_MAX_BACKOFF_SECONDS, backoff * (2**attempt))
+
+
+def _error_kind(error: Exception) -> str:
+    """把异常归一成不含 URL/请求体/响应体的安全分类，便于排障。"""
+    if isinstance(error, httpx.HTTPStatusError):
+        return f"HTTP {error.response.status_code}"
+    if isinstance(error, httpx.TimeoutException):
+        return "超时"
+    if isinstance(error, httpx.TransportError):
+        return "网络错误"
+    return "响应格式异常"
+
 
 # 仅统计汉字区间判定中文；日文假名（U+3040–U+30FF）不属于中文，按非中文处理。
 _HAN_RANGES = (
@@ -150,6 +203,32 @@ class AITranslator:
         response.raise_for_status()
         return self._parse(response.json())
 
+    async def _request_one_with_retry(self, text: str, target: str) -> str:
+        """单条请求带并发闸门与瞬时错误退避重试；4xx 与解析异常不重试。"""
+        gate = _translation_gate(self.settings.rss_translate_max_concurrency)
+        attempts = self.settings.rss_translate_max_attempts
+        backoff = self.settings.rss_translate_retry_backoff_seconds
+        for attempt in range(attempts):
+            try:
+                # 只在实际请求期间占用闸门，退避等待时不阻塞其他调用。
+                async with gate:
+                    return await self._request_one(text, target)
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                if attempt == attempts - 1 or not _is_retryable(error):
+                    raise
+                delay = _retry_delay(error, attempt, backoff)
+                logger.warning(
+                    "RSS 翻译请求失败（%s），%.1fs 后重试（第 %d/%d 次）",
+                    _error_kind(error),
+                    delay,
+                    attempt + 2,
+                    attempts,
+                )
+                await asyncio.sleep(delay)
+        raise RuntimeError("translation retry loop exhausted")
+
     @staticmethod
     def _parse(data) -> str:
         """解析 Chat Completions 响应；兼容 content 为字符串或内容分片列表。"""
@@ -196,15 +275,15 @@ class AITranslator:
             pending.append((index, text))
         if truncated:
             logger.warning("RSS 翻译文本超长，已按上限截断后翻译")
-        # 逐条顺序请求，不并发；任何单条失败只影响该条，不抛给调用方。
+        # 逐条顺序请求（并发上限由共享闸门统一控制）；任何单条失败只影响该条，不抛给调用方。
         for index, text in pending:
             try:
-                translated = await self._request_one(text, target)
+                translated = await self._request_one_with_retry(text, target)
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                # 不记录异常细节（可能含含 key 的 URL 或请求/响应体），由调用方回退原文。
-                logger.warning("RSS 翻译失败，按原文处理")
+            except Exception as error:
+                # 只记录安全分类（状态码/超时/网络/格式），不含 URL、key 或请求/响应体。
+                logger.warning("RSS 翻译失败（%s），按原文处理", _error_kind(error))
                 results[index] = TranslationOutcome(error=SAFE_ERROR)
                 continue
             if translated.strip() == text.strip():
