@@ -232,6 +232,45 @@ async def test_begin_login_saves_qrcode_image(service, tmp_path) -> None:
     assert login.pending is True
 
 
+async def test_begin_login_renders_qrcode_from_scan_url(service, fake_client) -> None:
+    """真实接口的 qrcode_img_content 是 liteapp 链接，必须本地渲染成图片。"""
+    scan_url = "https://liteapp.weixin.qq.com/q/7GiQu1?qrcode=qr-2&bot_type=3"
+    fake_client.qrcode_payload = {"qrcode": "qr-2", "qrcode_img_content": scan_url}
+
+    login = await service.begin_login()
+
+    assert login.scan_url == scan_url
+    assert login.image_url is None
+    assert login.image_path is not None
+    assert login.image_path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+
+
+async def test_begin_login_ignores_non_image_payload(service, fake_client) -> None:
+    fake_client.qrcode_payload = {
+        "qrcode": "qr-3",
+        "qrcode_img_content": base64.b64encode(b"not-an-image").decode(),
+    }
+
+    login = await service.begin_login()
+
+    assert login.scan_url is None
+    assert login.image_path is None
+    assert login.image_url is None
+
+
+async def test_login_poll_timeout_keeps_status(service, fake_client) -> None:
+    await service.begin_login()
+    fake_client.qrcode_status = {"status": "scaned"}
+    await service._poll_login_once()
+    assert service.login.status == "scaned"
+
+    # 长轮询超时返回空响应，不应把 scaned 打回 wait
+    fake_client.qrcode_status = {}
+    await service._poll_login_once()
+    assert service.login.status == "scaned"
+    assert service.login.qrcode == "qr-1"
+
+
 async def test_login_confirmation_persists_credentials(service, fake_client, tmp_path) -> None:
     await service.begin_login()
     fake_client.qrcode_status = {
@@ -242,7 +281,8 @@ async def test_login_confirmation_persists_credentials(service, fake_client, tmp
         "baseurl": "https://ilink.example",
     }
 
-    login = await service.refresh_login_status()
+    await service._poll_login_once()
+    login = service.login_status()
 
     assert login is not None and login.confirmed is True
     assert service.logged_in is True
@@ -259,7 +299,7 @@ async def test_expired_qrcode_is_refreshed(service, fake_client) -> None:
     await service.begin_login()
     fake_client.qrcode_status = {"status": "expired"}
 
-    await service.refresh_login_status()
+    await service._poll_login_once()
 
     assert service.login is not None
     assert service.login.qrcode == "qr-1"

@@ -116,13 +116,15 @@ class WeixinIlinkClient:
             )
         except httpx.HTTPError as exc:
             raise WeixinApiError(
-                f"{method} {endpoint} 请求失败：{type(exc).__name__}: {exc}"
+                f"{method} {endpoint} 请求失败：{type(exc).__name__}: {exc}",
+                transient=isinstance(exc, httpx.TimeoutException | httpx.TransportError),
             ) from exc
 
         text = response.text
         if response.status_code >= 400:
             raise WeixinApiError(
-                f"{method} {endpoint} 返回 HTTP {response.status_code}: {text[:512]}"
+                f"{method} {endpoint} 返回 HTTP {response.status_code}: {text[:512]}",
+                transient=response.status_code >= 500,
             )
         if not text:
             return {}
@@ -187,13 +189,21 @@ class WeixinIlinkClient:
         *,
         timeout_seconds: float = DEFAULT_LONG_POLL_TIMEOUT_SECONDS,
     ) -> dict[str, Any]:
-        payload = await self._request(
-            "GET",
-            "ilink/bot/get_qrcode_status",
-            params={"qrcode": qrcode},
-            timeout_seconds=timeout_seconds,
-            extra_headers={"iLink-App-ClientVersion": "1"},
-        )
+        try:
+            payload = await self._request(
+                "GET",
+                "ilink/bot/get_qrcode_status",
+                params={"qrcode": qrcode},
+                timeout_seconds=timeout_seconds,
+                extra_headers={"iLink-App-ClientVersion": "1"},
+            )
+        except WeixinApiError as exc:
+            # 该接口同样是长轮询（实测服务端约 30s 后返回 status=wait），
+            # 客户端超时只是本轮没拿到变化，不应记为错误。
+            if isinstance(exc.__cause__, httpx.TimeoutException):
+                logger.debug("weixin qrcode status poll timed out; retrying")
+                return {}
+            raise
         data = self.unwrap(payload)
         self.raise_for_error(data, "轮询扫码状态")
         return data
@@ -310,7 +320,10 @@ class WeixinIlinkClient:
                 timeout=self.api_timeout_seconds,
             )
         except httpx.HTTPError as exc:
-            raise WeixinApiError(f"上传媒体失败：{type(exc).__name__}: {exc}") from exc
+            raise WeixinApiError(
+                f"上传媒体失败：{type(exc).__name__}: {exc}",
+                transient=isinstance(exc, httpx.TimeoutException | httpx.TransportError),
+            ) from exc
 
         if response.status_code != 200:
             raise WeixinApiError(
@@ -333,7 +346,10 @@ class WeixinIlinkClient:
         try:
             response = await self._http.get(url, timeout=self.api_timeout_seconds)
         except httpx.HTTPError as exc:
-            raise WeixinApiError(f"下载媒体失败：{type(exc).__name__}: {exc}") from exc
+            raise WeixinApiError(
+                f"下载媒体失败：{type(exc).__name__}: {exc}",
+                transient=isinstance(exc, httpx.TimeoutException | httpx.TransportError),
+            ) from exc
         if response.status_code >= 400:
             raise WeixinApiError(f"下载媒体失败：HTTP {response.status_code}")
         key = parse_media_aes_key(aes_key)

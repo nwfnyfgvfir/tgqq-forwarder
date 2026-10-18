@@ -55,6 +55,9 @@ def _ensure_schema_compat(sync_conn) -> None:
     _ensure_column(sync_conn, "forwardlog", "source_platform", "VARCHAR(32)", default="'telegram'")
     _ensure_column(sync_conn, "forwardlog", "target_platform", "VARCHAR(32)", default="'qq'")
     _ensure_column(sync_conn, "rss_subscription", "translate", "INTEGER NOT NULL", default="1")
+    _ensure_column(
+        sync_conn, "rss_subscription", "target_platform", "VARCHAR(32)", default="'telegram'"
+    )
     _ensure_column(sync_conn, "rss_entry", "detected_language", "VARCHAR(16)")
     _ensure_column(sync_conn, "rss_entry", "translated_title", "TEXT")
     _ensure_column(sync_conn, "rss_entry", "translated_summary", "TEXT")
@@ -64,6 +67,9 @@ def _ensure_column(
     sync_conn, table: str, column: str, column_type: str, *, default: str | None = None
 ) -> None:
     rows = sync_conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
+    if not rows:
+        # 表还不存在时由 create_all 按当前模型建表，这里无事可做。
+        return
     existing = {row[1] for row in rows}
     if column in existing:
         return

@@ -67,11 +67,10 @@ class ApplicationRuntime:
         await self.forward_queue.enqueue(message)
 
     async def _can_publish_rss(self) -> bool:
-        if self.account_manager is not None:
-            if not self.account_manager.is_any_connected():
-                return False
-        elif not self.settings.weixin_enabled:
-            # 没有 Telegram 监听、也没开微信通道时，RSS 不应发布。
+        # RSS 始终发布到 Telegram 频道，之后由规则转发到 QQ / 微信，因此以监听连接为准。
+        if self.account_manager is None:
+            return False
+        if not self.account_manager.is_any_connected():
             return False
         return not await self.rule_service.is_paused()
 

@@ -292,16 +292,8 @@ def create_mini_app(
         session: MiniAppSession = Depends(require_admin_session),
     ) -> WeixinLoginResponse:
         _ = session
-        service_ = _require_weixin()
-        try:
-            login = await service_.refresh_login_status()
-        except WeixinError as exc:
-            raise api_error(
-                status.HTTP_502_BAD_GATEWAY,
-                "weixin_login_failed",
-                str(exc),
-            ) from exc
-        return WeixinLoginResponse.from_login(login)
+        # 轮询由后台长轮询循环负责，这里只读快照，避免重复 hold 同一个二维码。
+        return WeixinLoginResponse.from_login(_require_weixin().login_status())
 
     @app.post("/api/weixin/logout")
     async def weixin_logout(

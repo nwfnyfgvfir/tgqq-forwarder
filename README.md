@@ -18,7 +18,7 @@ TGQQ Forwarder 用于把指定消息自动转发到 QQ 官方机器人会话或�
 - 支持转发到 QQ 群、C2C、频道、频道私信场景。
 - 通过 Telegram 管理 Bot 查看状态、管理规则、查询日志。
 - 提供 Telegram Mini App 管理台，可用可视化规则工坊管理关键词、目标、模板、日志和暂停状态；系统页可直接扫码登录个人微信。
-- 内置 RSS / RSSHub 订阅：在管理台「订阅」入口统一管理，新条目自动发布到指定 Telegram 频道，再按既有规则转发到 QQ / 微信。可选把非中文条目自动翻译成中文（原文在上、译文在下）。
+- 内置 RSS / RSSHub 订阅：在管理台「订阅」入口统一管理，新条目可发布到 Telegram 频道（再按规则转发到 QQ / 微信），也可以直接发布到个人微信好友。可选把非中文条目自动翻译成中文（原文在上、译文在下）。
 - 使用 Docker Compose 部署到 VPS。
 - 推送 `v*` 标签时，GitHub Actions 自动构建 Docker 镜像并发布到 GitHub Container Registry。
 
@@ -346,11 +346,13 @@ WEIXIN_MAX_MEDIA_MB=20
 docker compose up -d
 ```
 
-首次启动没有凭证时，服务会自动申请二维码，日志里会打印二维码图片路径和链接：
+首次启动没有凭证时，服务会自动申请二维码，日志里会打印二维码图片路径和扫码内容：
 
 ```bash
 docker compose logs -f | grep -i weixin
 ```
+
+微信接口返回的 `qrcode_img_content` 是扫码链接（`https://liteapp.weixin.qq.com/...`），程序会用 `segno` 在本地渲染成二维码图片，不依赖任何第三方二维码服务。
 
 ### 2. 扫码登录（两种方式任选）
 
@@ -360,11 +362,11 @@ docker compose logs -f | grep -i weixin
 docker compose run --rm tgqq-forwarder python -m app.weixin.login
 ```
 
-程序会打印二维码图片路径（`/app/data/weixin/default/login-qrcode.png`）或二维码链接，用微信「扫一扫」后在手机上确认即可。凭证写入 `data/weixin/<账号>/credentials.json`，重启后自动复用。
+程序会直接在终端打印 ASCII 二维码，同时给出二维码图片路径（`/app/data/weixin/default/login-qrcode.png`）。用微信「扫一扫」后在手机上确认即可。凭证写入 `data/weixin/<账号>/credentials.json`，重启后自动复用。
 
 方式 B：管理台扫码
 
-打开 Telegram Mini App 管理台 → 「系统」页 → 「个人微信」面板 → 「扫码登录」，二维码会直接显示在页面上，扫码确认后状态自动变为「已登录」。
+打开 Telegram Mini App 管理台 → 「系统」页 → 「个人微信」面板 → 「扫码登录」，二维码会直接显示在页面上，扫码确认后状态自动变为「已登录」（后台长轮询约 30 秒返回一次状态，最多等待半分钟）。
 
 ### 3. 配置规则
 
@@ -376,14 +378,25 @@ docker compose run --rm tgqq-forwarder python -m app.weixin.login
 
 微信目标只能发给最近主动给本号发过消息的联系人，因为协议要求每次发送都带上该联系人的 `context_token`。联系人列表会随收到的消息自动累积，可在规则工坊的微信联系人卡片中直接选择。
 
-### 4. 常见问题
+### 4. RSS 发布到微信
+
+「订阅」页的每个订阅都可以单独选择**发布目标**：
+
+- **Telegram 频道 / 群**（默认，历史行为）：由发布 Bot 发送，之后按规则转发到 QQ / 微信；
+- **个人微信好友**：订阅条目直接发给该联系人，不再经过 Telegram，也不需要转发规则。
+
+选微信目标时，「目标 ID」从已缓存的微信联系人里选（wxid）。同样受 `context_token` 约束：联系人还没给本号发过消息时，条目会保持「待发送」而不是直接失败，等对方发一条消息后自动补发。
+
+### 5. 常见问题
 
 | 现象 | 原因与处理 |
 | --- | --- |
 | 日志提示「微信需要扫码登录」 | 没有凭证或凭证失效，按上面步骤扫码 |
+| 管理台二维码显示「二维码图片未能生成」 | 镜像里缺少 `segno`（旧镜像），重新构建镜像；也可改用终端 `python -m app.weixin.login` 扫码 |
 | 发送失败：缺少 context_token | 对方还没有给本号发过消息，先让对方发一条 |
 | 登录态失效（errcode=-14） | 手机端退出了登录或长时间未使用，程序会清空凭证并重新等待扫码 |
 | 二维码反复过期 | 已自动刷新 3 次后停止；重新点击「扫码登录」或重启服务 |
+| RSS 订阅发不到微信，一直「待发送」 | 目标联系人还没给本号发过消息（缺 context_token），或微信未登录；让对方发一条消息即可自动补发 |
 | 只想微信→QQ，不需要 Telegram | 设置 `TELEGRAM_ENABLED=false`、`QQ_ENABLED=false/true` 按需组合 |
 
 ## Telegram Mini App 管理台

@@ -55,7 +55,7 @@ class FakeWeixinService:
     async def begin_login(self, *, force: bool = False) -> WeixinLoginState:
         return self.login
 
-    async def refresh_login_status(self) -> WeixinLoginState:
+    def login_status(self) -> WeixinLoginState:
         return self.login
 
     async def logout(self) -> None:

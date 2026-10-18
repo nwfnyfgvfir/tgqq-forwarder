@@ -1,4 +1,4 @@
-import { emptyState, pageHeader, ruleCard } from '../components.js?v=20261018-weixin-1';
+import { emptyState, pageHeader, ruleCard } from '../components.js?v=20261018-rss-weixin-2';
 
 export function renderRules(state) {
   const rules = state.rules || [];

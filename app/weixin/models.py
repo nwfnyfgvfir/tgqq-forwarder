@@ -68,11 +68,21 @@ class WeixinError(Exception):
 
 
 class WeixinApiError(WeixinError):
-    """iLink 接口返回非 0 错误码。"""
+    """iLink 接口返回非 0 错误码，或请求本身失败。
 
-    def __init__(self, message: str, *, errcode: int | None = None) -> None:
+    ``transient`` 标记网络类失败（超时/连接错误），调用方可以据此重试。
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        errcode: int | None = None,
+        transient: bool = False,
+    ) -> None:
         super().__init__(message)
         self.errcode = errcode
+        self.transient = transient
 
 
 class WeixinSessionExpired(WeixinApiError):
@@ -142,6 +152,8 @@ class WeixinLoginState:
     qrcode: str
     image_path: Path | None = None
     image_url: str | None = None
+    # 真正的扫码内容（通常是 https://liteapp.weixin.qq.com/... 链接）
+    scan_url: str | None = None
     status: str = "wait"
     started_at: float = field(default_factory=time.time)
     expires_at: float = 0.0
@@ -158,6 +170,7 @@ class WeixinLoginState:
             "status": self.status,
             "qrcode": self.qrcode,
             "image_url": self.image_url,
+            "scan_url": self.scan_url,
             "expires_at": self.expires_at,
             "error": self.error,
             "refresh_count": self.refresh_count,

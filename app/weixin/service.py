@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import logging
 import time
 from collections import OrderedDict
@@ -42,6 +41,11 @@ from app.weixin.models import (
     WeixinOutboundMessage,
     WeixinSessionExpired,
     WeixinStatus,
+)
+from app.weixin.qrcode import (
+    decode_image_base64,
+    looks_like_url,
+    render_qr_png,
 )
 
 logger = logging.getLogger(__name__)
@@ -187,10 +191,12 @@ class WeixinService:
         assert self.login is not None
         return self.login
 
-    async def refresh_login_status(self) -> WeixinLoginState | None:
-        if self.login is None or not self.login.pending:
-            return self.login
-        await self._poll_login_once()
+    def login_status(self) -> WeixinLoginState | None:
+        """当前扫码会话（只读快照）。
+
+        轮询由服务内部的长轮询循环负责，HTTP 侧不再触发额外请求，
+        避免和循环同时 hold 在同一个二维码上。
+        """
         return self.login
 
     async def logout(self) -> None:
@@ -219,46 +225,71 @@ class WeixinService:
         if not qrcode:
             raise WeixinLoginError(f"获取二维码失败：响应缺少 qrcode 字段（{sorted(data)}）")
 
-        image_path = self._save_qrcode_image(data)
-        image_url = str(
-            data.get("qrcode_url")
-            or data.get("qrcode_img_url")
-            or data.get("qrcode_image_url")
-            or ""
-        ).strip()
+        image_path, image_url, scan_url = self._prepare_qrcode(data)
         self.login = WeixinLoginState(
             qrcode=qrcode,
             image_path=image_path,
-            image_url=image_url or None,
+            image_url=image_url,
+            scan_url=scan_url,
             expires_at=time.time() + QRCODE_TTL_SECONDS,
             refresh_count=self._qr_expired_count,
         )
         logger.warning(
-            "Weixin 需要扫码登录：二维码已生成，请在微信中扫描。图片=%s 链接=%s",
+            "Weixin 需要扫码登录：请用微信扫描二维码。图片=%s 扫码内容=%s",
             image_path or "(无)",
-            image_url or "(无)",
+            scan_url or image_url or "(无)",
         )
 
-    def _save_qrcode_image(self, data: dict[str, Any]) -> Path | None:
-        raw = data.get("qrcode_img_content") or data.get("qrcode_image") or data.get("image")
-        if not isinstance(raw, str) or not raw.strip():
-            return None
-        content = raw.strip()
-        if content.startswith("data:") and "," in content:
-            content = content.split(",", 1)[1]
-        try:
-            binary = base64.b64decode(content)
-        except Exception:
-            logger.debug("Weixin qrcode image is not base64; ignored", exc_info=True)
-            return None
-        path = Path(self.settings.weixin_state_dir) / self.account_id / QRCODE_IMAGE_NAME
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(binary)
-        except OSError:
-            logger.exception("Failed to write Weixin qrcode image to %s", path)
-            return None
-        return path
+    def _qrcode_path(self) -> Path:
+        return Path(self.settings.weixin_state_dir) / self.account_id / QRCODE_IMAGE_NAME
+
+    def _prepare_qrcode(
+        self,
+        data: dict[str, Any],
+    ) -> tuple[Path | None, str | None, str | None]:
+        """解析二维码响应，返回 ``(本地图片, 外部图片链接, 扫码内容)``。
+
+        真实接口返回的 ``qrcode_img_content`` 是扫码 URL（``https://liteapp.weixin.qq.com/...``），
+        不是图片，必须本地渲染；同时兼容它直接返回 base64 图片的形态。
+        """
+        content = str(
+            data.get("qrcode_img_content")
+            or data.get("qrcode_image")
+            or data.get("image")
+            or ""
+        ).strip()
+        image_url = (
+            str(
+                data.get("qrcode_url")
+                or data.get("qrcode_img_url")
+                or data.get("qrcode_image_url")
+                or ""
+            ).strip()
+            or None
+        )
+
+        image_path: Path | None = None
+        scan_url: str | None = None
+
+        if looks_like_url(content):
+            scan_url = content
+            target = self._qrcode_path()
+            if render_qr_png(content, target):
+                image_path = target
+        elif content:
+            binary = decode_image_base64(content)
+            if binary is None:
+                logger.warning("微信二维码内容既不是链接也不是图片，已忽略")
+            else:
+                target = self._qrcode_path()
+                try:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(binary)
+                    image_path = target
+                except OSError:
+                    logger.exception("Failed to write Weixin qrcode image to %s", target)
+
+        return image_path, image_url, scan_url
 
     async def _poll_login_once(self) -> None:
         login = self.login
@@ -275,16 +306,21 @@ class WeixinService:
             login.status = "expired"
             return
 
-        status = str(data.get("status") or data.get("state") or "wait").strip().lower()
-        login.status = status or "wait"
-        if login.status in {"scaned", "scanned", "scan"}:
+        status = str(data.get("status") or data.get("state") or "").strip().lower()
+        if not status:
+            # 本轮长轮询超时，没有任何状态变化；保持现有状态，只检查本地有效期。
+            if time.time() > login.expires_at:
+                await self._on_login_expired()
+            return
+        login.status = status
+        if status in {"scaned", "scanned", "scan"}:
             login.status = "scaned"
             logger.info("Weixin 二维码已被扫描，等待手机确认")
             return
-        if login.status in {"confirmed", "confirm", "ok", "success"}:
+        if status in {"confirmed", "confirm", "ok", "success"}:
             await self._on_login_confirmed(data)
             return
-        if login.status in {"expired", "timeout"}:
+        if status in {"expired", "timeout"}:
             await self._on_login_expired()
             return
         if time.time() > login.expires_at:

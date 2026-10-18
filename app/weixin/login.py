@@ -17,6 +17,7 @@ import time
 
 from app.config import get_settings
 from app.logging_config import configure_logging
+from app.weixin.qrcode import render_qr_terminal
 from app.weixin.service import WeixinService
 
 logger = logging.getLogger(__name__)
@@ -52,11 +53,15 @@ async def run_login(account_id: str, timeout_seconds: float) -> int:
             if login is not None and login.qrcode != printed_qrcode:
                 printed_qrcode = login.qrcode
                 print("\n请用微信扫描下面的二维码（手机微信 → 扫一扫）：")
+                if login.scan_url:
+                    render_qr_terminal(login.scan_url)
                 if login.image_path:
                     print(f"  二维码图片: {login.image_path}")
                 if login.image_url:
                     print(f"  二维码链接: {login.image_url}")
-                if not login.image_path and not login.image_url:
+                if login.scan_url:
+                    print(f"  扫码内容: {login.scan_url}")
+                if not login.image_path and not login.image_url and not login.scan_url:
                     print(f"  二维码 token: {login.qrcode}")
             elif login is not None and login.status == "scaned":
                 print("已扫码，请在手机上点击确认…")

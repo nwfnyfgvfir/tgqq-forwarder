@@ -1,6 +1,6 @@
-import { api } from '../api.js?v=20261018-weixin-1';
-import { escapeHtml, pageHeader, statusPill } from '../components.js?v=20261018-weixin-1';
-import { refreshStatus, state } from '../state.js?v=20261018-weixin-1';
+import { api } from '../api.js?v=20261018-rss-weixin-2';
+import { escapeHtml, pageHeader, statusPill } from '../components.js?v=20261018-rss-weixin-2';
+import { refreshStatus, state } from '../state.js?v=20261018-rss-weixin-2';
 
 let loginPollTimer = null;
 
@@ -50,7 +50,9 @@ function renderWeixinPanel(weixin) {
   const qrBlock = pending
     ? `
       <div class="weixin-login">
-        ${login.image_data_url ? `<img alt="微信登录二维码" src="${login.image_data_url}" />` : ''}
+        ${login.image_data_url
+          ? `<img alt="微信登录二维码" src="${login.image_data_url}" />`
+          : `<div class="weixin-login-fallback"><p>二维码图片未能生成</p><code>${escapeHtml(login.scan_url || login.qrcode || '-')}</code></div>`}
         <div>
           <p>${login.status === 'scaned' ? '已扫码，请在手机上确认登录。' : '请用微信「扫一扫」扫描二维码。'}</p>
           ${login.image_url ? `<p><a href="${escapeHtml(login.image_url)}" target="_blank" rel="noreferrer">二维码链接</a></p>` : ''}

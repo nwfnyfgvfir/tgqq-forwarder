@@ -158,6 +158,22 @@ async def test_send_message_payload_shape() -> None:
     assert msg["client_id"]
 
 
+async def test_get_qrcode_status_timeout_returns_empty_payload() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("server holds the long poll", request=request)
+
+    client = make_client(handler)
+    assert await client.get_qrcode_status("qr-token") == {}
+
+
+async def test_get_updates_timeout_returns_empty_payload() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("server holds the long poll", request=request)
+
+    client = make_client(handler)
+    assert await client.get_updates("cursor") == {}
+
+
 async def test_media_upload_encrypts_and_download_decrypts(tmp_path) -> None:
     raw = b"binary-image-bytes" * 5
     media_path = tmp_path / "image.jpg"

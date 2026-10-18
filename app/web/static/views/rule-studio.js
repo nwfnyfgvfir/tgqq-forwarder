@@ -1,6 +1,6 @@
-import { api } from '../api.js?v=20261018-weixin-1';
-import { escapeHtml, pageHeader, short, statusPill } from '../components.js?v=20261018-weixin-1';
-import { refreshRules } from '../state.js?v=20261018-weixin-1';
+import { api } from '../api.js?v=20261018-rss-weixin-2';
+import { escapeHtml, pageHeader, short, statusPill } from '../components.js?v=20261018-rss-weixin-2';
+import { refreshRules } from '../state.js?v=20261018-rss-weixin-2';
 
 const DEFAULT_TEMPLATE = '# {source_title_md}\n\n**发送者：{sender_name_md}**\n\n{text}\n\n{footer_note}';
 

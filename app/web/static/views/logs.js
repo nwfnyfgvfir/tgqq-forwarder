@@ -1,4 +1,4 @@
-import { emptyState, logRow, pageHeader } from '../components.js?v=20261018-weixin-1';
+import { emptyState, logRow, pageHeader } from '../components.js?v=20261018-rss-weixin-2';
 
 export function renderLogs(state) {
   const logs = state.logs || [];

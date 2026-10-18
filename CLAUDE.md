@@ -150,13 +150,15 @@ Rule platform semantics:
 
 `app/weixin/` implements the personal-WeChat channel used by AstrBot's `weixin_oc` adapter:
 
-- `client.py`: `WeixinIlinkClient` over httpx. Endpoints: `ilink/bot/get_bot_qrcode`, `ilink/bot/get_qrcode_status`, `ilink/bot/getupdates` (long poll, cursor = `get_updates_buf`), `ilink/bot/sendmessage`, `ilink/bot/getuploadurl`. Required headers: `AuthorizationType: ilink_bot_token`, random `X-WECHAT-UIN`, `Authorization: Bearer <bot_token>`; QR status polling adds `iLink-App-ClientVersion: 1`. `errcode/ret == -14` means the login session expired.
+- `client.py`: `WeixinIlinkClient` over httpx. Endpoints: `ilink/bot/get_bot_qrcode`, `ilink/bot/get_qrcode_status`, `ilink/bot/getupdates` (long poll, cursor = `get_updates_buf`), `ilink/bot/sendmessage`, `ilink/bot/getuploadurl`. Required headers: `AuthorizationType: ilink_bot_token`, random `X-WECHAT-UIN`, `Authorization: Bearer <bot_token>`; QR status polling adds `iLink-App-ClientVersion: 1`. `errcode/ret == -14` means the login session expired. Both `getupdates` and `get_qrcode_status` are long polls (server returns after ~30s); a client-side timeout is normal and returns `{}` instead of raising.
+- **QR payload gotcha**: `get_bot_qrcode` returns `{"qrcode": "<token>", "qrcode_img_content": "https://liteapp.weixin.qq.com/q/...?qrcode=<token>&bot_type=3", "ret": 0}` — `qrcode_img_content` is a **scan URL, not an image**. `app/weixin/qrcode.py` renders it locally with `segno` (PNG for the Mini App, ASCII for the CLI) and only accepts base64 payloads that pass an image-magic check.
 - `crypto.py`: media uses AES-128-ECB + PKCS#7; `aes_key` may be base64(raw 16 bytes) or base64(32 hex chars).
 - `media.py`: inbound media is downloaded from the CDN and decrypted; outbound media is encrypted, uploaded, and referenced by the `x-encrypted-param` response header.
 - `credentials.py`: `data/weixin/<account>/credentials.json` (0600) stores `bot_token`, the long-poll cursor, per-contact `context_token`, and known contacts.
 - `service.py`: `WeixinService` owns the login state machine, the long-poll loop, reconnect/backoff, inbound parsing into `TelegramForwardMessage` (`source_platform="weixin"`, `chat_id` = wxid), and outbound sending.
 - **Protocol constraint**: `sendmessage` requires the recipient's `context_token`, which only arrives with an inbound message from that contact. Forwarding to WeChat therefore only works for contacts who have messaged the account; tokens are cached and persisted.
 - `app/web/app.py` exposes `/api/weixin/status`, `/api/weixin/contacts`, `POST/GET /api/weixin/login`, `POST /api/weixin/logout`; the Mini App system page renders the QR code from `login.image_data_url`.
+- RSS subscriptions can target WeChat directly (`app/rss/delivery.py`); `RssWorker` takes `weixin_service` and the publish gate (`ApplicationRuntime._can_publish_rss`) is satisfied by either a connected Telegram listener or a connected WeChat channel.
 
 ### Telegram admin bot
 
@@ -166,7 +168,9 @@ Rule platform semantics:
 
 ### RSS subscriptions
 
-`app/rss/` owns RSS/RSSHub subscriptions end to end: `schemas.py` validates `SubscriptionInput` (feed URL, TG target, interval, first-run policy, keywords, template), `fetcher.py` fetches/parses feeds with SSRF guards (public hosts only unless listed in `RSS_ALLOWED_PRIVATE_HOSTS`, per-hop DNS pinning, ETag/Last-Modified, size caps, HTTP `identity` only), `service.py` does CRUD plus entry bookkeeping, `worker.py` runs the in-process scheduler with per-subscription job locks, persistent dedupe (`rss_entry` unique on `subscription_id + entry_key`), retry/backoff, and `publisher.py` sends via a Bot token (`RSS_BOT_TOKEN`, falling back to the admin bot) with plain text and link preview disabled.
+`app/rss/` owns RSS/RSSHub subscriptions end to end: `schemas.py` validates `SubscriptionInput` (feed URL, target platform, target ID, interval, first-run policy, keywords, template), `fetcher.py` fetches/parses feeds with SSRF guards (public hosts only unless listed in `RSS_ALLOWED_PRIVATE_HOSTS`, per-hop DNS pinning, ETag/Last-Modified, size caps, HTTP `identity` only), `service.py` does CRUD plus entry bookkeeping, `worker.py` runs the in-process scheduler with per-subscription job locks, persistent dedupe (`rss_entry` unique on `subscription_id + entry_key`), retry/backoff, and `delivery.py` publishes by `subscription.target_platform`: `telegram` goes through `publisher.py` (Bot token `RSS_BOT_TOKEN`, falling back to the admin bot, plain text, link preview disabled) while `weixin` sends directly through `WeixinService` (no Telegram hop, no rule needed).
+
+RSS target semantics: `RssSubscription.target_platform` is `telegram` (default) or `weixin`; `tg_chat_id` keeps its historical name and holds either a Telegram channel id/`@username` or a WeChat contact `user_id`. WeChat targets are only sent when the channel is logged in **and** the contact's `context_token` is cached — otherwise entries stay `pending` (no failed attempts) and publish once the contact messages the account.
 
 `ApplicationRuntime` starts one `RssWorker` (`app/main.py`) and injects both `RssService` and `RssWorker` into the Mini App; `app/web/rss_routes.py` exposes `/api/rss/*` under the same admin auth. The worker keeps fetching while forwarding is paused or Telegram is disconnected, but only publishes when `can_publish()` is true. `POST /api/rss/subscriptions/{id}/test-send` (`RssWorker.test_send_latest`) is a synchronous end-to-end self-check: it fetches now, force-publishes the newest entry (bypassing the first-run baseline, dedupe and keyword filters, without writing entry history), and returns the outcome directly; it does not depend on `can_publish()`.
 
@@ -188,3 +192,4 @@ Existing tests are organized by subsystem:
 - `tests/test_weixin_api.py`: Mini App WeChat endpoints and platform-aware rule creation.
 - `tests/test_delivery_router.py`: target-platform dispatch, disabled channel, timeout wrapping.
 - `tests/test_rule_platforms.py`: platform matching, string IDs, schema normalisation, DB roundtrip.
+- `tests/test_rss_weixin.py`: RSS delivery dispatch, WeChat availability/context-token gating, transient vs permanent failures, worker integration and test-send.

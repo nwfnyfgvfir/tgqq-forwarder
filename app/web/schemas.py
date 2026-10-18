@@ -17,6 +17,7 @@ from app.rules.templates import effective_message_template
 from app.storage.models import ForwardLog, ForwardRule, QQTargetType
 from app.telegram_user.accounts import TelegramAccountStatus
 from app.weixin.models import WeixinContact, WeixinStatus
+from app.weixin.qrcode import is_image_bytes
 
 RuleMatchMode = Literal["all", "keywords", "regex"]
 WEIXIN_FRIEND_TARGET_TYPE = "friend"
@@ -66,6 +67,7 @@ class WeixinLoginResponse(BaseModel):
     qrcode: str | None = None
     image_url: str | None = None
     image_data_url: str | None = None
+    scan_url: str | None = None
     expires_at: float | None = None
     error: str | None = None
     pending: bool = False
@@ -79,14 +81,17 @@ class WeixinLoginResponse(BaseModel):
         if login.image_path:
             try:
                 payload = login.image_path.read_bytes()
-                image_data_url = "data:image/png;base64," + base64.b64encode(payload).decode()
             except OSError:
-                image_data_url = None
+                payload = b""
+            # 只内联真正的图片，避免历史遗留的坏文件把前端 img 弄成裂图。
+            if is_image_bytes(payload):
+                image_data_url = "data:image/png;base64," + base64.b64encode(payload).decode()
         return cls(
             status=login.status,
             qrcode=login.qrcode,
             image_url=login.image_url,
             image_data_url=image_data_url,
+            scan_url=login.scan_url,
             expires_at=login.expires_at or None,
             error=login.error,
             pending=login.pending,
