@@ -3,11 +3,14 @@ from __future__ import annotations
 import re
 from datetime import UTC, datetime
 from html.parser import HTMLParser
+from string import Formatter
 
 from app.rss.errors import RssError
-from app.rss.schemas import validate_template
+from app.rss.schemas import template_fields, validate_template
 
 BLANK_LINES = re.compile(r"\n{3,}")
+PARAGRAPHS = re.compile(r"\n{2,}")
+TRANSLATED_FIELDS = ("title", "summary")
 
 
 class _PlainText(HTMLParser):
@@ -58,29 +61,71 @@ def format_published_at(value: datetime | None) -> str:
     return moment.astimezone().strftime("%Y-%m-%d %H:%M")
 
 
-def build_translation_block(entry) -> str:
+def translated_fields(template: str) -> tuple[str, ...]:
+    """模板引用了哪些原文字段，就只翻译哪些字段。
+
+    模板没写 `{title}` 时不翻译标题，`{translation}` 里也不会出现译文标题；
+    若模板只用 `{translation}`（原文字段全由译文承担），标题与摘要都翻译。
+    """
+    used = template_fields(template)
+    picked = tuple(name for name in TRANSLATED_FIELDS if name in used)
+    return picked or TRANSLATED_FIELDS
+
+
+def build_translation_block(entry, template: str | None = None) -> str:
     """原文在上、译文在下：有译文标题/摘要时按「译文标题\\n\\n译文摘要」拼接。"""
-    title = getattr(entry, "translated_title", None)
-    summary = getattr(entry, "translated_summary", None)
+    wanted = TRANSLATED_FIELDS if template is None else translated_fields(template)
+    values = {
+        "title": getattr(entry, "translated_title", None),
+        "summary": getattr(entry, "translated_summary", None),
+    }
     parts = []
-    if isinstance(title, str) and title.strip():
-        parts.append(title.strip())
-    if isinstance(summary, str) and summary.strip():
-        parts.append(summary.strip())
+    for name in wanted:
+        value = values[name]
+        if isinstance(value, str) and value.strip():
+            parts.append(value.strip())
     return "\n\n".join(parts)
+
+
+def _only_empty_fields(line: str, values: dict[str, str]) -> bool:
+    """该行是否引用了占位符、且这些占位符渲染后全为空白。"""
+    fields = [name for _, name, _, _ in Formatter().parse(line) if name]
+    return bool(fields) and all(not (values.get(name) or "").strip() for name in fields)
+
+
+def drop_empty_blocks(template: str, values: dict[str, str]) -> str:
+    """占位符全空的行/段整体省略，让可选区块连同图标、分隔线一起消失。
+
+    段落按空行划分。段内占位符全空 → 整段丢掉（`┈┈┈` + `🌐 译文` 这类固定装饰
+    跟着译文一起走）；否则逐行判断，某行引用的占位符全空 → 只删这一行
+    （`🕒 {published_at}` 与订阅名同段，缺时间时不能把订阅名一起删掉）。
+    段内只要还有有值的占位符，就交给 `format` 替换，空占位符变成空串。
+    """
+    kept: list[str] = []
+    for paragraph in PARAGRAPHS.split(template):
+        if _only_empty_fields(paragraph, values):
+            continue
+        lines = [line for line in paragraph.split("\n") if not _only_empty_fields(line, values)]
+        if lines:
+            kept.append("\n".join(lines))
+    return "\n\n".join(kept)
 
 
 def render_entry(config, entry, feed_title: str | None = None) -> str:
     validate_template(config.message_template)
-    text = config.message_template.format(
-        subscription_name=config.name,
-        feed_title=feed_title if feed_title is not None else entry.feed_title,
-        title=entry.title,
-        summary=entry.summary[: config.max_summary_length],
-        link=entry.link,
-        published_at=format_published_at(entry.published_at),
-        translation=build_translation_block(entry),
-    ).strip()
+    values = {
+        "subscription_name": config.name,
+        "feed_title": feed_title if feed_title is not None else entry.feed_title,
+        "title": entry.title,
+        "summary": entry.summary[: config.max_summary_length],
+        "link": entry.link,
+        "published_at": format_published_at(entry.published_at),
+        "translation": build_translation_block(entry, config.message_template),
+    }
+    template = drop_empty_blocks(config.message_template, values)
+    text = template.format(**values).strip()
+    # 行内部分占位符为空（如 `标题 · {published_at}`）时不留行尾空白。
+    text = "\n".join(line.rstrip() for line in text.splitlines())
     if entry.link and entry.link not in text:
         text = f"{text}\n\n{entry.link}".strip()
     # 占位符为空（如无发布时间）时不留空行。

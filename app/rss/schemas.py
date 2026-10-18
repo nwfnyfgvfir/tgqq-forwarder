@@ -8,7 +8,19 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
 DEFAULT_MESSAGE_TEMPLATE = (
-    "[{subscription_name}]\n{title}\n{published_at}\n\n{summary}\n\n{translation}\n\n{link}"
+    "━━━━━━━━━━━━━━\n"
+    "📡 {subscription_name}\n"
+    "🕒 {published_at}\n"
+    "\n"
+    "# {title}\n"
+    "\n"
+    "{summary}\n"
+    "\n"
+    "┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
+    "🌐 译文\n"
+    "{translation}\n"
+    "\n"
+    "🔗 {link}"
 )
 TEMPLATE_FIELDS = {
     "subscription_name",
@@ -41,6 +53,14 @@ def validate_http_url(value: str, *, allow_fragment: bool = False) -> str:
     except (ValueError, UnicodeError):
         raise ValueError("仅允许无用户信息和 fragment 的有效 HTTP(S) URL") from None
     return value
+
+
+def template_fields(value: str) -> set[str]:
+    """返回模板真正引用的占位符名；`{{...}}` 转义字面量不算引用。"""
+    try:
+        return {field for _, field, _, _ in Formatter().parse(value) if field}
+    except ValueError:
+        return set()
 
 
 def validate_template(value: str) -> str:

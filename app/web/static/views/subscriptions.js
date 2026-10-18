@@ -2,7 +2,7 @@ import { api } from '../api.js?v=20260707-rule-studio-2';
 import { emptyState, escapeHtml, formatDate, pageHeader, statusPill } from '../components.js?v=20260707-rule-studio-2';
 import { refreshSubscriptions, state } from '../state.js?v=20260707-rule-studio-2';
 
-const DEFAULT_TEMPLATE = '[{subscription_name}]\n{title}\n{published_at}\n\n{summary}\n\n{translation}\n\n{link}';
+const DEFAULT_TEMPLATE = '━━━━━━━━━━━━━━\n📡 {subscription_name}\n🕒 {published_at}\n\n# {title}\n\n{summary}\n\n┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n🌐 译文\n{translation}\n\n🔗 {link}';
 const ui = {
   draft: null,
   original: null,
@@ -155,8 +155,8 @@ function editor(current) {
           <p class="muted">关键词用逗号、中文逗号、分号或换行分隔；包含列表留空则不过滤包含关键词。</p>
           <label for="rss-summary-length">摘要最大长度（字符）<input id="rss-summary-length" name="max_summary_length" type="number" required min="100" max="2000" step="1" value="${escapeHtml(draft.max_summary_length)}" /></label>
           <label class="switch-line" for="rss-translate"><input id="rss-translate" name="translate" type="checkbox" ${draft.translate ? 'checked' : ''} /> 翻译成中文（源语言自动检测，非中文才翻译；译文显示在原文下方）</label>
-          <label for="rss-template">消息模板<textarea id="rss-template" name="message_template" required rows="6">${escapeHtml(draft.message_template)}</textarea></label>
-          <p class="muted">默认变量：<code>{subscription_name}</code>、<code>{title}</code>、<code>{published_at}</code>、<code>{summary}</code>、<code>{translation}</code>、<code>{link}</code>。<code>{published_at}</code> 渲染为本地时间（如 2026-10-13 08:30），源里没有时间时该行自动省略。<code>{translation}</code> 为译文（标题与摘要，原文非中文时才有内容），会排在原文下方。QQ 转发规则使用 <code>{text}</code> 保留发布内容。</p>
+          <label for="rss-template">消息模板<textarea id="rss-template" name="message_template" required rows="10">${escapeHtml(draft.message_template)}</textarea></label>
+          <p class="muted">默认变量：<code>{subscription_name}</code>、<code>{title}</code>、<code>{published_at}</code>、<code>{summary}</code>、<code>{translation}</code>、<code>{link}</code>。<code>{published_at}</code> 渲染为本地时间（如 2026-10-13 08:30）。某一行引用的占位符全为空时整行省略，空行分隔的整段全为空时整段省略——所以可以放心给可选字段加 <code>🕒</code> 这类前缀，源里没时间、没译文时不会留下孤立图标。<code># {title}</code> 里的 <code>#</code> 在转发到 QQ 时会渲染成一号标题（<code>##</code> 为二号），在 Telegram 里按原样显示。<code>{translation}</code> 为译文，只包含模板里写到的原文字段（没写 <code>{title}</code> 就不翻译标题），会排在原文下方。QQ 转发规则使用 <code>{text}</code> 保留发布内容。</p>
         </details>
         <p id="rss-form-error" class="rss-error-text" role="alert">${escapeHtml(ui.formError)}</p>
         <div class="card-actions"><button type="submit" class="primary">${ui.formBusy === 'save' ? '正在保存…' : ui.editId === null ? '创建订阅' : '保存配置'}</button><button type="button" data-rss-action="preview">${ui.formBusy === 'preview' ? '正在预览…' : '预览（不保存、不发送）'}</button></div>

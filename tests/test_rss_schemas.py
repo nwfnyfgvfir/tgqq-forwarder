@@ -165,15 +165,108 @@ def test_default_template_shows_publish_time_and_collapses_missing_one() -> None
         published_at=datetime(2026, 10, 13, 0, 30, tzinfo=UTC),
     )
     text = render_entry(payload(), entry)
-    assert text.splitlines()[2] == format_published_at(entry.published_at)
+    lines = text.splitlines()
+    assert set(lines[0]) == {"━"}
+    assert lines[1] == "📡 rss"
+    assert lines[2] == f"🕒 {format_published_at(entry.published_at)}"
     assert "\n\n\n" not in text
 
     without_time = SimpleNamespace(**{**entry.__dict__, "published_at": None})
     blank = render_entry(payload(), without_time)
-    assert blank.splitlines()[0] == "[rss]"
-    assert blank.splitlines()[1] == "每周分享"
+    # 缺发布时间时整行消失，不留下孤零零的 🕒。
+    assert blank.splitlines()[0] == lines[0]
+    assert blank.splitlines()[1] == "📡 rss"
+    assert blank.splitlines()[2] == ""
+    assert blank.splitlines()[3] == "# 每周分享"
     assert "\n\n\n" not in blank
     assert format_published_at(None) == ""
+
+
+def test_default_template_keeps_clean_hierarchy_without_optional_fields() -> None:
+    entry = SimpleNamespace(
+        title="标题",
+        summary="摘要",
+        link="https://example.com/1",
+        feed_title="feed",
+        published_at=None,
+        translated_title=None,
+        translated_summary=None,
+    )
+    # 分隔线 → 元信息（📡 订阅名 / 🕒 时间）→ # 标题 → 正文 → 译文区 → 🔗 链接。
+    assert render_entry(payload(), entry).splitlines() == [
+        "━━━━━━━━━━━━━━",
+        "📡 rss",
+        "",
+        "# 标题",
+        "",
+        "摘要",
+        "",
+        "🔗 https://example.com/1",
+    ]
+    translated = SimpleNamespace(
+        **{**entry.__dict__, "translated_title": "译文标题", "translated_summary": "译文摘要"}
+    )
+    # 译文区带细线与 🌐 标签，与原文正文明显分开。
+    assert render_entry(payload(), translated).splitlines() == [
+        "━━━━━━━━━━━━━━",
+        "📡 rss",
+        "",
+        "# 标题",
+        "",
+        "摘要",
+        "",
+        "┈┈┈┈┈┈┈┈┈┈┈┈┈┈",
+        "🌐 译文",
+        "译文标题",
+        "",
+        "译文摘要",
+        "",
+        "🔗 https://example.com/1",
+    ]
+
+
+def test_template_drops_optional_lines_and_blocks_when_empty() -> None:
+    template = (
+        "📡 {subscription_name}\n"
+        "🕒 {published_at}\n"
+        "\n"
+        "# {title}\n"
+        "\n"
+        "┈┈┈\n"
+        "🌐 译文\n"
+        "{translation}\n"
+        "\n"
+        "🔗 {link}"
+    )
+    entry = SimpleNamespace(
+        title="标题",
+        summary="摘要",
+        link="https://example.com/1",
+        feed_title="feed",
+        published_at=None,
+        translated_title=None,
+        translated_summary=None,
+    )
+    # 空占位符所在的行（🕒）与整段（细线 + 🌐 译文）一起消失，装饰不留残迹。
+    assert render_entry(payload(message_template=template), entry).splitlines() == [
+        "📡 rss",
+        "",
+        "# 标题",
+        "",
+        "🔗 https://example.com/1",
+    ]
+
+
+def test_template_escaped_braces_do_not_count_as_empty_fields() -> None:
+    entry = SimpleNamespace(
+        title="",
+        summary="摘要",
+        link="https://example.com/1",
+        feed_title="feed",
+        published_at=None,
+    )
+    text = render_entry(payload(message_template="{{title}} {summary}"), entry)
+    assert text.splitlines()[0] == "{title} 摘要"
 
 
 def test_emoji_utf16_budget_preserves_link() -> None:

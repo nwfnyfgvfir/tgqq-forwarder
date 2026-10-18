@@ -10,7 +10,7 @@ from sqlalchemy import delete, func, select, update
 from app.config import Settings
 from app.rss.errors import RssError
 from app.rss.fetcher import RssFetcher
-from app.rss.formatting import matches_keywords, render_entry
+from app.rss.formatting import matches_keywords, render_entry, translated_fields
 from app.rss.schemas import SubscriptionInput
 from app.rss.translator import AITranslator
 from app.storage.db import Database
@@ -165,7 +165,9 @@ class RssService:
         selected = result.entries[-10:]
         translations: dict[int, dict] = {}
         if payload.translate and self.settings.rss_translate_enabled and selected:
-            translations = await self._translate_preview(selected, warnings)
+            translations = await self._translate_preview(
+                selected, payload.message_template, warnings
+            )
         entries = []
         for index, entry in enumerate(selected):
             translation = translations.get(index, {})
@@ -208,17 +210,18 @@ class RssService:
             detected_language=translation.get("detected_language"),
         )
 
-    async def _translate_preview(self, entries: list, warnings: list[str]) -> dict[int, dict]:
+    async def _translate_preview(
+        self, entries: list, template: str, warnings: list[str]
+    ) -> dict[int, dict]:
         """批量翻译预览条目（最多 10 条）；失败时提示按原文展示，不写库。"""
+        wanted = translated_fields(template)
         texts: list[str] = []
         index: list[tuple[int, str]] = []
         for position, entry in enumerate(entries):
-            if entry.title.strip():
-                texts.append(entry.title)
-                index.append((position, "title"))
-            if entry.summary.strip():
-                texts.append(entry.summary)
-                index.append((position, "summary"))
+            for name, value in (("title", entry.title), ("summary", entry.summary)):
+                if name in wanted and value.strip():
+                    texts.append(value)
+                    index.append((position, name))
         if not texts:
             return {}
         try:

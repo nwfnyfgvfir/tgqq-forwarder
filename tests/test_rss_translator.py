@@ -668,6 +668,62 @@ async def test_worker_chinese_source_is_not_translated(rss_context) -> None:
     assert entry["translated_title"] is None
 
 
+async def test_worker_skips_title_translation_when_template_omits_title(rss_context) -> None:
+    _, _, _, publisher, translator, service, worker = rss_context
+    template = "{summary}\n\n{translation}\n\n{link}"
+    sub = await service.create_subscription(
+        payload(initial_policy="latest", message_template=template)
+    )
+    await worker.process_subscription(sub["id"])
+    # 只翻译模板引用的摘要，标题不请求、不写缓存、不出现在译文里。
+    assert translator.calls == [(["English summary 1"], "ZH")]
+    text = publisher.calls[0][1]
+    assert "ZH:English summary 1" in text
+    assert "ZH:English Title 1" not in text
+    entry = (await service.list_entries(sub["id"]))[0]
+    assert entry["status"] == "sent"
+    assert entry["translated_title"] is None
+    assert entry["translated_summary"] == "ZH:English summary 1"
+
+
+async def test_preview_skips_title_translation_when_template_omits_title(rss_context) -> None:
+    _, _, fetcher, _, translator, service, _ = rss_context
+    fetcher.result = FeedResult("Feed", [english_entry(1)])
+    result = await service.preview(payload(message_template="{summary}\n\n{translation}\n\n{link}"))
+    assert translator.calls == [(["English summary 1"], "ZH")]
+    row = result["entries"][0]
+    assert row["translated_title"] is None
+    assert row["translated_summary"] == "ZH:English summary 1"
+    assert "ZH:English Title 1" not in row["rendered_text"]
+
+
+async def test_test_send_latest_skips_title_translation_when_template_omits_title(
+    rss_context,
+) -> None:
+    _, _, fetcher, publisher, translator, service, worker = rss_context
+    fetcher.result = FeedResult("Feed", [english_entry(1)])
+    sub = await service.create_subscription(
+        payload(message_template="{summary}\n\n{translation}\n\n{link}")
+    )
+    result = await worker.test_send_latest(sub["id"])
+    assert translator.calls == [(["English summary 1"], "ZH")]
+    assert result["sent"] is True
+    assert "ZH:English Title 1" not in publisher.calls[0][1]
+
+
+async def test_worker_translates_both_fields_when_template_uses_only_translation(
+    rss_context,
+) -> None:
+    _, _, _, publisher, translator, service, worker = rss_context
+    sub = await service.create_subscription(
+        payload(initial_policy="latest", message_template="{translation}\n\n{link}")
+    )
+    await worker.process_subscription(sub["id"])
+    assert translator.calls == [(["English Title 1", "English summary 1"], "ZH")]
+    text = publisher.calls[0][1]
+    assert "ZH:English Title 1" in text and "ZH:English summary 1" in text
+
+
 async def test_preview_includes_translation_fields_without_persisting(rss_context) -> None:
     _, _, fetcher, publisher, translator, service, _ = rss_context
     fetcher.result = FeedResult("Feed", [english_entry(n) for n in range(1, 4)])
@@ -832,6 +888,36 @@ def test_build_translation_block_variants() -> None:
     assert build_translation_block(SimpleNamespace()) == ""
     blank = SimpleNamespace(translated_title="  ", translated_summary="")
     assert build_translation_block(blank) == ""
+
+
+def test_build_translation_block_follows_template_placeholders() -> None:
+    both = SimpleNamespace(translated_title="译文标题", translated_summary="译文摘要")
+    # 模板没写 {title}：译文里不出现标题。
+    assert build_translation_block(both, "{summary}\n{translation}") == "译文摘要"
+    # 模板没写 {summary}：译文里不出现摘要。
+    assert build_translation_block(both, "{title}\n{translation}") == "译文标题"
+    # 只用 {translation}：原文字段全由译文承担，两者都保留。
+    assert build_translation_block(both, "{translation}") == "译文标题\n\n译文摘要"
+    # {{title}} 是转义字面量，不算引用。
+    assert build_translation_block(both, "{{title}}\n{summary}\n{translation}") == "译文摘要"
+
+
+def test_render_entry_without_title_placeholder_omits_translated_title() -> None:
+    config = payload(message_template="{summary}\n\n{translation}\n\n{link}")
+    entry = SimpleNamespace(
+        title="English Title",
+        summary="English summary",
+        link="https://example.com/1",
+        feed_title="feed",
+        published_at=None,
+        translated_title="中文标题",
+        translated_summary="中文摘要",
+    )
+    text = render_entry(config, entry)
+    assert "中文摘要" in text
+    assert "中文标题" not in text
+    assert "English Title" not in text
+    assert "\n\n\n" not in text
 
 
 def test_default_template_orders_original_above_translation() -> None:

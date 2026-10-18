@@ -12,7 +12,7 @@ from telegram.error import BadRequest, Forbidden, NetworkError, RetryAfter, Tele
 
 from app.config import Settings
 from app.rss.errors import RssError
-from app.rss.formatting import matches_keywords, render_entry
+from app.rss.formatting import matches_keywords, render_entry, translated_fields
 from app.rss.publisher import RssPublisher
 from app.rss.service import RssService
 from app.rss.translator import AITranslator
@@ -157,7 +157,7 @@ class RssWorker:
         warnings = list(result.warnings)
         translation: dict[str, str] = {}
         if sub.translate and self.settings.rss_translate_enabled:
-            translation = await self._translate_for_test(entry, warnings)
+            translation = await self._translate_for_test(entry, sub.message_template, warnings)
         target = RssService._with_translation(entry, translation)
         try:
             text = render_entry(sub, target, result.feed_title)
@@ -195,9 +195,11 @@ class RssWorker:
             "warnings": warnings,
         }
 
-    async def _translate_for_test(self, entry, warnings: list[str]) -> dict[str, str]:
+    async def _translate_for_test(
+        self, entry, template: str, warnings: list[str]
+    ) -> dict[str, str]:
         """试发路径的翻译：失败只记 warning 并按原文发送，不阻断试发。"""
-        fields = self._translation_fields(entry.title, entry.summary)
+        fields = self._translation_fields(entry.title, entry.summary, template)
         if not fields:
             return {}
         try:
@@ -560,7 +562,7 @@ class RssWorker:
             # 已缓存译文（含「已是中文」的检测结果）不重复请求。
             if entry.detected_language or entry.translated_title or entry.translated_summary:
                 return
-            fields = self._translation_fields(entry.title, entry.summary)
+            fields = self._translation_fields(entry.title, entry.summary, sub.message_template)
         if not fields:
             return
         result = await self._translate_fields(fields)
@@ -581,12 +583,16 @@ class RssWorker:
             stored.translated_summary = values.get("summary")
 
     @staticmethod
-    def _translation_fields(title: str | None, summary: str | None) -> list[tuple[str, str]]:
+    def _translation_fields(
+        title: str | None, summary: str | None, template: str
+    ) -> list[tuple[str, str]]:
+        """只取模板真正引用的字段：模板没写 `{title}` 就不翻译标题。"""
+        values = {"title": title, "summary": summary}
         fields: list[tuple[str, str]] = []
-        if isinstance(title, str) and title.strip():
-            fields.append(("title", title))
-        if isinstance(summary, str) and summary.strip():
-            fields.append(("summary", summary))
+        for name in translated_fields(template):
+            value = values[name]
+            if isinstance(value, str) and value.strip():
+                fields.append((name, value))
         return fields
 
     async def _translate_fields(
