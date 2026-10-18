@@ -384,3 +384,36 @@ async def test_legacy_database_gains_target_table_without_data_loss(tmp_path) ->
         assert [(row.platform, row.target_id) for row in rows] == [("qq", "legacy-openid")]
     finally:
         await db.dispose()
+
+
+async def test_telegram_target_account_id_is_persisted(tmp_path) -> None:
+    db, service = await open_service(tmp_path)
+    try:
+        result = await service.create_or_merge_rule(
+            make_rule(),
+            [
+                ForwardTarget(
+                    rule_id=0,
+                    platform="telegram",
+                    target_type="chat",
+                    target_id="-1001234567890",
+                    account_id="news",
+                ),
+                ForwardTarget(
+                    rule_id=0,
+                    platform="telegram",
+                    target_type="bot",
+                    target_id="@channel",
+                ),
+            ],
+        )
+        rows = await service.target_rows(int(result.rule.id or 0))
+        assert [(row.target_type, row.account_id) for row in rows] == [
+            ("chat", "news"),
+            ("bot", None),
+        ]
+        # 兼容列跟随第一个目标，Telegram 目标同样适用。
+        assert result.rule.target_platform == "telegram"
+        assert result.rule.qq_target_type == "chat"
+    finally:
+        await db.dispose()

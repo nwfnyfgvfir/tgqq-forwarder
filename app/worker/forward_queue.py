@@ -6,8 +6,9 @@ import time
 
 from app.channels.router import DeliveryError, DeliveryRouter
 from app.config import Settings
+from app.platforms import Platform
 from app.qq_official.sender import QQOfficialSender
-from app.rules.models import TelegramForwardMessage
+from app.rules.models import TelegramForwardMessage, id_key
 from app.rules.service import ForwardRuleService
 from app.storage.models import ForwardRule, ForwardStatus, ForwardTarget
 from app.weixin.service import WeixinService
@@ -35,7 +36,7 @@ class ForwardQueue:
         )
         self._task: asyncio.Task | None = None
         self._stopping = asyncio.Event()
-        self._recent_message_keys: dict[tuple[int | None, int], float] = {}
+        self._recent_message_keys: dict[tuple[object, object], float] = {}
         self._dedupe_ttl_seconds = 300.0
         self._dropped_total = 0
         self._processed_total = 0
@@ -258,6 +259,23 @@ class ForwardQueue:
         target: ForwardTarget,
     ) -> None:
         """单个目标失败不影响其它目标，每个目标单独记一条日志。"""
+        if self._is_echo_target(message, target):
+            logger.info(
+                "Skip forwarding %s message %s back to its own chat %s by rule %s",
+                message.source_platform,
+                message.message_id,
+                message.chat_id,
+                rule.id,
+            )
+            await self._safe_add_forward_log(
+                rule=rule,
+                message=message,
+                status=ForwardStatus.SKIPPED,
+                forwarded_text=forwarded_text,
+                error_message="目标与来源是同一个会话，已跳过以避免回环",
+                target=target,
+            )
+            return
         try:
             await self.router.deliver(rule, message, forwarded_text, target)
             await self._safe_add_forward_log(
@@ -282,7 +300,8 @@ class ForwardQueue:
             if isinstance(exc, TimeoutError):
                 error_message = (
                     f"发送超时（QQ {self.settings.qq_send_timeout_seconds}s / "
-                    f"微信 {self.settings.weixin_send_timeout_seconds}s）"
+                    f"微信 {self.settings.weixin_send_timeout_seconds}s / "
+                    f"Telegram {self.settings.telegram_send_timeout_seconds}s）"
                 )
             elif isinstance(exc, DeliveryError):
                 error_message = str(exc)
@@ -294,3 +313,25 @@ class ForwardQueue:
                 error_message=error_message,
                 target=target,
             )
+
+    @staticmethod
+    def _is_echo_target(message: TelegramForwardMessage, target: ForwardTarget) -> bool:
+        """目标就是来源会话本身 = 自己转给自己，跳过避免回环。"""
+        platform = (target.platform or "").strip()
+        if not platform or platform != message.source_platform:
+            return False
+        chat_id = id_key(message.chat_id)
+        if chat_id is None:
+            return False
+        candidates = {
+            (target.target_id or "").strip(),
+            (target.delivery_id or "").strip(),
+        }
+        candidates.discard("")
+        if not candidates:
+            return False
+        if platform == Platform.TELEGRAM.value and any(
+            item.lower() in {"me", "self", "saved", "saved_messages"} for item in candidates
+        ):
+            return False
+        return chat_id in candidates or chat_id.lstrip("-") in candidates

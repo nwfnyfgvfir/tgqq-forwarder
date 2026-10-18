@@ -1,4 +1,4 @@
-import { emptyState, logRow, pageHeader } from '../components.js?v=20261018-multitarget';
+import { emptyState, logRow, pageHeader } from '../components.js?v=20261018-tgtg';
 
 export function renderLogs(state) {
   const logs = state.logs || [];

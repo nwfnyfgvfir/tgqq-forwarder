@@ -86,6 +86,7 @@ class RuleRepository:
                 target_id=target.target_id,
                 guild_id=target.guild_id,
                 channel_id=target.channel_id,
+                account_id=target.account_id,
             )
             session.add(row)
             rows.append(row)

@@ -1,4 +1,4 @@
-import { api } from './api.js?v=20261018-multitarget';
+import { api } from './api.js?v=20261018-tgtg';
 
 export const state = {
   route: 'dashboard',

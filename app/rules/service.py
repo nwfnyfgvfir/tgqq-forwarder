@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
+from app.platforms import TELEGRAM_TARGET_CHAT, TELEGRAM_TARGET_TYPES, Platform
 from app.rules.formatter import MessageFormatter
 from app.rules.keywords import (
     is_keyword_text_include_regex,
@@ -251,8 +252,14 @@ class ForwardRuleService:
             return await self.logs.recent_logs(session, limit=limit, status=status)
 
     @staticmethod
-    def _target_key(target: ForwardTarget) -> tuple[str, str, str]:
-        return (target.platform or "qq", target.target_type, target.target_id)
+    def _target_key(target: ForwardTarget) -> tuple[str, str, str, str]:
+        # account_id 只对 Telegram 目标有意义（同一会话可由不同账号发送）。
+        return (
+            target.platform or "qq",
+            target.target_type,
+            target.target_id,
+            (target.account_id or "") if target.platform == Platform.TELEGRAM.value else "",
+        )
 
     @classmethod
     def _same_target(cls, left: ForwardTarget, right: ForwardTarget) -> bool:
@@ -272,26 +279,45 @@ class ForwardRuleService:
         """去空、去重、按平台规整目标；没有可用目标时回退到历史单目标。"""
         if targets:
             rows: list[ForwardTarget] = []
-            seen: set[tuple[str, str, str]] = set()
+            seen: set[tuple[str, str, str, str]] = set()
             for item in targets:
                 platform = (item.platform or "qq").strip()
                 target_id = (item.target_id or "").strip()
                 if not target_id:
                     continue
-                target_type = "friend" if platform == "weixin" else item.target_type
-                key = (platform, target_type, target_id)
+                if platform == Platform.WEIXIN.value:
+                    target_type = "friend"
+                elif platform == Platform.TELEGRAM.value:
+                    target_type = (
+                        item.target_type
+                        if item.target_type in TELEGRAM_TARGET_TYPES
+                        else TELEGRAM_TARGET_CHAT
+                    )
+                else:
+                    target_type = item.target_type
+                is_weixin = platform == Platform.WEIXIN.value
+                is_telegram = platform == Platform.TELEGRAM.value
+                account_id = (item.account_id or "").strip() or None
+                if is_telegram and target_type != TELEGRAM_TARGET_CHAT:
+                    # Bot API 只有一份 token，没有账号维度。
+                    account_id = None
+                if not is_telegram:
+                    account_id = None
+                key = (platform, target_type, target_id, account_id or "")
                 if key in seen:
                     continue
                 seen.add(key)
-                is_weixin = platform == "weixin"
                 rows.append(
                     ForwardTarget(
                         rule_id=int(rule.id or 0),
                         platform=platform,
                         target_type=target_type,
                         target_id=target_id,
-                        guild_id=None if is_weixin else (item.guild_id or None),
-                        channel_id=None if is_weixin else (item.channel_id or None),
+                        guild_id=None if (is_weixin or is_telegram) else (item.guild_id or None),
+                        channel_id=(
+                            None if (is_weixin or is_telegram) else (item.channel_id or None)
+                        ),
+                        account_id=account_id,
                         enabled=item.enabled,
                     )
                 )

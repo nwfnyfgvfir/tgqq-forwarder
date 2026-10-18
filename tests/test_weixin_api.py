@@ -141,8 +141,9 @@ async def test_options_exposes_platforms_and_contacts(tmp_path) -> None:
     await db.dispose()
 
     payload = response.json()
-    assert payload["source_platforms"] == ["telegram", "weixin"]
-    assert payload["target_platforms"] == ["qq", "weixin"]
+    assert payload["source_platforms"] == ["telegram", "weixin", "qq"]
+    assert payload["target_platforms"] == ["qq", "weixin", "telegram"]
+    assert payload["telegram_target_types"] == ["chat", "bot"]
     assert payload["weixin_enabled"] is True
     assert payload["weixin_contacts"][0]["name"] == "Alice"
 

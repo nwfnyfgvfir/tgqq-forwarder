@@ -6,7 +6,13 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from app.platforms import SOURCE_PLATFORMS, TARGET_PLATFORMS, Platform
+from app.platforms import (
+    SOURCE_PLATFORMS,
+    TARGET_PLATFORMS,
+    TELEGRAM_TARGET_CHAT,
+    TELEGRAM_TARGET_TYPES,
+    Platform,
+)
 from app.qq_official.client import QQTargetInfo
 from app.rules.keywords import (
     keywords_from_text_include_regex,
@@ -209,6 +215,8 @@ class RuleTargetInput(BaseModel):
     target_id: str = Field(min_length=1, max_length=128)
     guild_id: str | None = None
     channel_id: str | None = None
+    # 仅 Telegram 目标使用：用哪个 Telethon 账号发送（空 = 默认账号）
+    account_id: str | None = None
     enabled: bool = True
 
     @field_validator("target_id")
@@ -230,12 +238,16 @@ class RuleTargetInput(BaseModel):
     @field_validator("target_type")
     @classmethod
     def validate_type(cls, value: str) -> str:
-        allowed = {item.value for item in QQTargetType} | {WEIXIN_FRIEND_TARGET_TYPE}
+        allowed = (
+            {item.value for item in QQTargetType}
+            | {WEIXIN_FRIEND_TARGET_TYPE}
+            | set(TELEGRAM_TARGET_TYPES)
+        )
         if value not in allowed:
             raise ValueError(f"target_type must be one of: {', '.join(sorted(allowed))}")
         return value
 
-    @field_validator("guild_id", "channel_id")
+    @field_validator("guild_id", "channel_id", "account_id")
     @classmethod
     def blank_ids_to_none(cls, value: str | None) -> str | None:
         if value is None:
@@ -249,6 +261,17 @@ class RuleTargetInput(BaseModel):
             self.target_type = WEIXIN_FRIEND_TARGET_TYPE
             self.guild_id = None
             self.channel_id = None
+            self.account_id = None
+        elif self.platform == Platform.TELEGRAM.value:
+            if self.target_type not in TELEGRAM_TARGET_TYPES:
+                self.target_type = TELEGRAM_TARGET_CHAT
+            self.guild_id = None
+            self.channel_id = None
+            if self.target_type != TELEGRAM_TARGET_CHAT:
+                # Bot API 只有一份 token，没有账号维度。
+                self.account_id = None
+        else:
+            self.account_id = None
         return self
 
     def to_target(self, rule_id: int = 0) -> ForwardTarget:
@@ -259,6 +282,7 @@ class RuleTargetInput(BaseModel):
             target_id=self.target_id,
             guild_id=self.guild_id,
             channel_id=self.channel_id,
+            account_id=self.account_id,
             enabled=self.enabled,
         )
 
@@ -270,6 +294,7 @@ class RuleTargetResponse(BaseModel):
     target_id: str
     guild_id: str | None = None
     channel_id: str | None = None
+    account_id: str | None = None
     enabled: bool = True
 
     @classmethod
@@ -281,6 +306,7 @@ class RuleTargetResponse(BaseModel):
             target_id=target.target_id,
             guild_id=target.guild_id,
             channel_id=target.channel_id,
+            account_id=target.account_id,
             enabled=target.enabled,
         )
 
@@ -361,7 +387,11 @@ class RuleBase(BaseModel):
     @field_validator("qq_target_type")
     @classmethod
     def validate_target_type(cls, value: str) -> str:
-        allowed = {item.value for item in QQTargetType} | {WEIXIN_FRIEND_TARGET_TYPE}
+        allowed = (
+            {item.value for item in QQTargetType}
+            | {WEIXIN_FRIEND_TARGET_TYPE}
+            | set(TELEGRAM_TARGET_TYPES)
+        )
         if value not in allowed:
             raise ValueError(f"qq_target_type must be one of: {', '.join(sorted(allowed))}")
         return value
@@ -418,6 +448,13 @@ class RuleBase(BaseModel):
             self.qq_target_type = WEIXIN_FRIEND_TARGET_TYPE
             self.qq_guild_id = None
             self.qq_channel_id = None
+        elif self.target_platform == Platform.TELEGRAM.value:
+            if self.qq_target_type not in TELEGRAM_TARGET_TYPES:
+                self.qq_target_type = TELEGRAM_TARGET_CHAT
+            self.qq_guild_id = None
+            self.qq_channel_id = None
+            if self.targets is None and not self.qq_target_id:
+                raise ValueError("Telegram 目标需要填写会话 ID 或 @username")
         elif self.targets is None and not self.qq_target_id:
             raise ValueError("qq_target_id 不能为空，或用 targets 指定目标")
         if self.source_platform == Platform.WEIXIN.value and self.source_chat_type:
@@ -641,6 +678,10 @@ class OptionsResponse(BaseModel):
     telegram_account_ids: list[str] = Field(default_factory=list)
     source_platforms: list[str] = Field(default_factory=lambda: list(SOURCE_PLATFORMS))
     target_platforms: list[str] = Field(default_factory=lambda: list(TARGET_PLATFORMS))
+    telegram_target_types: list[str] = Field(
+        default_factory=lambda: list(TELEGRAM_TARGET_TYPES)
+    )
+    telegram_bot_configured: bool = False
     weixin_enabled: bool = False
     weixin_account_id: str | None = None
     weixin_logged_in: bool = False

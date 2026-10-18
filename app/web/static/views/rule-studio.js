@@ -1,19 +1,36 @@
-import { api } from '../api.js?v=20261018-multitarget';
-import { escapeHtml, pageHeader, short, statusPill } from '../components.js?v=20261018-multitarget';
-import { refreshRules } from '../state.js?v=20261018-multitarget';
+import { api } from '../api.js?v=20261018-tgtg';
+import { escapeHtml, pageHeader, short, statusPill } from '../components.js?v=20261018-tgtg';
+import { refreshRules } from '../state.js?v=20261018-tgtg';
 
 const DEFAULT_TEMPLATE = '# {source_title_md}\n\n**发送者：{sender_name_md}**\n\n{text}\n\n{footer_note}';
+const TARGET_TYPES_BY_PLATFORM = {
+  qq: ['group', 'c2c', 'channel', 'dms'],
+  weixin: ['friend'],
+  telegram: ['chat', 'bot'],
+};
+const TARGET_TYPE_LABELS = {
+  group: '群',
+  c2c: '私聊',
+  channel: '频道',
+  dms: '频道私信',
+  friend: '好友',
+  chat: '用户账号发送',
+  bot: 'Bot 发送',
+};
+// 渲染时由 state.options 填充，供目标行的账号下拉使用。
+let telegramAccountIds = [];
 
 export function renderRuleStudio(state) {
   const editRule = state.routeParams?.rule || null;
   const sourcePlatform = editRule?.source_platform || '';
   const weixinAccountId = state.options?.weixin_account_id;
+  telegramAccountIds = state.options?.telegram_account_ids || [];
   const initialTargets = targetsOfRule(editRule);
   return `
     ${pageHeader(
       'RULE STUDIO',
       editRule?.id ? `编辑规则 #${editRule.id}` : '规则工坊',
-      '来源可以是 Telegram 或微信；一条规则可同时投递到多个 QQ / 微信目标。用选择器、关键词芯片、模板预览完成配置。'
+      '来源可以是 Telegram、微信或 QQ；一条规则可同时投递到多个 QQ / 微信 / Telegram 目标。用选择器、关键词芯片、模板预览完成配置。'
     )}
     <form id="rule-form" class="studio-layout" data-edit-id="${editRule?.id || ''}">
       <section class="panel studio-main">
@@ -21,7 +38,7 @@ export function renderRuleStudio(state) {
           <div class="step-index">01</div>
           <div>
             <h2>消息来源</h2>
-            <p>先选平台，再选监听账号与来源会话；平台或账号留空代表任意。微信来源只能收到好友私聊。</p>
+            <p>先选平台，再选监听账号与来源会话；平台或账号留空代表任意。微信来源只能收到好友私聊，QQ 来源是机器人收到的群 / 频道 / 私聊消息。</p>
           </div>
           <label>规则名称<input name="name" required maxlength="120" value="${escapeHtml(editRule?.name || '')}" placeholder="例如：LINUX DO AI 关键词" /></label>
           <div class="grid-2">
@@ -29,6 +46,7 @@ export function renderRuleStudio(state) {
               ${option('', '任意平台', sourcePlatform)}
               ${option('telegram', 'Telegram', sourcePlatform)}
               ${option('weixin', '个人微信', sourcePlatform)}
+              ${option('qq', 'QQ 机器人', sourcePlatform)}
             </select></label>
             <label>监听账号<select name="source_account_id">
               ${option('', '任意账号', editRule?.source_account_id || '')}
@@ -37,7 +55,7 @@ export function renderRuleStudio(state) {
             </select></label>
           </div>
           <div class="grid-2">
-            <label>来源会话 ID<input name="source_chat_id" value="${escapeHtml(editRule?.source_chat_id ?? '')}" placeholder="* / -100... / wxid_..." /></label>
+            <label>来源会话 ID<input name="source_chat_id" value="${escapeHtml(editRule?.source_chat_id ?? '')}" placeholder="* / -100... / wxid_... / QQ openid" /></label>
             <label>会话类型<select name="source_chat_type">
               ${option('', '任意', editRule?.source_chat_type)}
               ${option('channel', '频道', editRule?.source_chat_type)}
@@ -52,7 +70,7 @@ export function renderRuleStudio(state) {
           </div>
           <div class="choice-list" id="dialog-results" data-source-panel="telegram" hidden></div>
           <div class="grid-2">
-            <label>发送者 ID<input name="source_sender_id" value="${escapeHtml(editRule?.source_sender_id ?? '')}" placeholder="* / 用户 ID / wxid" /></label>
+            <label>发送者 ID<input name="source_sender_id" value="${escapeHtml(editRule?.source_sender_id ?? '')}" placeholder="* / 用户 ID / wxid / QQ openid" /></label>
             <label>发送者 Bot 标记<select name="source_sender_is_bot">
               ${option('', '任意', boolToSelect(editRule?.source_sender_is_bot))}
               ${option('true', '只匹配 Bot', boolToSelect(editRule?.source_sender_is_bot))}
@@ -64,7 +82,7 @@ export function renderRuleStudio(state) {
           <div class="step-index">02</div>
           <div>
             <h2>投递目标</h2>
-            <p>一条规则可以同时发到多个目标：多个 QQ 群/频道、多个微信好友都可以。点下面的缓存卡片可直接追加，也可以手工填写。</p>
+            <p>一条规则可以同时发到多个目标：QQ 群/频道、微信好友、Telegram 会话都可以混排。点下面的卡片可直接追加，也可以手工填写。</p>
           </div>
           <div id="target-list" class="target-list">${initialTargets.map((item) => targetRowHtml(item)).join('')}</div>
           <div class="target-toolbar">
@@ -80,6 +98,15 @@ export function renderRuleStudio(state) {
               <h3>微信联系人</h3>
               <div class="choice-list horizontal" id="weixin-contacts">${renderWeixinContacts(state.options?.weixin_contacts || [], initialTargets)}</div>
               <p class="muted">没有联系人？让对方先给本微信号发一条消息，再刷新本页即可。</p>
+            </div>
+            <div>
+              <h3>Telegram 会话</h3>
+              <div class="picker-row">
+                <input id="tg-target-query" placeholder="搜索会话名或 ID" />
+                <button type="button" data-action="search-tg-targets">搜索</button>
+              </div>
+              <div class="choice-list horizontal" id="tg-target-results" hidden></div>
+              <p class="muted">目标 ID 也可以手填数字 chat_id、@频道用户名，或 <code>me</code>（收藏夹，仅用户账号发送）。</p>
             </div>
           </div>
         </div>
@@ -130,12 +157,17 @@ export function bindRuleStudio(root, navigate) {
   const form = root.querySelector('#rule-form');
   if (!form) return;
   let dialogSearchSeq = 0;
+  let tgSearchSeq = 0;
   syncPlatformPanels(form);
+  form.querySelectorAll('[data-target-row]').forEach(syncTargetRow);
   form.addEventListener('change', (event) => {
     if (event.target?.name === 'source_platform') {
       syncPlatformPanels(form);
     }
     if (event.target?.dataset?.field === 'platform') {
+      syncTargetRow(event.target.closest('[data-target-row]'));
+    }
+    if (event.target?.dataset?.field === 'target_type') {
       syncTargetRow(event.target.closest('[data-target-row]'));
     }
   });
@@ -158,12 +190,47 @@ export function bindRuleStudio(root, navigate) {
       container.innerHTML = `<span class="muted">${escapeHtml(error.message)}</span>`;
     }
   });
+  root.querySelector('[data-action="search-tg-targets"]')?.addEventListener('click', async () => {
+    const query = root.querySelector('#tg-target-query')?.value || '';
+    const container = root.querySelector('#tg-target-results');
+    if (!container) return;
+    const searchSeq = ++tgSearchSeq;
+    container.hidden = false;
+    container.innerHTML = '<span class="muted">搜索中…</span>';
+    try {
+      const items = await api.dialogs(query, 40, '');
+      if (searchSeq !== tgSearchSeq) return;
+      container.hidden = false;
+      container.innerHTML = items.length
+        ? items.map(renderTelegramChoice).join('')
+        : '<span class="muted">没有匹配会话</span>';
+    } catch (error) {
+      if (searchSeq !== tgSearchSeq) return;
+      container.hidden = false;
+      container.innerHTML = `<span class="muted">${escapeHtml(error.message)}</span>`;
+    }
+  });
   form.addEventListener('click', async (event) => {
     const target = buttonFromEvent(event, form);
     if (!target) return;
     if (target.matches('#dialog-results button[data-dialog-id]')) {
       dialogSearchSeq += 1;
       selectDialog(target, form, root);
+      return;
+    }
+    if (target.dataset.tgTargetId) {
+      tgSearchSeq += 1;
+      addTargetRow(form, {
+        platform: 'telegram',
+        target_type: 'chat',
+        target_id: target.dataset.tgTargetId || '',
+        account_id: target.dataset.tgAccount || '',
+      });
+      const container = root.querySelector('#tg-target-results');
+      if (container) {
+        container.replaceChildren();
+        container.hidden = true;
+      }
       return;
     }
     if (target.dataset.weixinUser) {
@@ -252,7 +319,11 @@ function setFormValue(form, name, value) {
   }
 }
 
-const TARGET_TYPES = ['group', 'c2c', 'channel', 'dms', 'friend'];
+function platformOf(target) {
+  if (target?.platform === 'weixin') return 'weixin';
+  if (target?.platform === 'telegram') return 'telegram';
+  return 'qq';
+}
 
 function targetsOfRule(editRule) {
   if (Array.isArray(editRule?.targets) && editRule.targets.length) return editRule.targets;
@@ -262,25 +333,32 @@ function targetsOfRule(editRule) {
     target_id: editRule?.qq_target_id || '',
     guild_id: editRule?.qq_guild_id || '',
     channel_id: editRule?.qq_channel_id || '',
+    account_id: null,
     enabled: true,
   }];
 }
 
 function targetRowHtml(target) {
-  const platform = target.platform === 'weixin' ? 'weixin' : 'qq';
-  const type = platform === 'weixin' ? 'friend' : (target.target_type || 'group');
-  const disabled = platform === 'weixin' ? 'disabled' : '';
+  const platform = platformOf(target);
+  const types = TARGET_TYPES_BY_PLATFORM[platform] || ['group'];
+  const type = types.includes(target.target_type) ? target.target_type : types[0];
   const showExtras = platform === 'qq' && (type === 'channel' || type === 'dms');
+  const showAccount = platform === 'telegram' && type === 'chat';
   return `
     <div class="target-row" data-target-row>
       <select data-field="platform">
         ${option('qq', 'QQ 机器人', platform)}
         ${option('weixin', '个人微信', platform)}
+        ${option('telegram', 'Telegram', platform)}
       </select>
-      <select data-field="target_type" ${disabled}>
-        ${TARGET_TYPES.map((item) => option(item, item, type)).join('')}
+      <select data-field="target_type">
+        ${types.map((item) => option(item, TARGET_TYPE_LABELS[item] || item, type)).join('')}
       </select>
-      <input data-field="target_id" value="${escapeHtml(target.target_id || '')}" placeholder="QQ openid / 频道 ID / wxid" />
+      <input data-field="target_id" value="${escapeHtml(target.target_id || '')}" placeholder="QQ openid / 频道 ID / wxid / TG 会话 ID" />
+      <select data-field="account_id" ${showAccount ? '' : 'hidden'}>
+        ${option('', '默认账号', target.account_id || '')}
+        ${telegramAccountIds.map((item) => option(item, `TG · ${item}`, target.account_id || '')).join('')}
+      </select>
       <input data-field="guild_id" value="${escapeHtml(target.guild_id || '')}" placeholder="Guild ID（可选）" ${showExtras ? '' : 'hidden'} />
       <input data-field="channel_id" value="${escapeHtml(target.channel_id || '')}" placeholder="Channel ID（可选）" ${showExtras ? '' : 'hidden'} />
       <label class="switch-line"><input type="checkbox" data-field="enabled" ${target.enabled === false ? '' : 'checked'} /> 启用</label>
@@ -293,37 +371,45 @@ function syncTargetRow(row) {
   if (!row) return;
   const platform = row.querySelector('[data-field="platform"]')?.value || 'qq';
   const typeSelect = row.querySelector('[data-field="target_type"]');
+  const accountSelect = row.querySelector('[data-field="account_id"]');
   const guildInput = row.querySelector('[data-field="guild_id"]');
   const channelInput = row.querySelector('[data-field="channel_id"]');
-  const isWeixin = platform === 'weixin';
-  const type = typeSelect?.value || 'group';
+  const types = TARGET_TYPES_BY_PLATFORM[platform] || ['group'];
   if (typeSelect) {
-    if (isWeixin) {
-      typeSelect.value = 'friend';
-      typeSelect.disabled = true;
-    } else {
-      typeSelect.disabled = false;
-      if (typeSelect.value === 'friend') typeSelect.value = 'group';
-    }
+    const current = typeSelect.value;
+    typeSelect.innerHTML = types
+      .map((item) => option(item, TARGET_TYPE_LABELS[item] || item, types.includes(current) ? current : types[0]))
+      .join('');
+    typeSelect.value = types.includes(current) ? current : types[0];
+    typeSelect.disabled = types.length === 1;
   }
+  const type = typeSelect?.value || types[0];
+  const showExtras = platform === 'qq' && (type === 'channel' || type === 'dms');
   // Guild / Channel 只对 QQ 频道类目标有意义，其余类型隐藏以免挤占输入宽度。
-  const showExtras = !isWeixin && (type === 'channel' || type === 'dms');
   for (const input of [guildInput, channelInput]) {
     if (!input) continue;
     input.hidden = !showExtras;
     if (!showExtras) input.value = '';
+  }
+  const showAccount = platform === 'telegram' && type === 'chat';
+  if (accountSelect) {
+    accountSelect.hidden = !showAccount;
+    if (!showAccount) accountSelect.value = '';
   }
 }
 
 function addTargetRow(form, target) {
   const list = form.querySelector('#target-list');
   if (!list) return;
+  const platform = platformOf(target);
+  const types = TARGET_TYPES_BY_PLATFORM[platform] || ['group'];
   const candidate = {
-    platform: target.platform || 'qq',
-    target_type: target.target_type || (target.platform === 'weixin' ? 'friend' : 'group'),
+    platform,
+    target_type: types.includes(target.target_type) ? target.target_type : types[0],
     target_id: target.target_id || '',
     guild_id: target.guild_id || '',
     channel_id: target.channel_id || '',
+    account_id: target.account_id || '',
     enabled: true,
   };
   const rows = Array.from(list.querySelectorAll('[data-target-row]'));
@@ -338,9 +424,12 @@ function addTargetRow(form, target) {
   }
   if (candidate.target_id) {
     const exists = rows.some((row) => {
-      const platform = row.querySelector('[data-field="platform"]')?.value || 'qq';
+      const rowPlatform = row.querySelector('[data-field="platform"]')?.value || 'qq';
       const id = row.querySelector('[data-field="target_id"]')?.value.trim() || '';
-      return platform === candidate.platform && id === candidate.target_id;
+      const account = row.querySelector('[data-field="account_id"]')?.value.trim() || '';
+      return rowPlatform === candidate.platform
+        && id === candidate.target_id
+        && account === (candidate.account_id || '');
     });
     if (exists) return;
   }
@@ -386,12 +475,15 @@ function targetsFromForm(form) {
     const field = (name) => row.querySelector(`[data-field="${name}"]`);
     const platform = field('platform')?.value || 'qq';
     const isWeixin = platform === 'weixin';
+    const isTelegram = platform === 'telegram';
+    const type = field('target_type')?.value || (isWeixin ? 'friend' : isTelegram ? 'chat' : 'group');
     return {
       platform,
-      target_type: isWeixin ? 'friend' : (field('target_type')?.value || 'group'),
+      target_type: isWeixin ? 'friend' : type,
       target_id: field('target_id')?.value.trim() || '',
-      guild_id: isWeixin ? null : (field('guild_id')?.value.trim() || null),
-      channel_id: isWeixin ? null : (field('channel_id')?.value.trim() || null),
+      guild_id: isWeixin || isTelegram ? null : (field('guild_id')?.value.trim() || null),
+      channel_id: isWeixin || isTelegram ? null : (field('channel_id')?.value.trim() || null),
+      account_id: isTelegram && type === 'chat' ? (field('account_id')?.value.trim() || null) : null,
       enabled: field('enabled') ? field('enabled').checked : true,
     };
   }).filter((item) => item.target_id);
@@ -400,6 +492,16 @@ function targetsFromForm(form) {
 function renderDialogChoice(item) {
   return `
     <button type="button" class="choice-card" data-dialog-id="${escapeHtml(item.id)}" data-dialog-type="${escapeHtml(item.type)}" data-dialog-name="${escapeHtml(item.name)}" data-dialog-account="${escapeHtml(item.account_id || '')}">
+      <strong>${escapeHtml(item.type)}</strong>
+      <code>${escapeHtml(item.id)}</code>
+      <span>${escapeHtml(item.name)}${item.account_id ? ` · ${escapeHtml(item.account_id)}` : ''}</span>
+    </button>
+  `;
+}
+
+function renderTelegramChoice(item) {
+  return `
+    <button type="button" class="choice-card" data-tg-target-id="${escapeHtml(item.id)}" data-tg-account="${escapeHtml(item.account_id || '')}">
       <strong>${escapeHtml(item.type)}</strong>
       <code>${escapeHtml(item.id)}</code>
       <span>${escapeHtml(item.name)}${item.account_id ? ` · ${escapeHtml(item.account_id)}` : ''}</span>
@@ -472,17 +574,19 @@ async function preview(form, root) {
     const rulePayload = formPayload.targets.length
       ? formPayload
       : { ...formPayload, targets: [{ platform: 'qq', target_type: 'group', target_id: 'preview-target', enabled: true }] };
-    const isWeixin = formPayload.source_platform === 'weixin';
+    const sourcePlatform = formPayload.source_platform || 'telegram';
+    const isWeixin = sourcePlatform === 'weixin';
+    const isQQ = sourcePlatform === 'qq';
     const result = await api.previewRule({
       rule: rulePayload,
       message: {
         text: form.elements.preview_text.value,
-        source_platform: formPayload.source_platform || 'telegram',
+        source_platform: sourcePlatform,
         account_id: formPayload.source_account_id || null,
-        chat_id: formPayload.source_chat_id || (isWeixin ? 'wxid_preview' : -1001234567890),
-        chat_title: isWeixin ? '微信好友' : 'Preview Channel',
-        chat_type: formPayload.source_chat_type || (isWeixin ? 'private' : 'channel'),
-        sender_id: formPayload.source_sender_id || (isWeixin ? 'wxid_preview' : 42),
+        chat_id: formPayload.source_chat_id || (isWeixin ? 'wxid_preview' : isQQ ? 'qq_group_openid' : -1001234567890),
+        chat_title: isWeixin ? '微信好友' : isQQ ? 'QQ群 12345678' : 'Preview Channel',
+        chat_type: formPayload.source_chat_type || (isWeixin || isQQ ? 'private' : 'channel'),
+        sender_id: formPayload.source_sender_id || (isWeixin ? 'wxid_preview' : isQQ ? 'qq_member_openid' : 42),
         sender_username: 'preview_sender',
         sender_display_name: 'Preview Sender',
         sender_is_bot: false,

@@ -1,4 +1,4 @@
-import { emptyState, pageHeader, ruleCard } from '../components.js?v=20261018-multitarget';
+import { emptyState, pageHeader, ruleCard } from '../components.js?v=20261018-tgtg';
 
 export function renderRules(state) {
   const rules = state.rules || [];

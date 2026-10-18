@@ -7,6 +7,7 @@ from telethon import TelegramClient, events
 
 from app.config import Settings, TelegramAccountConfig
 from app.rules.models import TelegramForwardMessage
+from app.telegram_outbound.registry import SentMessageRegistry
 from app.telegram_user.album_buffer import TelegramAlbumBuffer
 from app.telegram_user.dialog_cache import DialogCache
 from app.telegram_user.event_parser import parse_event
@@ -24,9 +25,11 @@ class TelegramUserListener:
         on_message: MessageCallback,
         *,
         account: TelegramAccountConfig | None = None,
+        sent_registry: SentMessageRegistry | None = None,
     ) -> None:
         self.settings = settings
         self.on_message = on_message
+        self.sent_registry = sent_registry
         self.account = account or settings.enabled_telegram_accounts()[0]
         api_id = self.account.resolved_api_id(settings.telegram_api_id)
         api_hash = self.account.resolved_api_hash(settings.telegram_api_hash)
@@ -95,6 +98,20 @@ class TelegramUserListener:
 
     async def _handle_new_message(self, event: events.NewMessage.Event) -> None:
         try:
+            # 自己刚发出的转发消息不能再被当成来源消息，否则「TG → TG」会自激成环。
+            if self.sent_registry is not None:
+                message_id = getattr(event.message, "id", None)
+                if self.sent_registry.is_recent(event.chat_id, message_id) or (
+                    getattr(event, "outgoing", False)
+                    and self.sent_registry.consume_outgoing(event.raw_text or "")
+                ):
+                    logger.debug(
+                        "Skip self-sent Telegram message account=%s chat=%s message=%s",
+                        self.account.id,
+                        event.chat_id,
+                        message_id,
+                    )
+                    return
             media_path = await self.downloader.download(event)
             message = await parse_event(
                 event,

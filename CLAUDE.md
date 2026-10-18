@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project overview
 
-TGQQ Forwarder forwards selected messages to QQ Official Bot target sessions and/or personal WeChat friends. Sources are Telegram user accounts (Telethon) and personal WeChat (Tencent iLink / `openclaw-weixin` channel: QR login + long polling). QQ delivery uses QQ Official Bot WebSocket/API via `botpy`; WeChat delivery uses `ilink/bot/sendmessage`.
+TGQQ Forwarder forwards selected messages between Telegram, QQ Official Bot sessions and personal WeChat. Sources are Telegram user accounts (Telethon), personal WeChat (Tencent iLink / `openclaw-weixin` channel: QR login + long polling) and messages received by the QQ Official Bot. Targets are QQ Official Bot sessions (botpy WebSocket/API), personal WeChat friends (`ilink/bot/sendmessage`) and Telegram chats (Telethon user account or Bot API).
 
 User-facing documentation in this repository is written in Chinese.
 
@@ -85,6 +85,11 @@ Important media/link settings:
 - `TELEGRAM_ALBUM_BUFFER_SECONDS` controls Telegram grouped album aggregation.
 - Media cache cleanup is controlled by `MEDIA_CLEANUP_INTERVAL_SECONDS` and `MEDIA_RETENTION_SECONDS`.
 
+Telegram outbound settings (QQ / 微信 → TG):
+
+- `TELEGRAM_SEND_BOT_TOKEN` is only needed for `target_type="bot"` targets; empty falls back to `RSS_BOT_TOKEN`, then `TG_ADMIN_BOT_TOKEN`. User-account targets reuse the existing Telethon sessions.
+- `TELEGRAM_SEND_TIMEOUT_SECONDS` bounds one Telegram send (default 60s).
+
 ## High-level architecture
 
 ### Application runtime
@@ -108,6 +113,8 @@ For each incoming Telegram message:
 4. `TelegramAlbumBuffer` merges messages sharing `(account_id, chat_id, grouped_id)` so albums/multi-image posts forward once with ordered media paths.
 5. Parsed messages enter the shared `ForwardQueue.enqueue()`.
 
+Messages this process itself sent to Telegram are skipped before parsing: `app/telegram_outbound/registry.py::SentMessageRegistry` records `(chat_id, message_id)` after each send, and `TelegramUserListener` checks it (otherwise a TG → TG rule would re-ingest its own output and loop).
+
 URL handling is centralized around `TelegramLink` in `app/rules/models.py`:
 
 - `visible_url`: URL already visible in Telegram text.
@@ -126,19 +133,20 @@ Rules and logs are SQLModel tables in `app/storage/models.py`, accessed through 
 - Keyword rules are encoded/decoded in `app/rules/keywords.py` as regex with metadata.
 - `MessageFormatter` renders rule templates, appends missing hidden/button links, and avoids duplicate visible URL notes.
 
-`app/worker/forward_queue.py` consumes parsed messages, skips work when forwarding is paused, finds matching rules, formats text **once per rule**, then delivers to every enabled target of that rule through `app/channels/router.py` (`DeliveryRouter`). Each target is sent and logged independently (`ForwardLog` per target, one failure never blocks the others).
+`app/worker/forward_queue.py` consumes parsed messages, skips work when forwarding is paused, finds matching rules, formats text **once per rule**, then delivers to every enabled target of that rule through `app/channels/router.py` (`DeliveryRouter`). Each target is sent and logged independently (`ForwardLog` per target, one failure never blocks the others). A target that points back at the source Telegram chat is logged as `skipped` instead of delivered.
 
 Rule platform semantics:
 
-- `ForwardRule.source_platform` is `telegram` / `weixin` / `null` (null = any platform, the legacy behaviour).
-- Targets live in the `forward_target` table (`ForwardTarget`): one row per `(rule, platform, target_type, target_id)` with `enabled` and `position`. A rule can fan out to any mix of QQ groups/channels and WeChat contacts.
+- `ForwardRule.source_platform` is `telegram` / `weixin` / `qq` / `null` (null = any platform, the legacy behaviour).
+- Targets live in the `forward_target` table (`ForwardTarget`): one row per `(rule, platform, target_type, target_id)` with `enabled` and `position`. A rule can fan out to any mix of QQ groups/channels, WeChat contacts and Telegram chats.
 - `ForwardRule.target_platform` + `qq_target_*` remain as **compat columns for the first target** so old code, old API clients and the Telegram `/add_rule` command keep working. A rule with no `forward_target` rows is read as a single legacy target (`app/storage/models.py::legacy_target`).
 - For WeChat targets `target_type` is fixed to `friend` and `target_id` holds the WeChat `user_id`/wxid; guild/channel fields are dropped.
-- `source_chat_id` / `source_sender_id` / log ID columns use `FlexibleId` (TEXT affinity, numeric values still read back as `int`) so Telegram integer IDs and WeChat string IDs share the same columns.
+- For Telegram targets `target_type` is `chat` (send with the Telethon user account) or `bot` (Bot API) and `target_id` is a numeric chat id, `@username`, or `me` (Saved Messages, user account only). `ForwardTarget.account_id` (added via `_ensure_column`) picks which Telethon account sends; it is cleared for `bot` targets.
+- `source_chat_id` / `source_sender_id` / log ID columns use `FlexibleId` (TEXT affinity, numeric values still read back as `int`) so Telegram integer IDs and WeChat/QQ string IDs share the same columns.
 
 ### QQ integration
 
-`app/qq_official/client.py` subclasses `botpy.Client`. Incoming QQ events are not business commands; they cache QQ target IDs and latest message IDs needed by QQ Official API sending contexts.
+`app/qq_official/client.py` subclasses `botpy.Client`. Incoming QQ events do two things: they cache QQ target IDs / latest message IDs needed by QQ Official API sending contexts, and (when an `on_message` callback is supplied) they build a `TelegramForwardMessage` with `source_platform="qq"` and enqueue it, so QQ → Telegram / 微信 rules work. `chat_id` is `group_openid` (group), `channel_id` (channel), `guild_id` (DMS) or `user_openid` (C2C); `<@!id>` placeholders are stripped and attachments become `[图片] https://...` text notes (files are not downloaded). Duplicate event ids are ignored because QQ may fire both the @-mention and the plain group event for one message.
 
 `app/qq_official/sender.py` sends outbound messages:
 
@@ -160,6 +168,15 @@ Rule platform semantics:
 - **Protocol constraint**: `sendmessage` requires the recipient's `context_token`, which only arrives with an inbound message from that contact. Forwarding to WeChat therefore only works for contacts who have messaged the account; tokens are cached and persisted.
 - `app/web/app.py` exposes `/api/weixin/status`, `/api/weixin/contacts`, `POST/GET /api/weixin/login`, `POST /api/weixin/logout`; the Mini App system page renders the QR code from `login.image_data_url`.
 - RSS subscriptions can target WeChat directly (`app/rss/delivery.py`); `RssWorker` takes `weixin_service` and the publish gate (`ApplicationRuntime._can_publish_rss`) is satisfied by either a connected Telegram listener or a connected WeChat channel.
+
+### Telegram outbound (QQ / 微信 → TG)
+
+`app/telegram_outbound/` owns delivery into Telegram:
+
+- `registry.py`: `SentMessageRegistry` remembers `(chat_id, message_id)` of messages this process sent (TTL + LRU bound). `TelegramUserListener` consults it to drop self-sent messages.
+- `delivery.py`: `TelegramDelivery` dispatches on `ForwardTarget.target_type` — `chat` → `TelegramUserSender` (Telethon `send_message` / `send_file`, `me` maps to Saved Messages, `account_id` selects the listener), `bot` → `TelegramBotSender` (python-telegram-bot `Bot`, token from `TELEGRAM_SEND_BOT_TOKEN` → `RSS_BOT_TOKEN` → `TG_ADMIN_BOT_TOKEN`, can only reach chats the bot already joined).
+- `DeliveryRouter` takes it as an optional 4th dependency; `ForwardQueue` also skips any Telegram target whose chat equals the source chat (`_is_echo_target`), logging `skipped` instead of looping.
+- `ApplicationRuntime` creates one registry and shares it between `TelegramAccountManager` and `TelegramDelivery`; `TelegramDelivery.stop()` shuts the Bot session down.
 
 ### Telegram admin bot
 
@@ -193,4 +210,6 @@ Existing tests are organized by subsystem:
 - `tests/test_weixin_api.py`: Mini App WeChat endpoints and platform-aware rule creation.
 - `tests/test_delivery_router.py`: target-platform dispatch, disabled channel, timeout wrapping.
 - `tests/test_rule_platforms.py`: platform matching, string IDs, schema normalisation, DB roundtrip.
+- `tests/test_telegram_delivery.py`: sent-message registry, user-account and Bot senders, router dispatch, echo-target skip in the queue.
+- `tests/test_qq_inbound.py`: QQ inbound parsing into `TelegramForwardMessage` (group / channel / C2C, mention stripping, attachments, dedupe).
 - `tests/test_rss_weixin.py`: RSS delivery dispatch, WeChat availability/context-token gating, transient vs permanent failures, worker integration and test-send.

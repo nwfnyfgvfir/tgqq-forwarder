@@ -179,7 +179,7 @@ async def test_status_me_dialogs_targets_and_static(api_client) -> None:
     targets = await client.get("/api/qq-targets")
     options = await client.get("/api/options")
     index = await client.get("/")
-    app_js = await client.get("/static/app.js?v=20261018-multitarget")
+    app_js = await client.get("/static/app.js?v=20261018-tgtg")
 
     assert me.status_code == 200
     assert me.json()["user"]["id"] == 1
@@ -200,11 +200,11 @@ async def test_status_me_dialogs_targets_and_static(api_client) -> None:
     assert index.status_code == 200
     assert index.headers["cache-control"] == "no-store, no-cache, must-revalidate, max-age=0"
     assert "TGQQ Forwarder Mini App" in index.text
-    assert "/static/styles.css?v=20261018-multitarget" in index.text
-    assert "/static/app.js?v=20261018-multitarget" in index.text
+    assert "/static/styles.css?v=20261018-tgtg" in index.text
+    assert "/static/app.js?v=20261018-tgtg" in index.text
     assert app_js.status_code == 200
     assert app_js.headers["cache-control"] == "no-store, no-cache, must-revalidate, max-age=0"
-    assert "./views/rule-studio.js?v=20261018-multitarget" in app_js.text
+    assert "./views/rule-studio.js?v=20261018-tgtg" in app_js.text
 
 
 async def test_rule_crud_preview_and_pause(api_client) -> None:
@@ -324,3 +324,41 @@ async def test_rule_multi_target_api(api_client) -> None:
     copied = await client.post(f"/api/rules/{rule['id']}/duplicate", json={})
     assert copied.status_code == 200
     assert [item["target_id"] for item in copied.json()["targets"]] == ["qq-c"]
+
+
+async def test_create_qq_to_telegram_rule(api_client) -> None:
+    client, _service = api_client
+    payload = {
+        "name": "QQ 到 TG",
+        "enabled": True,
+        "source_platform": "qq",
+        "match_mode": "all",
+        "targets": [
+            {
+                "platform": "telegram",
+                "target_type": "chat",
+                "target_id": "-1001",
+                "account_id": "news",
+            },
+            {"platform": "telegram", "target_type": "bot", "target_id": "@channel"},
+        ],
+        "message_template": "{source_title} {text}",
+    }
+
+    response = await client.post("/api/rules", json=payload)
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["created"] is True
+    rule = body["rule"]
+    assert rule["source_platform"] == "qq"
+    assert [
+        (item["platform"], item["target_type"], item["account_id"]) for item in rule["targets"]
+    ] == [
+        ("telegram", "chat", "news"),
+        ("telegram", "bot", None),
+    ]
+
+    fetched = await client.get(f"/api/rules/{rule['id']}")
+    assert fetched.status_code == 200
+    assert fetched.json()["targets"][0]["account_id"] == "news"

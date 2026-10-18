@@ -1,15 +1,16 @@
 # TGQQ Forwarder
 
-TGQQ Forwarder 用于把指定消息自动转发到 QQ 官方机器人会话或个人微信好友。消息来源支持 Telegram 用户账号与个人微信（扫码登录），投递目标支持 QQ 官方机器人（WebSocket）与个人微信。
+TGQQ Forwarder 用于在 Telegram、QQ 官方机器人、个人微信之间按规则转发消息：来源可以是 Telegram 用户账号、个人微信（扫码登录）或 QQ 机器人收到的消息，投递目标可以是 QQ 官方机器人会话、个人微信好友或 Telegram 会话。
 
 ## 功能
 
 - 使用 Telethon 登录一个或多个 Telegram 用户账号。
 - 并行监听各账号可见的频道、群组、私聊、Bot 消息。
 - 支持个人微信作为来源与目标：扫码登录、长轮询收消息、按 wxid 定向发送。
+- **支持 QQ / 微信 → Telegram**：机器人收到的消息可以按规则转发到 Telegram 频道、群或私聊；用用户账号发送时可以发到任意会话（含收藏夹 `me`），也可以改用 Bot API 发送。
 - 按规则筛选要转发的消息。
 - 支持按来源平台、Telegram 账号、会话、发送者、Bot 标记、关键词、文本正则、媒体类型匹配。
-- 一条规则可同时投递到多个目标：多个 QQ 群/频道、多个微信好友，或 QQ 与微信混合；每个目标单独发送、单独记日志，一个失败不影响其它目标。
+- 一条规则可同时投递到多个目标：多个 QQ 群/频道、多个微信好友、多个 Telegram 会话可以混排；每个目标单独发送、单独记日志，一个失败不影响其它目标。
 - 自动提取 Telegram 普通 URL、文字超链接和 URL 按钮；可见 URL 不重复追加，隐藏链接会以“文字: URL”形式显示。
 - 优先使用 QQ 原生 markdown 发送，若 QQ 官方接口拒绝 markdown，会自动降级为纯文本。
 - 定时清理 `data/media/` 下的媒体下载缓存。
@@ -36,14 +37,19 @@ TGQQ Forwarder 用于把指定消息自动转发到 QQ 官方机器人会话或�
 10. **个人微信只能“回复”最近主动给本号发过消息的联系人**。微信 iLink 协议要求每次发送都携带该联系人的 `context_token`，它只能从对方发来的消息中获得。因此转发到微信前，需要对方先发一条消息；收到后程序会自动缓存，并在 `data/weixin/<账号>/credentials.json` 中持久化。
 11. 个人微信走的是腾讯 `openclaw-weixin` / iLink 通道（扫码登录 + 长轮询），不是公开稳定的开放平台接口，协议细节可能调整；登录态失效（`errcode=-14`）时程序会清空凭证并重新等待扫码。
 12. 微信来源只支持好友私聊（1:1），不支持群聊；语音消息保存为 `.silk`，不做转码。
+13. **QQ 来源受官方机器人权限限制**：群里通常要 `@机器人` 才会收到消息（部分场景可收到全部群消息），频道只收到 @ 消息，私聊/C2C 正常；机器人不会收到自己发出的消息。
+14. QQ 附件（图片/视频/文件）目前以 `[图片] https://...` 这样的文本形式转发，不下载文件本体；Telegram 来源的媒体仍按原样转发。
+15. **防回环**：转发到 Telegram 后，程序会记录自己发出的消息 ID，监听侧自动跳过；同时「来源会话 = 目标会话」的投递会被直接跳过（日志状态 `skipped`），避免 TG → TG 自激。
+16. 用 Bot API 发送 Telegram 目标时，Bot 必须已经在目标会话里，且不能主动私聊用户；Bot 也无法发送到收藏夹，需要收藏夹时请用用户账号。
 
 ## 文件结构
 
 ```text
 app/
   main.py                    # 主入口
-  channels/                  # 跨平台投递路由（QQ / 微信）
+  channels/                  # 跨平台投递路由（QQ / 微信 / Telegram）
   telegram_user/             # Telegram 用户账号登录与监听
+  telegram_outbound/         # 转发到 Telegram（用户账号 / Bot API 发送 + 防回环登记）
   telegram_admin/            # Telegram 管理 Bot
   weixin/                    # 个人微信 iLink 通道（扫码登录、长轮询、媒体加解密）
   qq_official/               # QQ 官方机器人 WebSocket 发送模块
@@ -309,6 +315,13 @@ MINI_APP_ALLOWED_ORIGINS=https://你的域名.example.com
 QQ_SEND_TIMEOUT_SECONDS=120
 FORWARD_QUEUE_SIZE=1000
 
+# 转发到 Telegram（QQ / 微信 → TG）。目标用「用户账号」发送时不需要任何新配置，
+# 直接复用已登录的 Telethon 账号；想用 Bot API 发送时再填下面两项。
+# 留空会依次回退 RSS_BOT_TOKEN、TG_ADMIN_BOT_TOKEN。
+TELEGRAM_SEND_BOT_TOKEN=
+# 单条 Telegram 发送超时（秒）
+TELEGRAM_SEND_TIMEOUT_SECONDS=60
+
 # 个人微信（可选，默认关闭）。开启后可用扫码登录，把微信消息转发到 QQ，
 # 或把 Telegram 消息转发到微信好友。
 WEIXIN_ENABLED=false
@@ -372,12 +385,15 @@ docker compose run --rm tgqq-forwarder python -m app.weixin.login
 
 在规则工坊里：
 
-- **来源平台** 选 `Telegram` 或 `个人微信`，留空表示任意；
-- **投递目标** 是一个列表，可以点「＋ 添加目标」加任意多行，每行独立选择平台（`QQ 机器人` / `个人微信`）与目标 ID；
+- **来源平台** 选 `Telegram`、`个人微信` 或 `QQ 机器人`，留空表示任意；
+- **投递目标** 是一个列表，可以点「＋ 添加目标」加任意多行，每行独立选择平台（`QQ 机器人` / `个人微信` / `Telegram`）与目标 ID；
 - 目标是微信时，目标 ID 选一个已缓存联系人（wxid），类型固定为 `friend`；
-- 点下方的「QQ 缓存目标」/「微信联系人」卡片可以直接把该目标追加进列表，重复的会自动跳过。
+- 目标是 Telegram 时，类型选 `用户账号发送`（默认，可再选发送账号）或 `Bot 发送`；目标 ID 填数字 `chat_id`、`@频道用户名`，或 `me`（收藏夹，仅用户账号）；
+- 点下方的「QQ 缓存目标」/「微信联系人」/「Telegram 会话」卡片可以直接把该目标追加进列表，重复的会自动跳过。
 
 微信目标只能发给最近主动给本号发过消息的联系人，因为协议要求每次发送都带上该联系人的 `context_token`。联系人列表会随收到的消息自动累积，可在规则工坊的微信联系人卡片中直接选择。
+
+**QQ / 微信 → Telegram 的最小配置**：建一条来源平台为 `QQ 机器人`（或 `个人微信`）、匹配模式为「全部消息」、目标为某个 Telegram 会话的规则即可。用用户账号发送时，消息会显示为该 Telegram 账号发出的；想让频道里显示为机器人发的，就改用 `Bot 发送`，并把 Bot 拉进目标频道。
 
 ### 4. 让 RSS 订阅内容进 QQ / 微信
 
@@ -399,13 +415,16 @@ docker compose run --rm tgqq-forwarder python -m app.weixin.login
 | 二维码反复过期 | 已自动刷新 3 次后停止；重新点击「扫码登录」或重启服务 |
 | RSS 订阅发不到微信 | 订阅只发 Telegram；需要在订阅页点「配置转发规则」，在该频道上建一条目标为微信的转发规则，并确保该微信联系人给本号发过消息（context_token） |
 | 只想微信→QQ，不需要 Telegram | 设置 `TELEGRAM_ENABLED=false`、`QQ_ENABLED=false/true` 按需组合 |
+| QQ / 微信消息没有转发到 Telegram | 确认规则来源平台、来源会话/发送者过滤是否命中；Telegram 目标若是 `Bot 发送`，Bot 必须已在目标会话内；日志里状态 `skipped` 且提示「目标与来源是同一个会话」表示被防回环保护拦下了 |
+| Telegram 目标发送失败：账号未启动 | 目标里选的 `account_id` 不在 `TELEGRAM_ACCOUNTS_JSON` 里，或该账号未登录；留空则使用默认账号 |
+| QQ 群里机器人收不到消息 | QQ 官方机器人在群里通常需要 `@机器人`；确认 `QQ_ENABLE_GROUP_C2C=true`，且机器人已入群 |
 
 ## Telegram Mini App 管理台
 
 本项目内置一个 Telegram Mini App 管理台，用于替代复杂的 `/add_rule` 长命令。管理台提供：
 
 - 运行状态总览：Telegram 连接、QQ WebSocket、个人微信登录态、转发暂停状态、队列深度。
-- 规则工坊：选择来源平台/会话、维护多目标投递列表（QQ / 微信可混排），编辑关键词、正则、媒体类型、模板并实时预览。
+- 规则工坊：选择来源平台/会话、维护多目标投递列表（QQ / 微信 / Telegram 可混排），编辑关键词、正则、媒体类型、模板并实时预览。
 - 规则库：编辑、复制、启用/禁用、删除规则，卡片上直接显示该规则的多个目标；关键词规则会自动解码显示。
 - 日志页：查看最近转发结果和错误（每个目标一条，含来源/目标平台与目标 ID）。
 - 系统页：查看 Mini App 部署状态、个人微信扫码登录与排查提示。

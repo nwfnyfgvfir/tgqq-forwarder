@@ -128,12 +128,15 @@ class ForwardTarget(SQLModel, table=True):
     enabled: bool = Field(default=True)
     # 目标平台：qq / weixin
     platform: str = Field(default="qq", max_length=32, index=True)
-    # QQ: group / c2c / channel / dms；微信固定 friend
+    # QQ: group / c2c / channel / dms；微信固定 friend；Telegram: chat（用户账号）/ bot（Bot API）
     target_type: str = Field(default=QQTargetType.GROUP.value, max_length=32)
-    # QQ 群 openid / C2C openid / 频道 channel_id / 频道私信 guild_id；微信 user_id
+    # QQ 群 openid / C2C openid / 频道 channel_id / 频道私信 guild_id；微信 user_id；
+    # Telegram 会话 ID（数字 ID / @username / me）
     target_id: str = Field(max_length=128)
     guild_id: str | None = Field(default=None, max_length=128)
     channel_id: str | None = Field(default=None, max_length=128)
+    # 仅 Telegram 目标使用：用哪个 Telethon 账号发送（空 = 默认账号）
+    account_id: str | None = Field(default=None, max_length=64)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -144,7 +147,8 @@ class ForwardTarget(SQLModel, table=True):
 
     @property
     def label(self) -> str:
-        return f"{self.platform} {self.target_type}:{self.target_id}"
+        account = f"@{self.account_id}" if self.account_id else ""
+        return f"{self.platform}{account} {self.target_type}:{self.target_id}"
 
 
 def legacy_target(rule: ForwardRule) -> ForwardTarget:

@@ -1,4 +1,4 @@
-"""跨平台投递：按单个 ``ForwardTarget`` 的 ``platform`` 选择 QQ 或微信发送器。"""
+"""跨平台投递：按单个 ``ForwardTarget`` 的 ``platform`` 选择 QQ / 微信 / Telegram 发送器。"""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from app.qq_official.models import QQOutboundMessage
 from app.qq_official.sender import QQOfficialSender
 from app.rules.models import TelegramForwardMessage
 from app.storage.models import ForwardRule, ForwardTarget, legacy_target
+from app.telegram_outbound.delivery import TelegramDelivery, TelegramDeliveryError
 from app.weixin.models import WeixinError, WeixinOutboundMessage
 from app.weixin.service import WeixinService
 
@@ -27,16 +28,20 @@ class DeliveryRouter:
         settings: Settings,
         qq_sender: QQOfficialSender,
         weixin_service: WeixinService | None = None,
+        telegram_delivery: TelegramDelivery | None = None,
     ) -> None:
         self.settings = settings
         self.qq_sender = qq_sender
         self.weixin_service = weixin_service
+        self.telegram_delivery = telegram_delivery
 
     @property
     def target_platforms(self) -> list[str]:
         platforms = [Platform.QQ.value]
         if self.weixin_service is not None and self.weixin_service.enabled:
             platforms.append(Platform.WEIXIN.value)
+        if self.telegram_delivery is not None and self.telegram_delivery.enabled:
+            platforms.append(Platform.TELEGRAM.value)
         return platforms
 
     async def deliver(
@@ -54,6 +59,9 @@ class DeliveryRouter:
             return
         if platform == Platform.QQ.value:
             await self._deliver_qq(rule, resolved, message, text)
+            return
+        if platform == Platform.TELEGRAM.value:
+            await self._deliver_telegram(rule, resolved, message, text)
             return
         raise DeliveryError(f"不支持的目标平台：{platform}")
 
@@ -105,6 +113,25 @@ class DeliveryRouter:
                 "微信",
             )
         except WeixinError as exc:
+            raise DeliveryError(str(exc)) from exc
+
+    async def _deliver_telegram(
+        self,
+        rule: ForwardRule,
+        target: ForwardTarget,
+        message: TelegramForwardMessage,
+        text: str,
+    ) -> None:
+        delivery = self.telegram_delivery
+        if delivery is None or not delivery.enabled:
+            raise DeliveryError("Telegram 目标未就绪：需要已连接的 Telegram 账号或已配置的 Bot")
+        try:
+            await self._call(
+                delivery.send(target, message, text),
+                self.settings.telegram_send_timeout_seconds,
+                "Telegram",
+            )
+        except TelegramDeliveryError as exc:
             raise DeliveryError(str(exc)) from exc
 
     @staticmethod

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 from app.config import Settings, TelegramAccountConfig
 from app.rules.models import TelegramForwardMessage
+from app.telegram_outbound.registry import SentMessageRegistry
 from app.telegram_user.client import MessageCallback, TelegramUserListener
 from app.telegram_user.dialog_cache import TelegramDialogInfo
 
@@ -39,9 +40,11 @@ class TelegramAccountManager:
         *,
         reconnect_enabled: bool | None = None,
         reconnect_delay_seconds: float | None = None,
+        sent_registry: SentMessageRegistry | None = None,
     ) -> None:
         self.settings = settings
         self.on_message = on_message
+        self.sent_registry = sent_registry
         self.reconnect_enabled = (
             settings.telegram_reconnect_enabled if reconnect_enabled is None else reconnect_enabled
         )
@@ -215,6 +218,7 @@ class TelegramAccountManager:
             self.settings,
             self._wrap_on_message(account.id),
             account=account,
+            sent_registry=self.sent_registry,
         )
         await listener.start()
         self._listeners[account.id] = listener

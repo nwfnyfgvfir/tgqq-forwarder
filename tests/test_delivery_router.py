@@ -114,7 +114,7 @@ async def test_unknown_target_platform_is_rejected() -> None:
         FakeQQSender(),  # type: ignore[arg-type]
         FakeWeixinService(),  # type: ignore[arg-type]
     )
-    rule = make_rule(target_platform="telegram")
+    rule = make_rule(target_platform="discord")
 
     with pytest.raises(DeliveryError):
         await router.deliver(rule, make_message(), "hello")

@@ -159,8 +159,9 @@ async def runtime_context(tmp_path, monkeypatch):
 
     def component(label):
         class StubComponent:
-            def __init__(self, *args):
+            def __init__(self, *args, **kwargs):
                 self.args = args
+                self.kwargs = kwargs
                 self.started = False
                 self.status = "running"
 

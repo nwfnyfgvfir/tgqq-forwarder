@@ -19,6 +19,7 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_ex
 from app.config import Settings
 from app.qq_official.client import (
     ForwarderQQClient,
+    MessageCallback,
     QQTargetInfo,
     ensure_group_message_create_parser,
 )
@@ -66,14 +67,23 @@ _qq_retry = retry(
 
 
 class QQOfficialSender:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        on_message: MessageCallback | None = None,
+    ) -> None:
         self.settings = settings
         intents = botpy.Intents(
             public_messages=settings.qq_enable_group_c2c,
             public_guild_messages=True,
             direct_message=settings.qq_enable_guild_direct_message,
         )
-        self.client = ForwarderQQClient(intents=intents, bot_log=False, timeout=20)
+        self.client = ForwarderQQClient(
+            intents=intents,
+            bot_log=False,
+            timeout=20,
+            on_message=on_message,
+        )
         self._task: asyncio.Task | None = None
         self._started = asyncio.Event()
         self._token_lock = asyncio.Lock()

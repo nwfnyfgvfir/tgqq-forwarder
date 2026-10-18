@@ -11,6 +11,7 @@ from telegram.error import NetworkError, TelegramError, TimedOut
 from telegram.ext import ContextTypes
 
 from app.config import Settings
+from app.platforms import platform_label
 from app.qq_official.client import QQTargetInfo
 from app.rules.keywords import (
     keywords_from_text_include_regex,
@@ -335,10 +336,12 @@ class AdminCommands:
             keyword_note = f" 关键词={_escape('、'.join(keywords))}" if keywords else ""
             lines.append(
                 f"#{rule.id} [{state}] {_escape(rule.name)} | "
-                f"TG账号={_escape(rule.source_account_id or '*')} "
-                f"TG会话={rule.source_chat_id or '*'} "
-                f"TG发送者={rule.source_sender_id or '*'} "
+                f"来源={_escape(platform_label(rule.source_platform))} "
+                f"账号={_escape(rule.source_account_id or '*')} "
+                f"会话={rule.source_chat_id or '*'} "
+                f"发送者={rule.source_sender_id or '*'} "
                 f"{keyword_note} -> "
+                f"目标={_escape(platform_label(rule.target_platform))} "
                 f"{_escape(rule.qq_target_type)}:{_escape(rule.qq_target_id)}"
             )
         await _reply_text(update.effective_message, "\n".join(lines), parse_mode=ParseMode.HTML)
@@ -505,7 +508,9 @@ class AdminCommands:
             lines.append(
                 f"#{row.id} 状态={row.status} 规则={row.rule_id} "
                 f"账号={_escape(row.tg_account_id or '-')} "
-                f"TG={row.tg_chat_id}/{row.tg_message_id} -> "
+                f"来源={_escape(platform_label(row.source_platform))} "
+                f"{row.tg_chat_id}/{row.tg_message_id} -> "
+                f"{_escape(platform_label(row.target_platform))} "
                 f"{row.qq_target_type}:{_escape(row.qq_target_id)} "
                 f"错误={_escape(row.error_message or '')}"
             )

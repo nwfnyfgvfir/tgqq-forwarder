@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from app.platforms import platform_label
 from app.rules.keywords import (
     detect_keyword_matches,
     highlight_keywords_for_markdown,
@@ -187,11 +188,12 @@ class MessageFormatter:
 
     @staticmethod
     def _source_title(message: TelegramForwardMessage) -> str:
+        label = platform_label(message.source_platform)
         if message.chat_title:
-            return f"Telegram：{message.chat_title}"
+            return f"{label}：{message.chat_title}"
         if message.chat_id is not None:
-            return f"Telegram：{message.chat_id}"
-        return "Telegram：unknown"
+            return f"{label}：{message.chat_id}"
+        return f"{label}：unknown"
 
     @staticmethod
     def _escape_markdown_text(value: object) -> str:

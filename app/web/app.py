@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from app.config import Settings
-from app.platforms import Platform
+from app.platforms import SOURCE_PLATFORMS, TARGET_PLATFORMS, TELEGRAM_TARGET_TYPES, Platform
 from app.qq_official.client import QQTargetInfo
 from app.rss.errors import RssError
 from app.rss.service import RssService
@@ -519,8 +519,14 @@ def create_mini_app(
             media_types=MEDIA_TYPES,
             template_variables=TEMPLATE_VARIABLES,
             telegram_account_ids=[account.id for account in settings.telegram_accounts],
-            source_platforms=[Platform.TELEGRAM.value, Platform.WEIXIN.value],
-            target_platforms=[Platform.QQ.value, Platform.WEIXIN.value],
+            source_platforms=list(SOURCE_PLATFORMS),
+            target_platforms=list(TARGET_PLATFORMS),
+            telegram_target_types=list(TELEGRAM_TARGET_TYPES),
+            telegram_bot_configured=bool(
+                settings.telegram_send_bot_token
+                or settings.rss_bot_token
+                or settings.tg_admin_bot_token
+            ),
             weixin_enabled=bool(weixin_service and weixin_service.enabled),
             weixin_account_id=settings.weixin_account_id if weixin_service else None,
             weixin_logged_in=bool(weixin_status_snapshot and weixin_status_snapshot.logged_in),

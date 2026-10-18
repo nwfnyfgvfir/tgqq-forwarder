@@ -5,6 +5,7 @@ import logging
 import signal
 from contextlib import suppress
 
+from app.channels.router import DeliveryRouter
 from app.config import get_settings
 from app.logging_config import configure_logging
 from app.qq_official.sender import QQOfficialSender
@@ -13,6 +14,8 @@ from app.rss.worker import RssWorker
 from app.rules.service import ForwardRuleService
 from app.storage.db import Database
 from app.telegram_admin.bot import TelegramAdminBot
+from app.telegram_outbound.delivery import TelegramDelivery
+from app.telegram_outbound.registry import SentMessageRegistry
 from app.telegram_user.accounts import TelegramAccountManager
 from app.web.server import MiniAppServer
 from app.weixin.service import WeixinService
@@ -28,13 +31,26 @@ class ApplicationRuntime:
         configure_logging(self.settings.log_dir, self.settings.log_level)
         self.db = Database(self.settings.database_url)
         self.rule_service = ForwardRuleService(self.db)
-        self.qq_sender = QQOfficialSender(self.settings)
+        # 自己发出的 TG 消息登记在这里，监听侧据此跳过，避免 TG → TG 回环。
+        self.telegram_registry = SentMessageRegistry()
+        self.telegram_delivery = TelegramDelivery(
+            self.settings,
+            lambda: self.account_manager,
+            registry=self.telegram_registry,
+        )
+        self.qq_sender = QQOfficialSender(self.settings, self._enqueue_forward)
         self.weixin_service = WeixinService(self.settings, self._enqueue_forward)
         self.forward_queue = ForwardQueue(
             self.settings,
             self.rule_service,
             self.qq_sender,
             self.weixin_service,
+            router=DeliveryRouter(
+                self.settings,
+                self.qq_sender,
+                self.weixin_service,
+                self.telegram_delivery,
+            ),
         )
         self.media_cleanup = MediaCleanupWorker(self.settings)
         self.account_manager: TelegramAccountManager | None = None
@@ -87,6 +103,7 @@ class ApplicationRuntime:
             self.account_manager = TelegramAccountManager(
                 self.settings,
                 self.forward_queue.enqueue,
+                sent_registry=self.telegram_registry,
             )
             await self.account_manager.start()
         else:
@@ -126,6 +143,7 @@ class ApplicationRuntime:
         await self.rss_worker.stop()
         await self.admin_bot.stop()
         await self.weixin_service.stop()
+        await self.telegram_delivery.stop()
         if self.account_manager:
             await self.account_manager.stop()
         await self.media_cleanup.stop()

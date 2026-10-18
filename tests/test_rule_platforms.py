@@ -91,17 +91,64 @@ def test_schema_rejects_unknown_platforms() -> None:
     with pytest.raises(ValidationError):
         RuleCreateRequest(
             name="x",
-            target_platform="telegram",
+            target_platform="discord",
             qq_target_id="t",
             message_template="{text}",
         )
     with pytest.raises(ValidationError):
         RuleCreateRequest(
             name="x",
-            source_platform="qq",
+            source_platform="slack",
             qq_target_id="t",
             message_template="{text}",
         )
+
+
+def test_schema_accepts_telegram_target_and_qq_source() -> None:
+    payload = RuleCreateRequest(
+        name="qq to tg",
+        source_platform="qq",
+        target_platform="telegram",
+        qq_target_type="chat",
+        qq_target_id="-1001234567890",
+        message_template="{text}",
+    )
+
+    assert payload.source_platform == "qq"
+    assert payload.target_platform == "telegram"
+    assert payload.qq_target_type == "chat"
+    assert payload.qq_guild_id is None
+    assert payload.qq_channel_id is None
+
+
+def test_schema_normalizes_telegram_targets() -> None:
+    payload = RuleCreateRequest(
+        name="tg multi",
+        message_template="{text}",
+        targets=[
+            {
+                "platform": "telegram",
+                "target_type": "chat",
+                "target_id": "-1001",
+                "account_id": "main",
+            },
+            {
+                "platform": "telegram",
+                "target_type": "bot",
+                "target_id": "@my_channel",
+                "account_id": "main",
+            },
+            {"platform": "telegram", "target_type": "group", "target_id": "me"},
+        ],
+    )
+
+    targets = payload.to_targets()
+    assert [item.target_type for item in targets] == ["chat", "bot", "chat"]
+    assert targets[0].account_id == "main"
+    # Bot 目标没有账号维度，非法类型回落成 chat。
+    assert targets[1].account_id is None
+    assert targets[2].account_id is None
+    assert all(item.channel_id is None for item in targets)
 
 
 def test_schema_rejects_group_chat_type_for_weixin_source() -> None:

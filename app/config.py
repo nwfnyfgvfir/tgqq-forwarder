@@ -222,6 +222,12 @@ class Settings(BaseSettings):
     # 留空时沿用进程环境变量 HTTP(S)_PROXY；Telethon 走 MTProto，不受此项影响。
     telegram_bot_proxy: str | None = None
 
+    # ---------------- 转发到 Telegram（QQ / 微信 → TG） ----------------
+    # 用 Bot API 发送 Telegram 目标时使用的 token；留空则回退 RSS_BOT_TOKEN / TG_ADMIN_BOT_TOKEN。
+    telegram_send_bot_token: str | None = Field(default=None, exclude=True, repr=False)
+    # 单条 Telegram 发送超时（秒）
+    telegram_send_timeout_seconds: float = Field(default=60.0, gt=0, le=600)
+
     rss_enabled: bool = True
     rss_bot_token: str | None = Field(default=None, exclude=True, repr=False)
     rss_poll_seconds: float = Field(default=10, ge=1, le=3600, allow_inf_nan=False)
@@ -275,6 +281,11 @@ class Settings(BaseSettings):
     @field_validator("rss_bot_token", mode="before")
     @classmethod
     def normalize_rss_bot_token(cls, value: object) -> object:
+        return value.strip() or None if isinstance(value, str) else value
+
+    @field_validator("telegram_send_bot_token", mode="before")
+    @classmethod
+    def normalize_telegram_send_bot_token(cls, value: object) -> object:
         return value.strip() or None if isinstance(value, str) else value
 
     @field_validator("rss_translate_target")
