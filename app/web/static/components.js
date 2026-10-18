@@ -113,14 +113,27 @@ export function errorBanner(error) {
   return `<div class="error-banner">请求失败${escapeHtml(code)}：${escapeHtml(message)}</div>`;
 }
 
+export function ruleTargetsOf(rule) {
+  if (Array.isArray(rule?.targets) && rule.targets.length) return rule.targets;
+  return [{
+    platform: rule?.target_platform || 'qq',
+    target_type: rule?.qq_target_type || 'group',
+    target_id: rule?.qq_target_id || '',
+    enabled: true,
+  }];
+}
+
 export function ruleCard(rule) {
   const keywords = rule.keywords?.length ? rule.keywords.map((item) => `<span>${escapeHtml(item)}</span>`).join('') : '<em>全量/正则</em>';
   const state = rule.enabled ? statusPill('启用', 'good') : statusPill('禁用', 'muted');
+  const targets = ruleTargetsOf(rule);
+  const shown = targets.slice(0, 3).map((item) => `<code class="${item.enabled === false ? 'muted' : ''}">${platformLabel(item.platform)} ${escapeHtml(item.target_type)}:${escapeHtml(short(item.target_id, 18))}</code>`).join('');
+  const more = targets.length > 3 ? `<code>+${targets.length - 3}</code>` : '';
   return `
     <article class="rule-card" data-rule-id="${rule.id}">
       <div class="rule-card-top">
         <div>
-          <small>#${rule.id} · P${rule.priority}</small>
+          <small>#${rule.id} · P${rule.priority} · ${targets.length} 个目标</small>
           <h3>${escapeHtml(rule.name)}</h3>
         </div>
         ${state}
@@ -129,7 +142,7 @@ export function ruleCard(rule) {
         <code>${platformLabel(rule.source_platform)} · ${escapeHtml(rule.source_account_id ?? '*')}</code>
         <code>${escapeHtml(rule.source_chat_id ?? '*')}</code>
         <span>→</span>
-        <code>${platformLabel(rule.target_platform)} ${escapeHtml(rule.qq_target_type)}:${escapeHtml(short(rule.qq_target_id, 20))}</code>
+        ${shown}${more}
       </div>
       <div class="chips">${keywords}</div>
       <div class="card-actions">

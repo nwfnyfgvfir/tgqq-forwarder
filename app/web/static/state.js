@@ -1,4 +1,4 @@
-import { api } from './api.js?v=20261018-rss-weixin-2';
+import { api } from './api.js?v=20261018-multitarget';
 
 export const state = {
   route: 'dashboard',

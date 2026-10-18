@@ -80,9 +80,7 @@ class FakeAccountManager:
         if query:
             lowered = query.lower()
             items = [
-                item
-                for item in items
-                if lowered in item.name.lower() or lowered in str(item.id)
+                item for item in items if lowered in item.name.lower() or lowered in str(item.id)
             ]
         return items[:limit]
 
@@ -181,7 +179,7 @@ async def test_status_me_dialogs_targets_and_static(api_client) -> None:
     targets = await client.get("/api/qq-targets")
     options = await client.get("/api/options")
     index = await client.get("/")
-    app_js = await client.get("/static/app.js?v=20261018-rss-weixin-2")
+    app_js = await client.get("/static/app.js?v=20261018-multitarget")
 
     assert me.status_code == 200
     assert me.json()["user"]["id"] == 1
@@ -202,11 +200,11 @@ async def test_status_me_dialogs_targets_and_static(api_client) -> None:
     assert index.status_code == 200
     assert index.headers["cache-control"] == "no-store, no-cache, must-revalidate, max-age=0"
     assert "TGQQ Forwarder Mini App" in index.text
-    assert "/static/styles.css?v=20261018-rss-weixin-2" in index.text
-    assert "/static/app.js?v=20261018-rss-weixin-2" in index.text
+    assert "/static/styles.css?v=20261018-multitarget" in index.text
+    assert "/static/app.js?v=20261018-multitarget" in index.text
     assert app_js.status_code == 200
     assert app_js.headers["cache-control"] == "no-store, no-cache, must-revalidate, max-age=0"
-    assert "./views/rule-studio.js?v=20261018-rss-weixin-2" in app_js.text
+    assert "./views/rule-studio.js?v=20261018-multitarget" in app_js.text
 
 
 async def test_rule_crud_preview_and_pause(api_client) -> None:
@@ -290,3 +288,39 @@ async def test_unknown_account_rejected(api_client) -> None:
     client, _service = api_client
     created = await client.post("/api/rules", json=rule_payload(source_account_id="missing"))
     assert created.status_code == 422
+
+
+async def test_rule_multi_target_api(api_client) -> None:
+    client, _service = api_client
+    payload = rule_payload(
+        qq_target_id="",
+        targets=[
+            {"platform": "qq", "target_type": "group", "target_id": "qq-a"},
+            {"platform": "weixin", "target_type": "friend", "target_id": "wxid_b"},
+        ],
+    )
+
+    created = await client.post("/api/rules", json=payload)
+    assert created.status_code == 201
+    rule = created.json()["rule"]
+    assert [item["target_id"] for item in rule["targets"]] == ["qq-a", "wxid_b"]
+    # 兼容字段跟随第一个目标。
+    assert rule["qq_target_id"] == "qq-a"
+    assert rule["target_platform"] == "qq"
+
+    listed = await client.get("/api/rules")
+    assert [item["target_id"] for item in listed.json()[0]["targets"]] == ["qq-a", "wxid_b"]
+
+    updated = await client.patch(
+        f"/api/rules/{rule['id']}",
+        json=rule_payload(
+            qq_target_id="",
+            targets=[{"platform": "qq", "target_type": "c2c", "target_id": "qq-c"}],
+        ),
+    )
+    assert updated.status_code == 200
+    assert [item["target_id"] for item in updated.json()["targets"]] == ["qq-c"]
+
+    copied = await client.post(f"/api/rules/{rule['id']}/duplicate", json={})
+    assert copied.status_code == 200
+    assert [item["target_id"] for item in copied.json()["targets"]] == ["qq-c"]

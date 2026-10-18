@@ -13,7 +13,14 @@ from app.rules.matcher import RuleMatcher
 from app.rules.models import TelegramForwardMessage, id_key
 from app.rules.templates import templates_match
 from app.storage.db import Database
-from app.storage.models import ForwardLog, ForwardRule, ForwardStatus, utc_now
+from app.storage.models import (
+    ForwardLog,
+    ForwardRule,
+    ForwardStatus,
+    ForwardTarget,
+    legacy_target,
+    utc_now,
+)
 from app.storage.repositories import LogRepository, RuleRepository, SettingRepository
 
 logger = logging.getLogger(__name__)
@@ -50,13 +57,57 @@ class ForwardRuleService:
             rules = await self.rules.list_rules(session, enabled_only=True)
         return [rule for rule in rules if self.matcher.matches(rule, message)]
 
+    async def targets_for(self, rule: ForwardRule) -> list[ForwardTarget]:
+        """规则的启用目标；旧规则没有目标行时按历史列合成一个，行为不变。"""
+        if rule.id is None:
+            return [legacy_target(rule)]
+        async with self.db.session() as session:
+            rows = await self.rules.list_targets(session, [int(rule.id)])
+        enabled = [row for row in rows if row.enabled]
+        if enabled:
+            return enabled
+        # 目标行全部被停用时不回退到历史列，避免「停用」被静默绕过。
+        return [] if rows else [legacy_target(rule)]
+
+    async def target_rows(self, rule_id: int) -> list[ForwardTarget]:
+        """规则的全部目标行（含停用），用于后台展示；空列表表示仍是旧单目标规则。"""
+        async with self.db.session() as session:
+            return await self.rules.list_targets(session, [rule_id])
+
+    async def targets_by_rule(self, rules: list[ForwardRule]) -> dict[int, list[ForwardTarget]]:
+        ids = [int(rule.id) for rule in rules if rule.id is not None]
+        async with self.db.session() as session:
+            rows = await self.rules.list_targets(session, ids)
+        grouped: dict[int, list[ForwardTarget]] = {}
+        for row in rows:
+            grouped.setdefault(row.rule_id, []).append(row)
+        result: dict[int, list[ForwardTarget]] = {}
+        for rule in rules:
+            if rule.id is None:
+                continue
+            own = grouped.get(int(rule.id))
+            result[int(rule.id)] = own if own else [legacy_target(rule)]
+        return result
+
     async def create_rule(self, rule: ForwardRule) -> ForwardRule:
         async with self.db.session() as session:
             return await self.rules.create_rule(session, rule)
 
-    async def create_or_merge_rule(self, rule: ForwardRule) -> CreateRuleResult:
+    async def create_or_merge_rule(
+        self,
+        rule: ForwardRule,
+        targets: list[ForwardTarget] | None = None,
+    ) -> CreateRuleResult:
+        requested = self._normalized_targets(rule, targets)
+        self._apply_legacy_target(rule, requested)
         async with self.db.session() as session:
             existing_rules = await self.rules.list_rules(session)
+            existing_targets = await self.rules.list_targets(
+                session, [int(item.id) for item in existing_rules if item.id is not None]
+            )
+            grouped: dict[int, list[ForwardTarget]] = {}
+            for row in existing_targets:
+                grouped.setdefault(row.rule_id, []).append(row)
             duplicates = [
                 existing
                 for existing in existing_rules
@@ -65,9 +116,15 @@ class ForwardRuleService:
                     existing.text_include_regex,
                     rule.text_include_regex,
                 )
+                # 目标不同就是两条规则，不做静默合并（否则会把「多目标」误变成「改目标」）。
+                and self._same_target_set(
+                    grouped.get(int(existing.id or 0)) or [legacy_target(existing)],
+                    requested,
+                )
             ]
             if not duplicates:
                 created_rule = await self.rules.create_rule(session, rule)
+                await self.rules.replace_targets(session, int(created_rule.id or 0), requested)
                 return CreateRuleResult(
                     rule=created_rule,
                     created=True,
@@ -86,16 +143,27 @@ class ForwardRuleService:
                 session.add(primary)
 
             removed_duplicate_count = 0
+            requested_keys = [self._target_key(item) for item in requested]
+            merged_targets = list(requested)
+            for duplicate in duplicates:
+                dup_rows = await self.rules.list_targets(session, [int(duplicate.id or 0)])
+                for row in dup_rows or [legacy_target(duplicate)]:
+                    if not any(self._same_target(row, item) for item in merged_targets):
+                        merged_targets.append(row)
             for duplicate in duplicates[1:]:
                 if duplicate.id is not None and await self.rules.delete_rule(session, duplicate.id):
                     removed_duplicate_count += 1
 
+            await self.rules.replace_targets(session, int(primary.id or 0), merged_targets)
+            self._apply_legacy_target(primary, merged_targets)
+            session.add(primary)
             await session.flush()
             await session.refresh(primary)
+            targets_changed = [self._target_key(item) for item in merged_targets] != requested_keys
             return CreateRuleResult(
                 rule=primary,
                 created=False,
-                updated=pattern_changed or removed_duplicate_count > 0,
+                updated=pattern_changed or removed_duplicate_count > 0 or targets_changed,
                 keywords=keywords_from_text_include_regex(primary.text_include_regex),
                 removed_duplicate_count=removed_duplicate_count,
             )
@@ -104,8 +172,21 @@ class ForwardRuleService:
         async with self.db.session() as session:
             return await self.rules.get_rule(session, rule_id)
 
-    async def update_rule(self, rule_id: int, values: dict[str, object]) -> ForwardRule | None:
+    async def update_rule(
+        self,
+        rule_id: int,
+        values: dict[str, object],
+        targets: list[ForwardTarget] | None = None,
+    ) -> ForwardRule | None:
         async with self.db.session() as session:
+            rule = await self.rules.get_rule(session, rule_id)
+            if rule is None:
+                return None
+            if targets is not None:
+                normalized = self._normalized_targets(rule, targets)
+                self._apply_legacy_target(rule, normalized)
+                values = {**values, **self._legacy_target_values(normalized)}
+                await self.rules.replace_targets(session, rule_id, normalized)
             return await self.rules.update_rule(session, rule_id, values)
 
     async def duplicate_rule(
@@ -119,6 +200,7 @@ class ForwardRuleService:
             source = await self.rules.get_rule(session, rule_id)
             if source is None:
                 return None
+            source_targets = await self.rules.list_targets(session, [rule_id])
             duplicate = ForwardRule(
                 name=name or f"{source.name} 副本",
                 enabled=source.enabled if enabled is None else enabled,
@@ -139,7 +221,13 @@ class ForwardRuleService:
                 message_template=source.message_template,
                 priority=source.priority,
             )
-            return await self.rules.create_rule(session, duplicate)
+            created = await self.rules.create_rule(session, duplicate)
+            await self.rules.replace_targets(
+                session,
+                int(created.id or 0),
+                source_targets or [legacy_target(source)],
+            )
+            return created
 
     async def delete_rule(self, rule_id: int) -> bool:
         async with self.db.session() as session:
@@ -161,6 +249,72 @@ class ForwardRuleService:
     async def recent_logs(self, *, limit: int = 20, status: str | None = None) -> list[ForwardLog]:
         async with self.db.session() as session:
             return await self.logs.recent_logs(session, limit=limit, status=status)
+
+    @staticmethod
+    def _target_key(target: ForwardTarget) -> tuple[str, str, str]:
+        return (target.platform or "qq", target.target_type, target.target_id)
+
+    @classmethod
+    def _same_target(cls, left: ForwardTarget, right: ForwardTarget) -> bool:
+        return cls._target_key(left) == cls._target_key(right)
+
+    @classmethod
+    def _same_target_set(cls, left: list[ForwardTarget], right: list[ForwardTarget]) -> bool:
+        return sorted(cls._target_key(item) for item in left) == sorted(
+            cls._target_key(item) for item in right
+        )
+
+    @staticmethod
+    def _normalized_targets(
+        rule: ForwardRule,
+        targets: list[ForwardTarget] | None,
+    ) -> list[ForwardTarget]:
+        """去空、去重、按平台规整目标；没有可用目标时回退到历史单目标。"""
+        if targets:
+            rows: list[ForwardTarget] = []
+            seen: set[tuple[str, str, str]] = set()
+            for item in targets:
+                platform = (item.platform or "qq").strip()
+                target_id = (item.target_id or "").strip()
+                if not target_id:
+                    continue
+                target_type = "friend" if platform == "weixin" else item.target_type
+                key = (platform, target_type, target_id)
+                if key in seen:
+                    continue
+                seen.add(key)
+                is_weixin = platform == "weixin"
+                rows.append(
+                    ForwardTarget(
+                        rule_id=int(rule.id or 0),
+                        platform=platform,
+                        target_type=target_type,
+                        target_id=target_id,
+                        guild_id=None if is_weixin else (item.guild_id or None),
+                        channel_id=None if is_weixin else (item.channel_id or None),
+                        enabled=item.enabled,
+                    )
+                )
+            if rows:
+                return rows
+        return [legacy_target(rule)]
+
+    @staticmethod
+    def _legacy_target_values(targets: list[ForwardTarget]) -> dict[str, object]:
+        """兼容列保存第一个目标，旧代码/旧前端读到的仍是有效值。"""
+        first = targets[0]
+        return {
+            "target_platform": first.platform,
+            "qq_target_type": first.target_type,
+            "qq_target_id": first.target_id,
+            "qq_guild_id": first.guild_id,
+            "qq_channel_id": first.channel_id,
+        }
+
+    @classmethod
+    def _apply_legacy_target(cls, rule: ForwardRule, targets: list[ForwardTarget]) -> None:
+        for key, value in cls._legacy_target_values(targets).items():
+            setattr(rule, key, value)
 
     @staticmethod
     def _is_same_rule_except_text_include(left: ForwardRule, right: ForwardRule) -> bool:
@@ -222,7 +376,9 @@ class ForwardRuleService:
         status: ForwardStatus,
         forwarded_text: str | None = None,
         error_message: str | None = None,
+        target: ForwardTarget | None = None,
     ) -> None:
+        resolved = target if target is not None else (legacy_target(rule) if rule else None)
         log = ForwardLog(
             rule_id=rule.id if rule else None,
             source_platform=message.source_platform,
@@ -233,9 +389,9 @@ class ForwardRuleService:
             tg_sender_id=message.sender_id,
             tg_chat_title=message.chat_title,
             tg_sender_name=message.sender_name,
-            target_platform=rule.target_platform if rule else "qq",
-            qq_target_type=rule.qq_target_type if rule else "unknown",
-            qq_target_id=rule.qq_target_id if rule else "unknown",
+            target_platform=resolved.platform if resolved else "qq",
+            qq_target_type=resolved.target_type if resolved else "unknown",
+            qq_target_id=resolved.target_id if resolved else "unknown",
             status=status.value,
             error_message=error_message,
             forwarded_text=forwarded_text,

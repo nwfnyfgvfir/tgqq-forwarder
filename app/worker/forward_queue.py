@@ -9,7 +9,7 @@ from app.config import Settings
 from app.qq_official.sender import QQOfficialSender
 from app.rules.models import TelegramForwardMessage
 from app.rules.service import ForwardRuleService
-from app.storage.models import ForwardRule, ForwardStatus
+from app.storage.models import ForwardRule, ForwardStatus, ForwardTarget
 from app.weixin.service import WeixinService
 
 logger = logging.getLogger(__name__)
@@ -198,6 +198,7 @@ class ForwardQueue:
         status: ForwardStatus,
         forwarded_text: str | None = None,
         error_message: str | None = None,
+        target: ForwardTarget | None = None,
     ) -> None:
         try:
             await self.service.add_forward_log(
@@ -206,6 +207,7 @@ class ForwardQueue:
                 status=status,
                 forwarded_text=forwarded_text,
                 error_message=error_message,
+                target=target,
             )
         except Exception:
             logger.exception(
@@ -241,39 +243,54 @@ class ForwardQueue:
 
         for rule in rules:
             forwarded_text = self.service.formatter.format(rule, message)
-            try:
-                await self.router.deliver(rule, message, forwarded_text)
-                await self._safe_add_forward_log(
-                    rule=rule,
-                    message=message,
-                    status=ForwardStatus.SUCCESS,
-                    forwarded_text=forwarded_text,
+            targets = await self.service.targets_for(rule)
+            if not targets:
+                logger.info("Rule %s has no enabled target; skip", rule.id)
+                continue
+            for target in targets:
+                await self._deliver_one(rule, message, forwarded_text, target)
+
+    async def _deliver_one(
+        self,
+        rule: ForwardRule,
+        message: TelegramForwardMessage,
+        forwarded_text: str,
+        target: ForwardTarget,
+    ) -> None:
+        """单个目标失败不影响其它目标，每个目标单独记一条日志。"""
+        try:
+            await self.router.deliver(rule, message, forwarded_text, target)
+            await self._safe_add_forward_log(
+                rule=rule,
+                message=message,
+                status=ForwardStatus.SUCCESS,
+                forwarded_text=forwarded_text,
+                target=target,
+            )
+            logger.info(
+                "Forwarded %s message %s from account %s chat %s by rule %s to %s",
+                message.source_platform,
+                message.message_id,
+                message.account_id,
+                message.chat_id,
+                rule.id,
+                target.label,
+            )
+        except Exception as exc:
+            logger.exception("Failed to forward message by rule %s to %s", rule.id, target.label)
+            error_message = str(exc).strip() or type(exc).__name__
+            if isinstance(exc, TimeoutError):
+                error_message = (
+                    f"发送超时（QQ {self.settings.qq_send_timeout_seconds}s / "
+                    f"微信 {self.settings.weixin_send_timeout_seconds}s）"
                 )
-                logger.info(
-                    "Forwarded %s message %s from account %s chat %s by rule %s to %s %s:%s",
-                    message.source_platform,
-                    message.message_id,
-                    message.account_id,
-                    message.chat_id,
-                    rule.id,
-                    getattr(rule, "target_platform", "qq"),
-                    rule.qq_target_type,
-                    rule.qq_target_id,
-                )
-            except Exception as exc:
-                logger.exception("Failed to forward message by rule %s", rule.id)
-                error_message = str(exc).strip() or type(exc).__name__
-                if isinstance(exc, TimeoutError):
-                    error_message = (
-                        f"发送超时（QQ {self.settings.qq_send_timeout_seconds}s / "
-                        f"微信 {self.settings.weixin_send_timeout_seconds}s）"
-                    )
-                elif isinstance(exc, DeliveryError):
-                    error_message = str(exc)
-                await self._safe_add_forward_log(
-                    rule=rule,
-                    message=message,
-                    status=ForwardStatus.FAILED,
-                    forwarded_text=forwarded_text,
-                    error_message=error_message,
-                )
+            elif isinstance(exc, DeliveryError):
+                error_message = str(exc)
+            await self._safe_add_forward_log(
+                rule=rule,
+                message=message,
+                status=ForwardStatus.FAILED,
+                forwarded_text=forwarded_text,
+                error_message=error_message,
+                target=target,
+            )

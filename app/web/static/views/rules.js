@@ -1,4 +1,4 @@
-import { emptyState, pageHeader, ruleCard } from '../components.js?v=20261018-rss-weixin-2';
+import { emptyState, pageHeader, ruleCard } from '../components.js?v=20261018-multitarget';
 
 export function renderRules(state) {
   const rules = state.rules || [];

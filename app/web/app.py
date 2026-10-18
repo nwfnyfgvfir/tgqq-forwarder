@@ -125,9 +125,15 @@ def create_mini_app(
 
     rss_service = rss_service or RssService(service.db, settings)
     app.add_exception_handler(RssError, rss_error_response)
-    app.include_router(create_rss_router(
-        rss_service, rss_worker, require_admin_session, service, account_manager_getter,
-    ))
+    app.include_router(
+        create_rss_router(
+            rss_service,
+            rss_worker,
+            require_admin_session,
+            service,
+            account_manager_getter,
+        )
+    )
 
     @app.get("/healthz")
     async def healthz() -> dict[str, bool]:
@@ -311,7 +317,8 @@ def create_mini_app(
     ) -> list[RuleResponse]:
         _ = session
         rows = await service.list_rules(enabled_only=enabled_only, limit=limit)
-        return [RuleResponse.from_rule(row) for row in rows]
+        grouped = await service.targets_by_rule(rows)
+        return [RuleResponse.from_rule(row, grouped.get(int(row.id or 0))) for row in rows]
 
     @app.post("/api/rules", response_model=RuleCreateResponse, status_code=status.HTTP_201_CREATED)
     async def create_rule(
@@ -320,9 +327,11 @@ def create_mini_app(
     ) -> RuleCreateResponse:
         _ = session
         _validate_source_account(payload.source_account_id, payload.source_platform)
-        result = await service.create_or_merge_rule(payload.to_rule())
+        result = await service.create_or_merge_rule(payload.to_rule(), payload.to_targets())
         return RuleCreateResponse(
-            rule=RuleResponse.from_rule(result.rule),
+            rule=RuleResponse.from_rule(
+                result.rule, await service.target_rows(int(result.rule.id or 0))
+            ),
             created=result.created,
             updated=result.updated,
             keywords=result.keywords,
@@ -422,7 +431,7 @@ def create_mini_app(
         rule = await service.get_rule(rule_id)
         if rule is None:
             raise api_error(status.HTTP_404_NOT_FOUND, "rule_not_found", "规则不存在")
-        return RuleResponse.from_rule(rule)
+        return RuleResponse.from_rule(rule, await service.target_rows(rule_id))
 
     @app.patch("/api/rules/{rule_id}", response_model=RuleResponse)
     async def update_rule(
@@ -432,10 +441,10 @@ def create_mini_app(
     ) -> RuleResponse:
         _ = session
         _validate_source_account(payload.source_account_id, payload.source_platform)
-        rule = await service.update_rule(rule_id, payload.to_rule_values())
+        rule = await service.update_rule(rule_id, payload.to_rule_values(), payload.to_targets())
         if rule is None:
             raise api_error(status.HTTP_404_NOT_FOUND, "rule_not_found", "规则不存在")
-        return RuleResponse.from_rule(rule)
+        return RuleResponse.from_rule(rule, await service.target_rows(rule_id))
 
     @app.post("/api/rules/{rule_id}/duplicate", response_model=RuleResponse)
     async def duplicate_rule(
@@ -447,7 +456,7 @@ def create_mini_app(
         rule = await service.duplicate_rule(rule_id, name=payload.name, enabled=payload.enabled)
         if rule is None:
             raise api_error(status.HTTP_404_NOT_FOUND, "rule_not_found", "规则不存在")
-        return RuleResponse.from_rule(rule)
+        return RuleResponse.from_rule(rule, await service.target_rows(int(rule.id or 0)))
 
     @app.patch("/api/rules/{rule_id}/enabled", response_model=RuleResponse)
     async def set_rule_enabled(
@@ -462,7 +471,7 @@ def create_mini_app(
         rule = await service.get_rule(rule_id)
         if rule is None:
             raise api_error(status.HTTP_404_NOT_FOUND, "rule_not_found", "规则不存在")
-        return RuleResponse.from_rule(rule)
+        return RuleResponse.from_rule(rule, await service.target_rows(rule_id))
 
     @app.delete("/api/rules/{rule_id}")
     async def delete_rule(

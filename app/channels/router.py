@@ -1,4 +1,4 @@
-"""跨平台投递：按规则的 ``target_platform`` 选择 QQ 或微信发送器。"""
+"""跨平台投递：按单个 ``ForwardTarget`` 的 ``platform`` 选择 QQ 或微信发送器。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from app.platforms import Platform
 from app.qq_official.models import QQOutboundMessage
 from app.qq_official.sender import QQOfficialSender
 from app.rules.models import TelegramForwardMessage
-from app.storage.models import ForwardRule
+from app.storage.models import ForwardRule, ForwardTarget, legacy_target
 from app.weixin.models import WeixinError, WeixinOutboundMessage
 from app.weixin.service import WeixinService
 
@@ -44,46 +44,51 @@ class DeliveryRouter:
         rule: ForwardRule,
         message: TelegramForwardMessage,
         text: str,
+        target: ForwardTarget | None = None,
     ) -> None:
-        platform = (getattr(rule, "target_platform", None) or Platform.QQ.value).strip()
+        """投递到单个目标；不传 target 时按规则的历史单目标列投递。"""
+        resolved = target if target is not None else legacy_target(rule)
+        platform = (resolved.platform or Platform.QQ.value).strip()
         if platform == Platform.WEIXIN.value:
-            await self._deliver_weixin(rule, message, text)
+            await self._deliver_weixin(rule, resolved, message, text)
             return
         if platform == Platform.QQ.value:
-            await self._deliver_qq(rule, message, text)
+            await self._deliver_qq(rule, resolved, message, text)
             return
         raise DeliveryError(f"不支持的目标平台：{platform}")
 
     async def _deliver_qq(
         self,
         rule: ForwardRule,
+        target: ForwardTarget,
         message: TelegramForwardMessage,
         text: str,
     ) -> None:
         outbound = QQOutboundMessage(
-            target_type=rule.qq_target_type,
-            target_id=getattr(rule, "qq_channel_id", None) or rule.qq_target_id,
+            target_type=target.target_type,
+            target_id=getattr(target, "channel_id", None) or target.target_id,
             text=text,
             media_path=message.media_path,
             media_type=message.media_type,
             media_paths=message.media_paths,
             media_types=message.media_types,
             media_caption=(getattr(rule, "name", "") or "").strip() or "媒体",
-            guild_id=getattr(rule, "qq_guild_id", None),
-            channel_id=getattr(rule, "qq_channel_id", None),
+            guild_id=target.guild_id,
+            channel_id=target.channel_id,
         )
         await self._call(self.qq_sender.send(outbound), self.settings.qq_send_timeout_seconds, "QQ")
 
     async def _deliver_weixin(
         self,
         rule: ForwardRule,
+        target: ForwardTarget,
         message: TelegramForwardMessage,
         text: str,
     ) -> None:
         service = self.weixin_service
         if service is None or not service.enabled:
             raise DeliveryError("微信通道未启用，无法投递到微信")
-        target_user_id = (rule.qq_target_id or "").strip()
+        target_user_id = (target.target_id or "").strip()
         if not target_user_id:
             raise DeliveryError("微信目标用户为空")
         outbound = WeixinOutboundMessage(
@@ -108,8 +113,6 @@ class DeliveryRouter:
             try:
                 await asyncio.wait_for(coro, timeout=timeout)
             except TimeoutError as exc:
-                raise DeliveryError(
-                    f"{label} 发送超时（timed out after {timeout}s）"
-                ) from exc
+                raise DeliveryError(f"{label} 发送超时（timed out after {timeout}s）") from exc
             return
         await coro

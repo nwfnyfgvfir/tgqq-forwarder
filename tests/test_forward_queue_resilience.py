@@ -55,6 +55,19 @@ class FakeService:
             raise RuntimeError("match boom")
         return self.rules
 
+    async def targets_for(self, rule):
+        return [
+            SimpleNamespace(
+                platform="qq",
+                target_type="group",
+                target_id="group-openid",
+                guild_id=None,
+                channel_id=None,
+                enabled=True,
+                label="qq group:group-openid",
+            )
+        ]
+
     async def add_forward_log(self, **kwargs):
         if self.raise_on_log:
             raise RuntimeError("log boom")

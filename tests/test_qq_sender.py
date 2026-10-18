@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
-from types import MethodType
+from types import MethodType, SimpleNamespace
 from typing import Any
 
 import botpy
+import pytest
+from botpy.http import Route
 
 from app.config import Settings
 from app.qq_official.models import QQOutboundMessage
@@ -151,3 +154,94 @@ async def test_group_media_payload_removes_markdown_and_uses_rich_media_type() -
     assert "markdown" not in payload
     assert captured["post"]["group_openid"] == "group-openid"
     assert captured["upload"]["group_openid"] == "group-openid"
+
+
+def _install_token(sender: QQOfficialSender, *, expires_in: float = 7200.0):
+    """装一个假 access_token，并记录刷新次数。"""
+    state = SimpleNamespace(refreshes=0)
+    token = SimpleNamespace(
+        access_token="old-token",
+        expires_in=time.time() + expires_in,
+    )
+
+    async def update_access_token() -> None:
+        state.refreshes += 1
+        token.access_token = f"new-token-{state.refreshes}"
+        token.expires_in = time.time() + 7200.0
+
+    token.update_access_token = update_access_token
+    sender._http._token = token
+    return token, state
+
+
+async def test_auth_error_refreshes_token_and_retries_once() -> None:
+    sender = QQOfficialSender(Settings())
+    _, state = _install_token(sender)
+    calls: list[Any] = []
+
+    async def fake_request(route, *args: Any, **kwargs: Any):
+        calls.append(route)
+        if len(calls) == 1:
+            raise botpy.errors.AuthenticationFailedError("AccessToken无效或过期")
+        return {"id": "sent"}
+
+    sender._http_request = fake_request
+
+    result = await sender._http.request(
+        Route("POST", "/v2/groups/{group_openid}/messages", group_openid="g")
+    )
+
+    assert result == {"id": "sent"}
+    assert len(calls) == 2
+    assert state.refreshes == 1
+
+
+async def test_auth_error_retries_only_once() -> None:
+    sender = QQOfficialSender(Settings())
+    _, state = _install_token(sender)
+    calls: list[Any] = []
+
+    async def fake_request(route, *args: Any, **kwargs: Any):
+        calls.append(route)
+        raise botpy.errors.AuthenticationFailedError("AccessToken无效或过期")
+
+    sender._http_request = fake_request
+
+    with pytest.raises(botpy.errors.AuthenticationFailedError):
+        await sender._http.request(
+            Route("POST", "/v2/groups/{group_openid}/messages", group_openid="g")
+        )
+
+    assert len(calls) == 2
+    assert state.refreshes == 1
+
+
+async def test_expiring_token_is_refreshed_before_request() -> None:
+    sender = QQOfficialSender(Settings())
+    _, state = _install_token(sender, expires_in=5.0)
+    calls: list[Any] = []
+
+    async def fake_request(route, *args: Any, **kwargs: Any):
+        calls.append(route)
+        return {"ok": True}
+
+    sender._http_request = fake_request
+
+    await sender._http.request(Route("GET", "/users/@me"))
+
+    assert state.refreshes == 1
+    assert len(calls) == 1
+
+
+async def test_valid_token_is_not_refreshed() -> None:
+    sender = QQOfficialSender(Settings())
+    _, state = _install_token(sender, expires_in=3600.0)
+
+    async def fake_request(route, *args: Any, **kwargs: Any):
+        return {"ok": True}
+
+    sender._http_request = fake_request
+
+    await sender._http.request(Route("GET", "/users/@me"))
+
+    assert state.refreshes == 0

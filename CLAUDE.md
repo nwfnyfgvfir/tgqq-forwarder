@@ -126,13 +126,14 @@ Rules and logs are SQLModel tables in `app/storage/models.py`, accessed through 
 - Keyword rules are encoded/decoded in `app/rules/keywords.py` as regex with metadata.
 - `MessageFormatter` renders rule templates, appends missing hidden/button links, and avoids duplicate visible URL notes.
 
-`app/worker/forward_queue.py` consumes parsed messages, skips work when forwarding is paused, finds matching rules, formats text, and hands delivery to `app/channels/router.py` (`DeliveryRouter`), which dispatches by `rule.target_platform` to the QQ sender or the WeChat service and records `ForwardLog` success/failure entries.
+`app/worker/forward_queue.py` consumes parsed messages, skips work when forwarding is paused, finds matching rules, formats text **once per rule**, then delivers to every enabled target of that rule through `app/channels/router.py` (`DeliveryRouter`). Each target is sent and logged independently (`ForwardLog` per target, one failure never blocks the others).
 
 Rule platform semantics:
 
 - `ForwardRule.source_platform` is `telegram` / `weixin` / `null` (null = any platform, the legacy behaviour).
-- `ForwardRule.target_platform` is `qq` (default) or `weixin`.
-- Delivery targets keep the historical `qq_*` column names to avoid a data migration: for WeChat rules `qq_target_type` is fixed to `friend` and `qq_target_id` holds the WeChat `user_id`/wxid.
+- Targets live in the `forward_target` table (`ForwardTarget`): one row per `(rule, platform, target_type, target_id)` with `enabled` and `position`. A rule can fan out to any mix of QQ groups/channels and WeChat contacts.
+- `ForwardRule.target_platform` + `qq_target_*` remain as **compat columns for the first target** so old code, old API clients and the Telegram `/add_rule` command keep working. A rule with no `forward_target` rows is read as a single legacy target (`app/storage/models.py::legacy_target`).
+- For WeChat targets `target_type` is fixed to `friend` and `target_id` holds the WeChat `user_id`/wxid; guild/channel fields are dropped.
 - `source_chat_id` / `source_sender_id` / log ID columns use `FlexibleId` (TEXT affinity, numeric values still read back as `int`) so Telegram integer IDs and WeChat string IDs share the same columns.
 
 ### QQ integration
@@ -168,9 +169,9 @@ Rule platform semantics:
 
 ### RSS subscriptions
 
-`app/rss/` owns RSS/RSSHub subscriptions end to end: `schemas.py` validates `SubscriptionInput` (feed URL, target platform, target ID, interval, first-run policy, keywords, template), `fetcher.py` fetches/parses feeds with SSRF guards (public hosts only unless listed in `RSS_ALLOWED_PRIVATE_HOSTS`, per-hop DNS pinning, ETag/Last-Modified, size caps, HTTP `identity` only), `service.py` does CRUD plus entry bookkeeping, `worker.py` runs the in-process scheduler with per-subscription job locks, persistent dedupe (`rss_entry` unique on `subscription_id + entry_key`), retry/backoff, and `delivery.py` publishes by `subscription.target_platform`: `telegram` goes through `publisher.py` (Bot token `RSS_BOT_TOKEN`, falling back to the admin bot, plain text, link preview disabled) while `weixin` sends directly through `WeixinService` (no Telegram hop, no rule needed).
+`app/rss/` owns RSS/RSSHub subscriptions end to end: `schemas.py` validates `SubscriptionInput` (feed URL, target channel, interval, first-run policy, keywords, template), `fetcher.py` fetches/parses feeds with SSRF guards (public hosts only unless listed in `RSS_ALLOWED_PRIVATE_HOSTS`, per-hop DNS pinning, ETag/Last-Modified, size caps, HTTP `identity` only), `service.py` does CRUD plus entry bookkeeping, `worker.py` runs the in-process scheduler with per-subscription job locks, persistent dedupe (`rss_entry` unique on `subscription_id + entry_key`), retry/backoff, and `publisher.py` publishes through the Telegram Bot API (`RSS_BOT_TOKEN`, falling back to the admin bot, plain text, link preview disabled).
 
-RSS target semantics: `RssSubscription.target_platform` is `telegram` (default) or `weixin`; `tg_chat_id` keeps its historical name and holds either a Telegram channel id/`@username` or a WeChat contact `user_id`. WeChat targets are only sent when the channel is logged in **and** the contact's `context_token` is cached — otherwise entries stay `pending` (no failed attempts) and publish once the contact messages the account.
+RSS target semantics: subscriptions are **Telegram-only**. `RssSubscription` has just `tg_chat_id` (negative channel id or `@username`, validated in `SubscriptionInput.chat_valid`) and publishing never goes through `DeliveryRouter`, so WeChat/QQ delivery is only reachable as a two-hop setup: publish into a Telegram channel, then add a normal forwarding rule whose source is that channel and whose target is WeChat/QQ (the subscription page's "转规则" button pre-fills such a rule from `tg_chat_id`).
 
 `ApplicationRuntime` starts one `RssWorker` (`app/main.py`) and injects both `RssService` and `RssWorker` into the Mini App; `app/web/rss_routes.py` exposes `/api/rss/*` under the same admin auth. The worker keeps fetching while forwarding is paused or Telegram is disconnected, but only publishes when `can_publish()` is true. `POST /api/rss/subscriptions/{id}/test-send` (`RssWorker.test_send_latest`) is a synchronous end-to-end self-check: it fetches now, force-publishes the newest entry (bypassing the first-run baseline, dedupe and keyword filters, without writing entry history), and returns the outcome directly; it does not depend on `can_publish()`.
 

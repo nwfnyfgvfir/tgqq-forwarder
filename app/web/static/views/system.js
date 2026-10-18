@@ -1,6 +1,6 @@
-import { api } from '../api.js?v=20261018-rss-weixin-2';
-import { escapeHtml, pageHeader, statusPill } from '../components.js?v=20261018-rss-weixin-2';
-import { refreshStatus, state } from '../state.js?v=20261018-rss-weixin-2';
+import { api } from '../api.js?v=20261018-multitarget';
+import { escapeHtml, pageHeader, statusPill } from '../components.js?v=20261018-multitarget';
+import { refreshStatus, state } from '../state.js?v=20261018-multitarget';
 
 let loginPollTimer = null;
 

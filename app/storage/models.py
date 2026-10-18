@@ -111,6 +111,54 @@ class ForwardRule(SQLModel, table=True):
         return self.target_platform == "weixin"
 
 
+class ForwardTarget(SQLModel, table=True):
+    """一条规则的单个投递目标。
+
+    历史规则把目标写在 ``ForwardRule.target_platform`` / ``qq_target_*`` 上，
+    现在一条规则可以同时投递到多个平台、多个目标：那些列继续作为「兼容字段」
+    保存第一个目标，``forward_target`` 表保存完整列表。旧规则没有对应行时，
+    服务层按兼容字段合成一个目标，行为与升级前完全一致。
+    """
+
+    __tablename__ = "forward_target"
+
+    id: int | None = Field(default=None, primary_key=True)
+    rule_id: int = Field(foreign_key="forwardrule.id", index=True)
+    position: int = Field(default=0, index=True)
+    enabled: bool = Field(default=True)
+    # 目标平台：qq / weixin
+    platform: str = Field(default="qq", max_length=32, index=True)
+    # QQ: group / c2c / channel / dms；微信固定 friend
+    target_type: str = Field(default=QQTargetType.GROUP.value, max_length=32)
+    # QQ 群 openid / C2C openid / 频道 channel_id / 频道私信 guild_id；微信 user_id
+    target_id: str = Field(max_length=128)
+    guild_id: str | None = Field(default=None, max_length=128)
+    channel_id: str | None = Field(default=None, max_length=128)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+    @property
+    def delivery_id(self) -> str:
+        """真正用于发送的 ID：频道目标历史上优先用 channel_id。"""
+        return self.channel_id or self.target_id
+
+    @property
+    def label(self) -> str:
+        return f"{self.platform} {self.target_type}:{self.target_id}"
+
+
+def legacy_target(rule: ForwardRule) -> ForwardTarget:
+    """按历史列合成一个目标对象（不落库）。"""
+    return ForwardTarget(
+        rule_id=int(rule.id or 0),
+        platform=rule.target_platform or "qq",
+        target_type=rule.qq_target_type,
+        target_id=rule.qq_target_id,
+        guild_id=rule.qq_guild_id,
+        channel_id=rule.qq_channel_id,
+    )
+
+
 class ForwardLog(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     rule_id: int | None = Field(default=None, foreign_key="forwardrule.id", index=True)

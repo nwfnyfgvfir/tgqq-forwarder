@@ -14,7 +14,7 @@ from app.rules.keywords import (
     split_keyword_args,
 )
 from app.rules.templates import effective_message_template
-from app.storage.models import ForwardLog, ForwardRule, QQTargetType
+from app.storage.models import ForwardLog, ForwardRule, ForwardTarget, QQTargetType, legacy_target
 from app.telegram_user.accounts import TelegramAccountStatus
 from app.weixin.models import WeixinContact, WeixinStatus
 from app.weixin.qrcode import is_image_bytes
@@ -201,6 +201,90 @@ class QQTargetResponse(BaseModel):
         )
 
 
+class RuleTargetInput(BaseModel):
+    """单个投递目标；一条规则可以带多个。"""
+
+    platform: str = Platform.QQ.value
+    target_type: str = QQTargetType.GROUP.value
+    target_id: str = Field(min_length=1, max_length=128)
+    guild_id: str | None = None
+    channel_id: str | None = None
+    enabled: bool = True
+
+    @field_validator("target_id")
+    @classmethod
+    def strip_target_id(cls, value: str) -> str:
+        text = value.strip()
+        if not text:
+            raise ValueError("target_id must not be empty")
+        return text
+
+    @field_validator("platform", mode="before")
+    @classmethod
+    def validate_platform(cls, value: object) -> str:
+        text = str(value or Platform.QQ.value).strip().lower()
+        if text not in TARGET_PLATFORMS:
+            raise ValueError(f"platform must be one of: {', '.join(TARGET_PLATFORMS)}")
+        return text
+
+    @field_validator("target_type")
+    @classmethod
+    def validate_type(cls, value: str) -> str:
+        allowed = {item.value for item in QQTargetType} | {WEIXIN_FRIEND_TARGET_TYPE}
+        if value not in allowed:
+            raise ValueError(f"target_type must be one of: {', '.join(sorted(allowed))}")
+        return value
+
+    @field_validator("guild_id", "channel_id")
+    @classmethod
+    def blank_ids_to_none(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        text = value.strip()
+        return text or None
+
+    @model_validator(mode="after")
+    def normalize_weixin(self) -> RuleTargetInput:
+        if self.platform == Platform.WEIXIN.value:
+            self.target_type = WEIXIN_FRIEND_TARGET_TYPE
+            self.guild_id = None
+            self.channel_id = None
+        return self
+
+    def to_target(self, rule_id: int = 0) -> ForwardTarget:
+        return ForwardTarget(
+            rule_id=rule_id,
+            platform=self.platform,
+            target_type=self.target_type,
+            target_id=self.target_id,
+            guild_id=self.guild_id,
+            channel_id=self.channel_id,
+            enabled=self.enabled,
+        )
+
+
+class RuleTargetResponse(BaseModel):
+    id: int | None = None
+    platform: str = Platform.QQ.value
+    target_type: str
+    target_id: str
+    guild_id: str | None = None
+    channel_id: str | None = None
+    enabled: bool = True
+
+    @classmethod
+    def from_target(cls, target: ForwardTarget) -> RuleTargetResponse:
+        return cls(
+            id=target.id,
+            platform=target.platform or Platform.QQ.value,
+            target_type=target.target_type,
+            target_id=target.target_id,
+            guild_id=target.guild_id,
+            channel_id=target.channel_id,
+            enabled=target.enabled,
+        )
+
+
 class RuleBase(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     enabled: bool = True
@@ -217,19 +301,26 @@ class RuleBase(BaseModel):
     media_types: list[str] | None = None
     target_platform: str = Platform.QQ.value
     qq_target_type: str = QQTargetType.GROUP.value
-    qq_target_id: str = Field(min_length=1, max_length=128)
+    qq_target_id: str = Field(default="", max_length=128)
     qq_guild_id: str | None = None
     qq_channel_id: str | None = None
+    # 多目标：传了就优先使用，不传则按上面的单目标字段兼容旧客户端。
+    targets: list[RuleTargetInput] | None = None
     message_template: str = Field(min_length=1)
     priority: int = 0
 
-    @field_validator("name", "qq_target_id", "message_template")
+    @field_validator("name", "message_template")
     @classmethod
     def strip_required_text(cls, value: str) -> str:
         text = value.strip()
         if not text:
             raise ValueError("value must not be empty")
         return text
+
+    @field_validator("qq_target_id")
+    @classmethod
+    def strip_target_id(cls, value: str) -> str:
+        return value.strip()
 
     @field_validator("source_account_id")
     @classmethod
@@ -310,15 +401,34 @@ class RuleBase(BaseModel):
 
     @model_validator(mode="after")
     def normalize_platform_target(self) -> RuleBase:
+        if self.targets is not None:
+            self.targets = [item for item in self.targets if item.target_id.strip()]
+            if not self.targets:
+                # 空列表等同于「没传」，回退到单目标兼容字段（预览等场景会这样传）。
+                self.targets = None
+        if self.targets is not None:
+            first = self.targets[0]
+            self.target_platform = first.platform
+            self.qq_target_type = first.target_type
+            self.qq_target_id = first.target_id
+            self.qq_guild_id = first.guild_id
+            self.qq_channel_id = first.channel_id
         # 微信目标只有「好友」一种：类型固定 friend，频道相关字段无意义。
         if self.target_platform == Platform.WEIXIN.value:
             self.qq_target_type = WEIXIN_FRIEND_TARGET_TYPE
             self.qq_guild_id = None
             self.qq_channel_id = None
+        elif self.targets is None and not self.qq_target_id:
+            raise ValueError("qq_target_id 不能为空，或用 targets 指定目标")
         if self.source_platform == Platform.WEIXIN.value and self.source_chat_type:
             if self.source_chat_type != "private":
                 raise ValueError("微信来源只有私聊，source_chat_type 必须为空或 private")
         return self
+
+    def to_targets(self) -> list[ForwardTarget]:
+        if self.targets:
+            return [item.to_target() for item in self.targets]
+        return [legacy_target(self.to_rule())]
 
     def to_rule_values(self) -> dict[str, Any]:
         include_regex: str | None
@@ -398,13 +508,18 @@ class RuleResponse(BaseModel):
     qq_target_id: str
     qq_guild_id: str | None = None
     qq_channel_id: str | None = None
+    targets: list[RuleTargetResponse] = Field(default_factory=list)
     message_template: str
     priority: int
     created_at: datetime
     updated_at: datetime
 
     @classmethod
-    def from_rule(cls, rule: ForwardRule) -> RuleResponse:
+    def from_rule(
+        cls,
+        rule: ForwardRule,
+        targets: list[ForwardTarget] | None = None,
+    ) -> RuleResponse:
         keywords = keywords_from_text_include_regex(rule.text_include_regex)
         if keywords:
             match_mode: RuleMatchMode = "keywords"
@@ -412,6 +527,7 @@ class RuleResponse(BaseModel):
             match_mode = "regex"
         else:
             match_mode = "all"
+        rows = targets if targets else [legacy_target(rule)]
         return cls(
             id=int(rule.id or 0),
             name=rule.name,
@@ -432,6 +548,7 @@ class RuleResponse(BaseModel):
             qq_target_id=rule.qq_target_id,
             qq_guild_id=rule.qq_guild_id,
             qq_channel_id=rule.qq_channel_id,
+            targets=[RuleTargetResponse.from_target(item) for item in rows],
             message_template=effective_message_template(rule.message_template),
             priority=rule.priority,
             created_at=rule.created_at,

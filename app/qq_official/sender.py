@@ -4,6 +4,7 @@ import asyncio
 import base64
 import logging
 import random
+import time
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +17,11 @@ from botpy.types.message import MarkdownPayload, Media
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from app.config import Settings
-from app.qq_official.client import ForwarderQQClient, QQTargetInfo, ensure_group_message_create_parser
+from app.qq_official.client import (
+    ForwarderQQClient,
+    QQTargetInfo,
+    ensure_group_message_create_parser,
+)
 from app.qq_official.models import QQOutboundMessage
 from app.storage.models import QQTargetType
 
@@ -26,6 +31,9 @@ IMAGE_FILE_TYPE = 1
 VIDEO_FILE_TYPE = 2
 VOICE_FILE_TYPE = 3
 FILE_FILE_TYPE = 4
+
+# access_token 名义有效期 2 小时，提前这么久主动刷新，避免「最后一分钟」失效。
+TOKEN_REFRESH_MARGIN_SECONDS = 60.0
 
 
 def _patch_qq_botpy_formdata() -> None:
@@ -68,6 +76,49 @@ class QQOfficialSender:
         self.client = ForwarderQQClient(intents=intents, bot_log=False, timeout=20)
         self._task: asyncio.Task | None = None
         self._started = asyncio.Event()
+        self._token_lock = asyncio.Lock()
+        # botpy 只在本地记录的过期时间到达时才换 token，服务端提前判废或本机时钟偏快时
+        # 就会持续返回「AccessToken无效或过期」。这里在 HTTP 层统一兜底刷新。
+        self._http = self.client.api._http
+        self._http_request = self._http.request
+        self._http.request = self._request_with_token_retry  # type: ignore[method-assign]
+
+    async def _request_with_token_retry(self, route, *args: Any, **kwargs: Any) -> Any:
+        await self._refresh_token_if_expiring()
+        try:
+            return await self._http_request(route, *args, **kwargs)
+        except botpy.errors.AuthenticationFailedError as error:
+            logger.warning("QQ access_token 失效（%s），刷新后重试一次", error)
+            if not await self._refresh_access_token(force=True):
+                raise
+            return await self._http_request(route, *args, **kwargs)
+
+    async def _refresh_token_if_expiring(self) -> None:
+        token = getattr(self._http, "_token", None)
+        if token is None or not getattr(token, "access_token", None):
+            return
+        if float(getattr(token, "expires_in", 0) or 0) - time.time() > (
+            TOKEN_REFRESH_MARGIN_SECONDS
+        ):
+            return
+        await self._refresh_access_token()
+
+    async def _refresh_access_token(self, *, force: bool = False) -> bool:
+        """换一个新的 access_token；并发请求只真正刷新一次。"""
+        token = getattr(self._http, "_token", None)
+        if token is None:
+            return False
+        before = getattr(token, "access_token", None)
+        async with self._token_lock:
+            if getattr(token, "access_token", None) != before:
+                return True
+            if not force and float(getattr(token, "expires_in", 0) or 0) - time.time() > (
+                TOKEN_REFRESH_MARGIN_SECONDS
+            ):
+                return False
+            await token.update_access_token()
+            logger.info("QQ access_token 已刷新")
+            return True
 
     def list_cached_targets(self) -> list[QQTargetInfo]:
         return self.client.list_cached_targets()

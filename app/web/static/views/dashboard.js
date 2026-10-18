@@ -1,4 +1,4 @@
-import { emptyState, escapeHtml, formatDate, logRow, pageHeader, statTile, statusPill } from '../components.js?v=20261018-rss-weixin-2';
+import { emptyState, escapeHtml, formatDate, logRow, pageHeader, statTile, statusPill } from '../components.js?v=20261018-multitarget';
 
 export function renderDashboard(state) {
   const status = state.status;

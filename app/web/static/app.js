@@ -1,12 +1,12 @@
-import { api } from './api.js?v=20261018-rss-weixin-2';
-import { renderShell } from './components.js?v=20261018-rss-weixin-2';
-import { bootstrapData, navigate, refreshLogs, refreshRules, refreshStatus, refreshSubscriptions, setState, state, subscribe } from './state.js?v=20261018-rss-weixin-2';
-import { renderDashboard } from './views/dashboard.js?v=20261018-rss-weixin-2';
-import { renderLogs } from './views/logs.js?v=20261018-rss-weixin-2';
-import { filterRules, renderRules } from './views/rules.js?v=20261018-rss-weixin-2';
-import { bindRuleStudio, renderRuleStudio } from './views/rule-studio.js?v=20261018-rss-weixin-2';
-import { renderSystem, bindSystem } from './views/system.js?v=20261018-rss-weixin-2';
-import { bindSubscriptions, canRefreshSubscriptions, renderSubscriptions, updateSubscriptions } from './views/subscriptions.js?v=20261018-rss-weixin-2';
+import { api } from './api.js?v=20261018-multitarget';
+import { renderShell } from './components.js?v=20261018-multitarget';
+import { bootstrapData, navigate, refreshLogs, refreshRules, refreshStatus, refreshSubscriptions, setState, state, subscribe } from './state.js?v=20261018-multitarget';
+import { renderDashboard } from './views/dashboard.js?v=20261018-multitarget';
+import { renderLogs } from './views/logs.js?v=20261018-multitarget';
+import { filterRules, renderRules } from './views/rules.js?v=20261018-multitarget';
+import { bindRuleStudio, renderRuleStudio } from './views/rule-studio.js?v=20261018-multitarget';
+import { renderSystem, bindSystem } from './views/system.js?v=20261018-multitarget';
+import { bindSubscriptions, canRefreshSubscriptions, renderSubscriptions, updateSubscriptions } from './views/subscriptions.js?v=20261018-multitarget';
 
 const tg = window.Telegram?.WebApp;
 const root = document.querySelector('#app');

@@ -1,21 +1,21 @@
-import { api } from '../api.js?v=20261018-rss-weixin-2';
-import { escapeHtml, pageHeader, short, statusPill } from '../components.js?v=20261018-rss-weixin-2';
-import { refreshRules } from '../state.js?v=20261018-rss-weixin-2';
+import { api } from '../api.js?v=20261018-multitarget';
+import { escapeHtml, pageHeader, short, statusPill } from '../components.js?v=20261018-multitarget';
+import { refreshRules } from '../state.js?v=20261018-multitarget';
 
 const DEFAULT_TEMPLATE = '# {source_title_md}\n\n**发送者：{sender_name_md}**\n\n{text}\n\n{footer_note}';
 
 export function renderRuleStudio(state) {
   const editRule = state.routeParams?.rule || null;
-  const targetPlatform = editRule?.target_platform || 'qq';
   const sourcePlatform = editRule?.source_platform || '';
   const weixinAccountId = state.options?.weixin_account_id;
+  const initialTargets = targetsOfRule(editRule);
   return `
     ${pageHeader(
       'RULE STUDIO',
       editRule?.id ? `编辑规则 #${editRule.id}` : '规则工坊',
-      '来源可以是 Telegram 或微信，目标可以是 QQ 或微信；用选择器、关键词芯片、模板预览完成配置。'
+      '来源可以是 Telegram 或微信；一条规则可同时投递到多个 QQ / 微信目标。用选择器、关键词芯片、模板预览完成配置。'
     )}
-    <form id="rule-form" class="studio-layout" data-edit-id="${editRule?.id || ''}" data-target-platform="${escapeHtml(targetPlatform)}">
+    <form id="rule-form" class="studio-layout" data-edit-id="${editRule?.id || ''}">
       <section class="panel studio-main">
         <div class="step-block">
           <div class="step-index">01</div>
@@ -64,28 +64,23 @@ export function renderRuleStudio(state) {
           <div class="step-index">02</div>
           <div>
             <h2>投递目标</h2>
-            <p>QQ 目标 ID 来自官方机器人缓存；微信只能发给最近主动给本号发过消息的联系人（协议要求 context_token）。</p>
+            <p>一条规则可以同时发到多个目标：多个 QQ 群/频道、多个微信好友都可以。点下面的缓存卡片可直接追加，也可以手工填写。</p>
           </div>
-          <div class="grid-2">
-            <label>目标平台<select name="target_platform">
-              ${option('qq', 'QQ 机器人', targetPlatform)}
-              ${option('weixin', '个人微信', targetPlatform)}
-            </select></label>
-            <label>目标 ID<input name="qq_target_id" required value="${escapeHtml(editRule?.qq_target_id || '')}" placeholder="QQ openid 或微信 wxid" /></label>
+          <div id="target-list" class="target-list">${initialTargets.map((item) => targetRowHtml(item)).join('')}</div>
+          <div class="target-toolbar">
+            <button type="button" data-action="add-target">＋ 添加目标</button>
+            <span class="muted">每个目标单独发送、单独记日志，一个失败不影响其它目标。</span>
           </div>
-          <div data-target-panel="qq">
-            <div class="choice-list horizontal" id="qq-targets">${renderTargets(state.qqTargets || [], editRule)}</div>
-            <div class="grid-2">
-              <label>目标类型<select name="qq_target_type">
-                ${['group', 'c2c', 'channel', 'dms', 'friend'].map((item) => option(item, item, editRule?.qq_target_type || 'group')).join('')}
-              </select></label>
-              <label>Guild ID<input name="qq_guild_id" value="${escapeHtml(editRule?.qq_guild_id || '')}" placeholder="频道私信可选" /></label>
-              <label>Channel ID<input name="qq_channel_id" value="${escapeHtml(editRule?.qq_channel_id || '')}" placeholder="频道可选" /></label>
+          <div class="target-sources">
+            <div>
+              <h3>QQ 缓存目标</h3>
+              <div class="choice-list horizontal" id="qq-targets">${renderTargets(state.qqTargets || [], initialTargets)}</div>
             </div>
-          </div>
-          <div data-target-panel="weixin">
-            <div class="choice-list horizontal" id="weixin-contacts">${renderWeixinContacts(state.options?.weixin_contacts || [], editRule)}</div>
-            <p class="muted">没有联系人？让对方先给本微信号发一条消息，再刷新本页即可。</p>
+            <div>
+              <h3>微信联系人</h3>
+              <div class="choice-list horizontal" id="weixin-contacts">${renderWeixinContacts(state.options?.weixin_contacts || [], initialTargets)}</div>
+              <p class="muted">没有联系人？让对方先给本微信号发一条消息，再刷新本页即可。</p>
+            </div>
           </div>
         </div>
         <div class="step-block">
@@ -137,8 +132,11 @@ export function bindRuleStudio(root, navigate) {
   let dialogSearchSeq = 0;
   syncPlatformPanels(form);
   form.addEventListener('change', (event) => {
-    if (event.target?.name === 'target_platform' || event.target?.name === 'source_platform') {
+    if (event.target?.name === 'source_platform') {
       syncPlatformPanels(form);
+    }
+    if (event.target?.dataset?.field === 'platform') {
+      syncTargetRow(event.target.closest('[data-target-row]'));
     }
   });
   root.querySelector('[data-action="search-dialogs"]')?.addEventListener('click', async () => {
@@ -169,17 +167,26 @@ export function bindRuleStudio(root, navigate) {
       return;
     }
     if (target.dataset.weixinUser) {
-      setFormValue(form, 'target_platform', 'weixin');
-      setFormValue(form, 'qq_target_id', target.dataset.weixinUser || '');
-      syncPlatformPanels(form);
+      addTargetRow(form, {
+        platform: 'weixin',
+        target_type: 'friend',
+        target_id: target.dataset.weixinUser || '',
+      });
     }
     if (target.dataset.targetId) {
-      setFormValue(form, 'target_platform', 'qq');
-      setFormValue(form, 'qq_target_type', target.dataset.targetType || '');
-      setFormValue(form, 'qq_target_id', target.dataset.targetId || '');
-      setFormValue(form, 'qq_guild_id', target.dataset.guildId || '');
-      setFormValue(form, 'qq_channel_id', target.dataset.channelId || '');
-      syncPlatformPanels(form);
+      addTargetRow(form, {
+        platform: 'qq',
+        target_type: target.dataset.targetType || 'group',
+        target_id: target.dataset.targetId || '',
+        guild_id: target.dataset.guildId || '',
+        channel_id: target.dataset.channelId || '',
+      });
+    }
+    if (target.dataset.action === 'add-target') {
+      addTargetRow(form, {});
+    }
+    if (target.dataset.action === 'remove-target') {
+      target.closest('[data-target-row]')?.remove();
     }
     if (target.dataset.action === 'insert-var') {
       const textarea = form.elements.namedItem('message_template');
@@ -195,6 +202,11 @@ export function bindRuleStudio(root, navigate) {
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
     const payload = payloadFromForm(form);
+    const output = root.querySelector('#preview-output');
+    if (!payload.targets.length) {
+      if (output) output.textContent = '保存失败：至少需要一个投递目标（填好目标 ID 或点上方缓存卡片）。';
+      return;
+    }
     const editId = form.dataset.editId;
     const tg = window.Telegram?.WebApp;
     try {
@@ -208,7 +220,7 @@ export function bindRuleStudio(root, navigate) {
       navigate('rules');
     } catch (error) {
       tg?.HapticFeedback?.notificationOccurred?.('error');
-      root.querySelector('#preview-output').textContent = `保存失败：${error.message}`;
+      if (output) output.textContent = `保存失败：${error.message}`;
     }
   });
 }
@@ -240,10 +252,109 @@ function setFormValue(form, name, value) {
   }
 }
 
-function renderTargets(targets, editRule) {
+const TARGET_TYPES = ['group', 'c2c', 'channel', 'dms', 'friend'];
+
+function targetsOfRule(editRule) {
+  if (Array.isArray(editRule?.targets) && editRule.targets.length) return editRule.targets;
+  return [{
+    platform: editRule?.target_platform || 'qq',
+    target_type: editRule?.qq_target_type || 'group',
+    target_id: editRule?.qq_target_id || '',
+    guild_id: editRule?.qq_guild_id || '',
+    channel_id: editRule?.qq_channel_id || '',
+    enabled: true,
+  }];
+}
+
+function targetRowHtml(target) {
+  const platform = target.platform === 'weixin' ? 'weixin' : 'qq';
+  const type = platform === 'weixin' ? 'friend' : (target.target_type || 'group');
+  const disabled = platform === 'weixin' ? 'disabled' : '';
+  const showExtras = platform === 'qq' && (type === 'channel' || type === 'dms');
+  return `
+    <div class="target-row" data-target-row>
+      <select data-field="platform">
+        ${option('qq', 'QQ 机器人', platform)}
+        ${option('weixin', '个人微信', platform)}
+      </select>
+      <select data-field="target_type" ${disabled}>
+        ${TARGET_TYPES.map((item) => option(item, item, type)).join('')}
+      </select>
+      <input data-field="target_id" value="${escapeHtml(target.target_id || '')}" placeholder="QQ openid / 频道 ID / wxid" />
+      <input data-field="guild_id" value="${escapeHtml(target.guild_id || '')}" placeholder="Guild ID（可选）" ${showExtras ? '' : 'hidden'} />
+      <input data-field="channel_id" value="${escapeHtml(target.channel_id || '')}" placeholder="Channel ID（可选）" ${showExtras ? '' : 'hidden'} />
+      <label class="switch-line"><input type="checkbox" data-field="enabled" ${target.enabled === false ? '' : 'checked'} /> 启用</label>
+      <button type="button" class="danger" data-action="remove-target">移除</button>
+    </div>
+  `;
+}
+
+function syncTargetRow(row) {
+  if (!row) return;
+  const platform = row.querySelector('[data-field="platform"]')?.value || 'qq';
+  const typeSelect = row.querySelector('[data-field="target_type"]');
+  const guildInput = row.querySelector('[data-field="guild_id"]');
+  const channelInput = row.querySelector('[data-field="channel_id"]');
+  const isWeixin = platform === 'weixin';
+  const type = typeSelect?.value || 'group';
+  if (typeSelect) {
+    if (isWeixin) {
+      typeSelect.value = 'friend';
+      typeSelect.disabled = true;
+    } else {
+      typeSelect.disabled = false;
+      if (typeSelect.value === 'friend') typeSelect.value = 'group';
+    }
+  }
+  // Guild / Channel 只对 QQ 频道类目标有意义，其余类型隐藏以免挤占输入宽度。
+  const showExtras = !isWeixin && (type === 'channel' || type === 'dms');
+  for (const input of [guildInput, channelInput]) {
+    if (!input) continue;
+    input.hidden = !showExtras;
+    if (!showExtras) input.value = '';
+  }
+}
+
+function addTargetRow(form, target) {
+  const list = form.querySelector('#target-list');
+  if (!list) return;
+  const candidate = {
+    platform: target.platform || 'qq',
+    target_type: target.target_type || (target.platform === 'weixin' ? 'friend' : 'group'),
+    target_id: target.target_id || '',
+    guild_id: target.guild_id || '',
+    channel_id: target.channel_id || '',
+    enabled: true,
+  };
+  const rows = Array.from(list.querySelectorAll('[data-target-row]'));
+  const isEmptyRow = (row) => !(row.querySelector('[data-field="target_id"]')?.value.trim() || '');
+  if (!candidate.target_id) {
+    // 「添加目标」时先复用唯一一个空行，避免堆出一串空行。
+    const blank = rows.length === 1 && isEmptyRow(rows[0]) ? rows[0] : null;
+    if (blank) {
+      blank.querySelector('[data-field="target_id"]')?.focus();
+      return;
+    }
+  }
+  if (candidate.target_id) {
+    const exists = rows.some((row) => {
+      const platform = row.querySelector('[data-field="platform"]')?.value || 'qq';
+      const id = row.querySelector('[data-field="target_id"]')?.value.trim() || '';
+      return platform === candidate.platform && id === candidate.target_id;
+    });
+    if (exists) return;
+  }
+  list.insertAdjacentHTML('beforeend', targetRowHtml(candidate));
+  const row = list.lastElementChild;
+  syncTargetRow(row);
+  if (!candidate.target_id) row?.querySelector('[data-field="target_id"]')?.focus();
+}
+
+function renderTargets(targets, currentTargets) {
   if (!targets.length) return '<span class="muted">还没有缓存到 QQ 目标。</span>';
+  const selected = new Set((currentTargets || []).filter((item) => item.platform !== 'weixin').map((item) => item.target_id));
   return targets.slice(0, 24).map((target) => `
-    <button type="button" class="choice-card ${target.target_id === editRule?.qq_target_id ? 'selected' : ''}" data-target-type="${escapeHtml(target.target_type)}" data-target-id="${escapeHtml(target.target_id)}">
+    <button type="button" class="choice-card ${selected.has(target.target_id) ? 'selected' : ''}" data-target-type="${escapeHtml(target.target_type)}" data-target-id="${escapeHtml(target.target_id)}">
       <strong>${escapeHtml(target.target_type)}</strong>
       <code>${escapeHtml(short(target.target_id, 24))}</code>
       <span>${escapeHtml(target.display_name || target.last_message_id || '-')}</span>
@@ -251,10 +362,11 @@ function renderTargets(targets, editRule) {
   `).join('');
 }
 
-function renderWeixinContacts(contacts, editRule) {
+function renderWeixinContacts(contacts, currentTargets) {
   if (!contacts.length) return '<span class="muted">还没有微信联系人。</span>';
+  const selected = new Set((currentTargets || []).filter((item) => item.platform === 'weixin').map((item) => item.target_id));
   return contacts.slice(0, 24).map((contact) => `
-    <button type="button" class="choice-card ${contact.user_id === editRule?.qq_target_id ? 'selected' : ''}" data-weixin-user="${escapeHtml(contact.user_id)}">
+    <button type="button" class="choice-card ${selected.has(contact.user_id) ? 'selected' : ''}" data-weixin-user="${escapeHtml(contact.user_id)}">
       <strong>${contact.has_context_token ? '可发送' : '待对方发消息'}</strong>
       <code>${escapeHtml(short(contact.user_id, 24))}</code>
       <span>${escapeHtml(contact.name || contact.user_id)}</span>
@@ -263,29 +375,26 @@ function renderWeixinContacts(contacts, editRule) {
 }
 
 function syncPlatformPanels(form) {
-  const target = form.elements.target_platform?.value || 'qq';
-  form.dataset.targetPlatform = target;
-  form.querySelectorAll('[data-target-panel]').forEach((panel) => {
-    panel.hidden = panel.dataset.targetPanel !== target;
-  });
   const source = form.elements.source_platform?.value || '';
   form.querySelectorAll('[data-source-panel]').forEach((panel) => {
     panel.hidden = Boolean(source) && panel.dataset.sourcePanel !== source;
   });
-  const typeSelect = form.elements.qq_target_type;
-  if (typeSelect) {
-    if (target === 'weixin') {
-      if (typeSelect.dataset.savedValue === undefined) typeSelect.dataset.savedValue = typeSelect.value;
-      typeSelect.value = 'friend';
-      typeSelect.disabled = true;
-    } else {
-      typeSelect.disabled = false;
-      if (typeSelect.dataset.savedValue) {
-        typeSelect.value = typeSelect.dataset.savedValue;
-        delete typeSelect.dataset.savedValue;
-      }
-    }
-  }
+}
+
+function targetsFromForm(form) {
+  return Array.from(form.querySelectorAll('[data-target-row]')).map((row) => {
+    const field = (name) => row.querySelector(`[data-field="${name}"]`);
+    const platform = field('platform')?.value || 'qq';
+    const isWeixin = platform === 'weixin';
+    return {
+      platform,
+      target_type: isWeixin ? 'friend' : (field('target_type')?.value || 'group'),
+      target_id: field('target_id')?.value.trim() || '',
+      guild_id: isWeixin ? null : (field('guild_id')?.value.trim() || null),
+      channel_id: isWeixin ? null : (field('channel_id')?.value.trim() || null),
+      enabled: field('enabled') ? field('enabled').checked : true,
+    };
+  }).filter((item) => item.target_id);
 }
 
 function renderDialogChoice(item) {
@@ -327,8 +436,8 @@ function payloadFromForm(form) {
     if (text === 'false') return false;
     return null;
   };
-  const targetPlatform = value('target_platform') || 'qq';
-  const isWeixinTarget = targetPlatform === 'weixin';
+  const targets = targetsFromForm(form);
+  const first = targets[0] || { platform: 'qq', target_type: 'group', target_id: '', guild_id: null, channel_id: null };
   return {
     name: value('name'),
     enabled: form.elements.enabled.checked,
@@ -343,11 +452,13 @@ function payloadFromForm(form) {
     text_include_regex: value('text_include_regex') || null,
     text_exclude_regex: value('text_exclude_regex') || null,
     media_types: value('media_types') || null,
-    target_platform: targetPlatform,
-    qq_target_type: isWeixinTarget ? 'friend' : value('qq_target_type'),
-    qq_target_id: value('qq_target_id'),
-    qq_guild_id: isWeixinTarget ? null : value('qq_guild_id') || null,
-    qq_channel_id: isWeixinTarget ? null : value('qq_channel_id') || null,
+    targets,
+    // 兼容字段：服务端会按 targets[0] 重新计算，这里只是让旧接口也能读懂。
+    target_platform: first.platform,
+    qq_target_type: first.target_type,
+    qq_target_id: first.target_id,
+    qq_guild_id: first.guild_id,
+    qq_channel_id: first.channel_id,
     message_template: value('message_template'),
     priority: Number(value('priority') || 0),
   };
@@ -358,9 +469,12 @@ async function preview(form, root) {
   output.textContent = '渲染中…';
   try {
     const formPayload = payloadFromForm(form);
+    const rulePayload = formPayload.targets.length
+      ? formPayload
+      : { ...formPayload, targets: [{ platform: 'qq', target_type: 'group', target_id: 'preview-target', enabled: true }] };
     const isWeixin = formPayload.source_platform === 'weixin';
     const result = await api.previewRule({
-      rule: formPayload,
+      rule: rulePayload,
       message: {
         text: form.elements.preview_text.value,
         source_platform: formPayload.source_platform || 'telegram',

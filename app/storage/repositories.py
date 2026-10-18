@@ -5,7 +5,13 @@ from datetime import UTC, datetime
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.storage.models import AppSetting, ForwardLog, ForwardRule, ForwardStatus
+from app.storage.models import (
+    AppSetting,
+    ForwardLog,
+    ForwardRule,
+    ForwardStatus,
+    ForwardTarget,
+)
 
 
 def _now() -> datetime:
@@ -40,8 +46,52 @@ class RuleRepository:
         return rule
 
     async def delete_rule(self, session: AsyncSession, rule_id: int) -> bool:
+        await session.execute(delete(ForwardTarget).where(ForwardTarget.rule_id == rule_id))
         result = await session.execute(delete(ForwardRule).where(ForwardRule.id == rule_id))
         return bool(result.rowcount)
+
+    async def list_targets(
+        self,
+        session: AsyncSession,
+        rule_ids: list[int] | None = None,
+    ) -> list[ForwardTarget]:
+        stmt = select(ForwardTarget).order_by(
+            ForwardTarget.rule_id.asc(),
+            ForwardTarget.position.asc(),
+            ForwardTarget.id.asc(),
+        )
+        if rule_ids is not None:
+            if not rule_ids:
+                return []
+            stmt = stmt.where(ForwardTarget.rule_id.in_(rule_ids))
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def replace_targets(
+        self,
+        session: AsyncSession,
+        rule_id: int,
+        targets: list[ForwardTarget],
+    ) -> list[ForwardTarget]:
+        """整表替换某条规则的目标；顺序由列表下标决定。"""
+        await session.execute(delete(ForwardTarget).where(ForwardTarget.rule_id == rule_id))
+        rows: list[ForwardTarget] = []
+        for position, target in enumerate(targets):
+            row = ForwardTarget(
+                rule_id=rule_id,
+                position=position,
+                enabled=target.enabled,
+                platform=target.platform,
+                target_type=target.target_type,
+                target_id=target.target_id,
+                guild_id=target.guild_id,
+                channel_id=target.channel_id,
+            )
+            session.add(row)
+            rows.append(row)
+        if rows:
+            await session.flush()
+        return rows
 
     async def update_rule(
         self,
