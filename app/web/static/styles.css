@@ -196,6 +196,11 @@ pre { white-space: pre-wrap; word-break: break-word; }
 .kv dd { margin: 0; word-break: break-all; }
 .deploy-list { color: var(--muted); display: grid; gap: .6rem; }
 
+/* 微信扫码登录：二维码固定尺寸，避免刷新时布局跳动。 */
+.weixin-login { display: flex; gap: 1rem; align-items: center; margin: 1rem 0; padding: .9rem; border: 1px solid var(--line); border-radius: 12px; }
+.weixin-login img { width: 168px; height: 168px; border-radius: 8px; background: #fff; padding: .35rem; object-fit: contain; }
+.weixin-login p { margin: 0 0 .4rem; color: var(--muted); }
+
 @keyframes pulse { 0%, 100% { transform: scale(.96); opacity: .72; } 50% { transform: scale(1.08); opacity: 1; } }
 
 /* 订阅页沿用面板、按钮和状态组件，优先保障长文本与触控可用性。 */

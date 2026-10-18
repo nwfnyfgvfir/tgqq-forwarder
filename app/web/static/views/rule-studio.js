@@ -1,39 +1,43 @@
-import { api } from '../api.js?v=20260707-rule-studio-2';
-import { escapeHtml, pageHeader, short, statusPill } from '../components.js?v=20260707-rule-studio-2';
-import { refreshRules } from '../state.js?v=20260707-rule-studio-2';
+import { api } from '../api.js?v=20261018-weixin-1';
+import { escapeHtml, pageHeader, short, statusPill } from '../components.js?v=20261018-weixin-1';
+import { refreshRules } from '../state.js?v=20261018-weixin-1';
 
 const DEFAULT_TEMPLATE = '# {source_title_md}\n\n**发送者：{sender_name_md}**\n\n{text}\n\n{footer_note}';
 
 export function renderRuleStudio(state) {
   const editRule = state.routeParams?.rule || null;
+  const targetPlatform = editRule?.target_platform || 'qq';
+  const sourcePlatform = editRule?.source_platform || '';
+  const weixinAccountId = state.options?.weixin_account_id;
   return `
     ${pageHeader(
       'RULE STUDIO',
       editRule?.id ? `编辑规则 #${editRule.id}` : '规则工坊',
-      '用选择器、关键词芯片、模板预览完成高级规则配置，不再手写长命令。'
+      '来源可以是 Telegram 或微信，目标可以是 QQ 或微信；用选择器、关键词芯片、模板预览完成配置。'
     )}
-    <form id="rule-form" class="studio-layout" data-edit-id="${editRule?.id || ''}">
+    <form id="rule-form" class="studio-layout" data-edit-id="${editRule?.id || ''}" data-target-platform="${escapeHtml(targetPlatform)}">
       <section class="panel studio-main">
         <div class="step-block">
           <div class="step-index">01</div>
           <div>
-            <h2>Telegram 来源</h2>
-            <p>先选监听账号，再搜索该账号可见的频道、群组或私聊；账号留空代表任意账号。</p>
+            <h2>消息来源</h2>
+            <p>先选平台，再选监听账号与来源会话；平台或账号留空代表任意。微信来源只能收到好友私聊。</p>
           </div>
           <label>规则名称<input name="name" required maxlength="120" value="${escapeHtml(editRule?.name || '')}" placeholder="例如：LINUX DO AI 关键词" /></label>
           <div class="grid-2">
+            <label>来源平台<select name="source_platform">
+              ${option('', '任意平台', sourcePlatform)}
+              ${option('telegram', 'Telegram', sourcePlatform)}
+              ${option('weixin', '个人微信', sourcePlatform)}
+            </select></label>
             <label>监听账号<select name="source_account_id">
               ${option('', '任意账号', editRule?.source_account_id || '')}
-              ${(state.options?.telegram_account_ids || []).map((item) => option(item, item, editRule?.source_account_id || '')).join('')}
+              ${(state.options?.telegram_account_ids || []).map((item) => option(item, `TG · ${item}`, editRule?.source_account_id || '')).join('')}
+              ${weixinAccountId ? option(weixinAccountId, `微信 · ${weixinAccountId}`, editRule?.source_account_id || '') : ''}
             </select></label>
-            <label>TG 会话 ID<input name="source_chat_id" value="${escapeHtml(editRule?.source_chat_id ?? '')}" placeholder="* 或 -100..." /></label>
           </div>
-          <div class="picker-row">
-            <input id="dialog-query" placeholder="搜索 Telegram 会话名或 ID" />
-            <button type="button" data-action="search-dialogs">搜索会话</button>
-          </div>
-          <div class="choice-list" id="dialog-results" hidden></div>
           <div class="grid-2">
+            <label>来源会话 ID<input name="source_chat_id" value="${escapeHtml(editRule?.source_chat_id ?? '')}" placeholder="* / -100... / wxid_..." /></label>
             <label>会话类型<select name="source_chat_type">
               ${option('', '任意', editRule?.source_chat_type)}
               ${option('channel', '频道', editRule?.source_chat_type)}
@@ -41,7 +45,14 @@ export function renderRuleStudio(state) {
               ${option('private', '私聊', editRule?.source_chat_type)}
               ${option('unknown', '未知', editRule?.source_chat_type)}
             </select></label>
-            <label>发送者 ID<input name="source_sender_id" value="${escapeHtml(editRule?.source_sender_id ?? '')}" placeholder="* 或用户 ID" /></label>
+          </div>
+          <div class="picker-row" data-source-panel="telegram">
+            <input id="dialog-query" placeholder="搜索 Telegram 会话名或 ID" />
+            <button type="button" data-action="search-dialogs">搜索会话</button>
+          </div>
+          <div class="choice-list" id="dialog-results" data-source-panel="telegram" hidden></div>
+          <div class="grid-2">
+            <label>发送者 ID<input name="source_sender_id" value="${escapeHtml(editRule?.source_sender_id ?? '')}" placeholder="* / 用户 ID / wxid" /></label>
             <label>发送者 Bot 标记<select name="source_sender_is_bot">
               ${option('', '任意', boolToSelect(editRule?.source_sender_is_bot))}
               ${option('true', '只匹配 Bot', boolToSelect(editRule?.source_sender_is_bot))}
@@ -52,17 +63,29 @@ export function renderRuleStudio(state) {
         <div class="step-block">
           <div class="step-index">02</div>
           <div>
-            <h2>QQ 目标</h2>
-            <p>目标 ID 来自 QQ 官方机器人缓存；如果为空，先在 QQ 目标会话给机器人发一条消息。</p>
+            <h2>投递目标</h2>
+            <p>QQ 目标 ID 来自官方机器人缓存；微信只能发给最近主动给本号发过消息的联系人（协议要求 context_token）。</p>
           </div>
-          <div class="choice-list horizontal" id="qq-targets">${renderTargets(state.qqTargets || [], editRule)}</div>
           <div class="grid-2">
-            <label>目标类型<select name="qq_target_type">
-              ${['group', 'c2c', 'channel', 'dms'].map((item) => option(item, item, editRule?.qq_target_type || 'group')).join('')}
+            <label>目标平台<select name="target_platform">
+              ${option('qq', 'QQ 机器人', targetPlatform)}
+              ${option('weixin', '个人微信', targetPlatform)}
             </select></label>
-            <label>目标 ID<input name="qq_target_id" required value="${escapeHtml(editRule?.qq_target_id || '')}" /></label>
-            <label>Guild ID<input name="qq_guild_id" value="${escapeHtml(editRule?.qq_guild_id || '')}" placeholder="频道私信可选" /></label>
-            <label>Channel ID<input name="qq_channel_id" value="${escapeHtml(editRule?.qq_channel_id || '')}" placeholder="频道可选" /></label>
+            <label>目标 ID<input name="qq_target_id" required value="${escapeHtml(editRule?.qq_target_id || '')}" placeholder="QQ openid 或微信 wxid" /></label>
+          </div>
+          <div data-target-panel="qq">
+            <div class="choice-list horizontal" id="qq-targets">${renderTargets(state.qqTargets || [], editRule)}</div>
+            <div class="grid-2">
+              <label>目标类型<select name="qq_target_type">
+                ${['group', 'c2c', 'channel', 'dms', 'friend'].map((item) => option(item, item, editRule?.qq_target_type || 'group')).join('')}
+              </select></label>
+              <label>Guild ID<input name="qq_guild_id" value="${escapeHtml(editRule?.qq_guild_id || '')}" placeholder="频道私信可选" /></label>
+              <label>Channel ID<input name="qq_channel_id" value="${escapeHtml(editRule?.qq_channel_id || '')}" placeholder="频道可选" /></label>
+            </div>
+          </div>
+          <div data-target-panel="weixin">
+            <div class="choice-list horizontal" id="weixin-contacts">${renderWeixinContacts(state.options?.weixin_contacts || [], editRule)}</div>
+            <p class="muted">没有联系人？让对方先给本微信号发一条消息，再刷新本页即可。</p>
           </div>
         </div>
         <div class="step-block">
@@ -112,6 +135,12 @@ export function bindRuleStudio(root, navigate) {
   const form = root.querySelector('#rule-form');
   if (!form) return;
   let dialogSearchSeq = 0;
+  syncPlatformPanels(form);
+  form.addEventListener('change', (event) => {
+    if (event.target?.name === 'target_platform' || event.target?.name === 'source_platform') {
+      syncPlatformPanels(form);
+    }
+  });
   root.querySelector('[data-action="search-dialogs"]')?.addEventListener('click', async () => {
     const query = root.querySelector('#dialog-query')?.value || '';
     const account = form.elements.source_account_id?.value || '';
@@ -139,11 +168,18 @@ export function bindRuleStudio(root, navigate) {
       selectDialog(target, form, root);
       return;
     }
+    if (target.dataset.weixinUser) {
+      setFormValue(form, 'target_platform', 'weixin');
+      setFormValue(form, 'qq_target_id', target.dataset.weixinUser || '');
+      syncPlatformPanels(form);
+    }
     if (target.dataset.targetId) {
+      setFormValue(form, 'target_platform', 'qq');
       setFormValue(form, 'qq_target_type', target.dataset.targetType || '');
       setFormValue(form, 'qq_target_id', target.dataset.targetId || '');
       setFormValue(form, 'qq_guild_id', target.dataset.guildId || '');
       setFormValue(form, 'qq_channel_id', target.dataset.channelId || '');
+      syncPlatformPanels(form);
     }
     if (target.dataset.action === 'insert-var') {
       const textarea = form.elements.namedItem('message_template');
@@ -215,6 +251,43 @@ function renderTargets(targets, editRule) {
   `).join('');
 }
 
+function renderWeixinContacts(contacts, editRule) {
+  if (!contacts.length) return '<span class="muted">还没有微信联系人。</span>';
+  return contacts.slice(0, 24).map((contact) => `
+    <button type="button" class="choice-card ${contact.user_id === editRule?.qq_target_id ? 'selected' : ''}" data-weixin-user="${escapeHtml(contact.user_id)}">
+      <strong>${contact.has_context_token ? '可发送' : '待对方发消息'}</strong>
+      <code>${escapeHtml(short(contact.user_id, 24))}</code>
+      <span>${escapeHtml(contact.name || contact.user_id)}</span>
+    </button>
+  `).join('');
+}
+
+function syncPlatformPanels(form) {
+  const target = form.elements.target_platform?.value || 'qq';
+  form.dataset.targetPlatform = target;
+  form.querySelectorAll('[data-target-panel]').forEach((panel) => {
+    panel.hidden = panel.dataset.targetPanel !== target;
+  });
+  const source = form.elements.source_platform?.value || '';
+  form.querySelectorAll('[data-source-panel]').forEach((panel) => {
+    panel.hidden = Boolean(source) && panel.dataset.sourcePanel !== source;
+  });
+  const typeSelect = form.elements.qq_target_type;
+  if (typeSelect) {
+    if (target === 'weixin') {
+      if (typeSelect.dataset.savedValue === undefined) typeSelect.dataset.savedValue = typeSelect.value;
+      typeSelect.value = 'friend';
+      typeSelect.disabled = true;
+    } else {
+      typeSelect.disabled = false;
+      if (typeSelect.dataset.savedValue) {
+        typeSelect.value = typeSelect.dataset.savedValue;
+        delete typeSelect.dataset.savedValue;
+      }
+    }
+  }
+}
+
 function renderDialogChoice(item) {
   return `
     <button type="button" class="choice-card" data-dialog-id="${escapeHtml(item.id)}" data-dialog-type="${escapeHtml(item.type)}" data-dialog-name="${escapeHtml(item.name)}" data-dialog-account="${escapeHtml(item.account_id || '')}">
@@ -227,11 +300,13 @@ function renderDialogChoice(item) {
 
 function selectDialog(button, form, root) {
   setFormValue(form, 'name', button.dataset.dialogName || '');
+  setFormValue(form, 'source_platform', 'telegram');
   setFormValue(form, 'source_chat_id', button.dataset.dialogId || '');
   setFormValue(form, 'source_chat_type', button.dataset.dialogType || '');
   if (button.dataset.dialogAccount) {
     setFormValue(form, 'source_account_id', button.dataset.dialogAccount);
   }
+  syncPlatformPanels(form);
   const container = root.querySelector('#dialog-results');
   if (container) {
     container.replaceChildren();
@@ -241,9 +316,10 @@ function selectDialog(button, form, root) {
 
 function payloadFromForm(form) {
   const value = (name) => form.elements[name]?.value?.trim?.() ?? '';
-  const nullableInt = (name) => {
+  const nullableId = (name) => {
     const text = value(name);
-    return text && text !== '*' ? Number(text) : null;
+    if (!text || text === '*') return null;
+    return /^-?\d+$/.test(text) ? Number(text) : text;
   };
   const nullableBool = (name) => {
     const text = value(name);
@@ -251,23 +327,27 @@ function payloadFromForm(form) {
     if (text === 'false') return false;
     return null;
   };
+  const targetPlatform = value('target_platform') || 'qq';
+  const isWeixinTarget = targetPlatform === 'weixin';
   return {
     name: value('name'),
     enabled: form.elements.enabled.checked,
+    source_platform: value('source_platform') || null,
     source_account_id: value('source_account_id') || null,
-    source_chat_id: nullableInt('source_chat_id'),
+    source_chat_id: nullableId('source_chat_id'),
     source_chat_type: value('source_chat_type') || null,
-    source_sender_id: nullableInt('source_sender_id'),
+    source_sender_id: nullableId('source_sender_id'),
     source_sender_is_bot: nullableBool('source_sender_is_bot'),
     match_mode: value('match_mode'),
     keywords: value('keywords'),
     text_include_regex: value('text_include_regex') || null,
     text_exclude_regex: value('text_exclude_regex') || null,
     media_types: value('media_types') || null,
-    qq_target_type: value('qq_target_type'),
+    target_platform: targetPlatform,
+    qq_target_type: isWeixinTarget ? 'friend' : value('qq_target_type'),
     qq_target_id: value('qq_target_id'),
-    qq_guild_id: value('qq_guild_id') || null,
-    qq_channel_id: value('qq_channel_id') || null,
+    qq_guild_id: isWeixinTarget ? null : value('qq_guild_id') || null,
+    qq_channel_id: isWeixinTarget ? null : value('qq_channel_id') || null,
     message_template: value('message_template'),
     priority: Number(value('priority') || 0),
   };
@@ -278,15 +358,17 @@ async function preview(form, root) {
   output.textContent = '渲染中…';
   try {
     const formPayload = payloadFromForm(form);
+    const isWeixin = formPayload.source_platform === 'weixin';
     const result = await api.previewRule({
       rule: formPayload,
       message: {
         text: form.elements.preview_text.value,
+        source_platform: formPayload.source_platform || 'telegram',
         account_id: formPayload.source_account_id || null,
-        chat_id: formPayload.source_chat_id || -1001234567890,
-        chat_title: 'Preview Channel',
-        chat_type: formPayload.source_chat_type || 'channel',
-        sender_id: formPayload.source_sender_id || 42,
+        chat_id: formPayload.source_chat_id || (isWeixin ? 'wxid_preview' : -1001234567890),
+        chat_title: isWeixin ? '微信好友' : 'Preview Channel',
+        chat_type: formPayload.source_chat_type || (isWeixin ? 'private' : 'channel'),
+        sender_id: formPayload.source_sender_id || (isWeixin ? 'wxid_preview' : 42),
         sender_username: 'preview_sender',
         sender_display_name: 'Preview Sender',
         sender_is_bot: false,

@@ -1,4 +1,4 @@
-import { api } from './api.js?v=20260707-rule-studio-2';
+import { api } from './api.js?v=20261018-weixin-1';
 
 export const state = {
   route: 'dashboard',

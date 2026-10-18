@@ -7,6 +7,8 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
+from app.platforms import Platform
+
 _VISIBLE_URL_RE = re.compile(
     r"""
     (?P<url>
@@ -105,11 +107,18 @@ class TelegramLink:
 
 @dataclass(slots=True)
 class TelegramForwardMessage:
-    message_id: int
-    chat_id: int | None
+    """统一的来源消息模型（Telegram / 微信共用）。
+
+    类名保留 ``Telegram`` 前缀是为了兼容既有调用方；实际由 ``source_platform``
+    标明来源平台。``chat_id`` / ``sender_id`` 在 Telegram 下是 int，
+    在个人微信下是 wxid 一类的字符串。
+    """
+
+    message_id: int | str
+    chat_id: int | str | None
     chat_title: str | None
     chat_type: str
-    sender_id: int | None
+    sender_id: int | str | None
     sender_username: str | None
     sender_display_name: str | None
     sender_is_bot: bool
@@ -128,6 +137,7 @@ class TelegramForwardMessage:
     account_id: str | None = None
     account_user_id: int | None = None
     account_username: str | None = None
+    source_platform: str = Platform.TELEGRAM.value
 
     def __post_init__(self) -> None:
         if self.media_path and not self.media_paths:
@@ -168,3 +178,11 @@ class TelegramForwardMessage:
         lines = ["链接："]
         lines.extend(f"- {link.plain}" for link in self.links if link.url)
         return "\n".join(lines)
+
+
+def id_key(value: object) -> str | None:
+    """把 int/str 形式的会话或发送者 ID 归一化成字符串，便于跨平台比较。"""
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None

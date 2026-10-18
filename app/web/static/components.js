@@ -29,6 +29,13 @@ export function statusPill(label, state = 'neutral') {
   return `<span class="pill pill-${state}"><i></i>${escapeHtml(label)}</span>`;
 }
 
+export function platformLabel(value) {
+  if (value === 'weixin') return '微信';
+  if (value === 'telegram') return 'TG';
+  if (value === 'qq') return 'QQ';
+  return '任意';
+}
+
 export function statTile(label, value, hint, state = 'neutral') {
   return `
     <article class="stat-tile stat-${state}">
@@ -119,10 +126,10 @@ export function ruleCard(rule) {
         ${state}
       </div>
       <div class="rule-route">
-        <code>账号 ${escapeHtml(rule.source_account_id ?? '*')}</code>
-        <code>TG ${escapeHtml(rule.source_chat_id ?? '*')}</code>
+        <code>${platformLabel(rule.source_platform)} · ${escapeHtml(rule.source_account_id ?? '*')}</code>
+        <code>${escapeHtml(rule.source_chat_id ?? '*')}</code>
         <span>→</span>
-        <code>${escapeHtml(rule.qq_target_type)}:${escapeHtml(short(rule.qq_target_id, 20))}</code>
+        <code>${platformLabel(rule.target_platform)} ${escapeHtml(rule.qq_target_type)}:${escapeHtml(short(rule.qq_target_id, 20))}</code>
       </div>
       <div class="chips">${keywords}</div>
       <div class="card-actions">
@@ -140,7 +147,7 @@ export function logRow(log) {
   return `
     <article class="log-row">
       <div>${statusPill(log.status, state)}<strong>#${escapeHtml(log.id)}</strong></div>
-      <p>账号 ${escapeHtml(log.tg_account_id ?? '-')} · TG ${escapeHtml(log.tg_chat_id ?? '-')} / ${escapeHtml(log.tg_message_id ?? '-')} → ${escapeHtml(log.qq_target_type)}:${escapeHtml(short(log.qq_target_id, 22))}</p>
+      <p>${platformLabel(log.source_platform)} 账号 ${escapeHtml(log.tg_account_id ?? '-')} · ${escapeHtml(log.tg_chat_id ?? '-')} / ${escapeHtml(log.tg_message_id ?? '-')} → ${platformLabel(log.target_platform)} ${escapeHtml(log.qq_target_type)}:${escapeHtml(short(log.qq_target_id, 22))}</p>
       <small>${escapeHtml(formatDate(log.created_at))} · 规则 ${escapeHtml(log.rule_id ?? '-')}</small>
       ${log.error_message ? `<pre>${escapeHtml(log.error_message)}</pre>` : ''}
     </article>

@@ -10,7 +10,7 @@ from app.rules.keywords import (
     keywords_to_text_include_regex,
 )
 from app.rules.matcher import RuleMatcher
-from app.rules.models import TelegramForwardMessage
+from app.rules.models import TelegramForwardMessage, id_key
 from app.rules.templates import templates_match
 from app.storage.db import Database
 from app.storage.models import ForwardLog, ForwardRule, ForwardStatus, utc_now
@@ -122,6 +122,7 @@ class ForwardRuleService:
             duplicate = ForwardRule(
                 name=name or f"{source.name} 副本",
                 enabled=source.enabled if enabled is None else enabled,
+                source_platform=source.source_platform,
                 source_account_id=source.source_account_id,
                 source_chat_id=source.source_chat_id,
                 source_chat_type=source.source_chat_type,
@@ -130,6 +131,7 @@ class ForwardRuleService:
                 text_include_regex=source.text_include_regex,
                 text_exclude_regex=source.text_exclude_regex,
                 media_types=list(source.media_types) if source.media_types else None,
+                target_platform=source.target_platform,
                 qq_target_type=source.qq_target_type,
                 qq_target_id=source.qq_target_id,
                 qq_guild_id=source.qq_guild_id,
@@ -165,13 +167,15 @@ class ForwardRuleService:
         return (
             left.name == right.name
             and left.enabled == right.enabled
+            and left.source_platform == right.source_platform
             and left.source_account_id == right.source_account_id
-            and left.source_chat_id == right.source_chat_id
+            and id_key(left.source_chat_id) == id_key(right.source_chat_id)
             and left.source_chat_type == right.source_chat_type
-            and left.source_sender_id == right.source_sender_id
+            and id_key(left.source_sender_id) == id_key(right.source_sender_id)
             and left.source_sender_is_bot == right.source_sender_is_bot
             and left.text_exclude_regex == right.text_exclude_regex
             and left.media_types == right.media_types
+            and left.target_platform == right.target_platform
             and left.qq_target_type == right.qq_target_type
             and left.qq_target_id == right.qq_target_id
             and left.qq_guild_id == right.qq_guild_id
@@ -221,6 +225,7 @@ class ForwardRuleService:
     ) -> None:
         log = ForwardLog(
             rule_id=rule.id if rule else None,
+            source_platform=message.source_platform,
             tg_account_id=message.account_id,
             tg_account_user_id=message.account_user_id,
             tg_chat_id=message.chat_id,
@@ -228,6 +233,7 @@ class ForwardRuleService:
             tg_sender_id=message.sender_id,
             tg_chat_title=message.chat_title,
             tg_sender_name=message.sender_name,
+            target_platform=rule.target_platform if rule else "qq",
             qq_target_type=rule.qq_target_type if rule else "unknown",
             qq_target_id=rule.qq_target_id if rule else "unknown",
             status=status.value,

@@ -1,22 +1,24 @@
 # TGQQ Forwarder
 
-TGQQ Forwarder 用于把指定 Telegram 消息自动转发到 QQ 官方机器人目标会话。Telegram 侧使用用户账号登录，QQ 侧使用 QQ 官方机器人 WebSocket 方式。
+TGQQ Forwarder 用于把指定消息自动转发到 QQ 官方机器人会话或个人微信好友。消息来源支持 Telegram 用户账号与个人微信（扫码登录），投递目标支持 QQ 官方机器人（WebSocket）与个人微信。
 
 ## 功能
 
 - 使用 Telethon 登录一个或多个 Telegram 用户账号。
 - 并行监听各账号可见的频道、群组、私聊、Bot 消息。
+- 支持个人微信作为来源与目标：扫码登录、长轮询收消息、按 wxid 定向发送。
 - 按规则筛选要转发的消息。
-- 支持按 Telegram 账号、会话、发送者、Bot 标记、关键词、文本正则、媒体类型匹配。
+- 支持按来源平台、Telegram 账号、会话、发送者、Bot 标记、关键词、文本正则、媒体类型匹配。
+- 规则可分别指定目标平台（QQ / 微信），因此同一来源可以同时转发到 QQ 群和微信好友。
 - 自动提取 Telegram 普通 URL、文字超链接和 URL 按钮；可见 URL 不重复追加，隐藏链接会以“文字: URL”形式显示。
 - 优先使用 QQ 原生 markdown 发送，若 QQ 官方接口拒绝 markdown，会自动降级为纯文本。
-- 定时清理 `data/media/` 下的 Telegram 媒体下载缓存。
+- 定时清理 `data/media/` 下的媒体下载缓存。
 - 自动聚合 Telegram 相册/多图图文消息，避免同一组图文被拆成多次转发。
 - 使用 QQ 官方机器人 WebSocket 模式连接 QQ。
 - 支持转发到 QQ 群、C2C、频道、频道私信场景。
 - 通过 Telegram 管理 Bot 查看状态、管理规则、查询日志。
-- 提供 Telegram Mini App 管理台，可用可视化规则工坊管理关键词、目标、模板、日志和暂停状态。
-- 内置 RSS / RSSHub 订阅：在管理台「订阅」入口统一管理，新条目自动发布到指定 Telegram 频道，再按既有规则转发到 QQ。可选把非中文条目自动翻译成中文（原文在上、译文在下）。
+- 提供 Telegram Mini App 管理台，可用可视化规则工坊管理关键词、目标、模板、日志和暂停状态；系统页可直接扫码登录个人微信。
+- 内置 RSS / RSSHub 订阅：在管理台「订阅」入口统一管理，新条目自动发布到指定 Telegram 频道，再按既有规则转发到 QQ / 微信。可选把非中文条目自动翻译成中文（原文在上、译文在下）。
 - 使用 Docker Compose 部署到 VPS。
 - 推送 `v*` 标签时，GitHub Actions 自动构建 Docker 镜像并发布到 GitHub Container Registry。
 
@@ -31,14 +33,19 @@ TGQQ Forwarder 用于把指定 Telegram 消息自动转发到 QQ 官方机器人
 7. RSS 订阅为进程内单实例调度；Telegram 发送在“响应丢失 / 进程中断”后不能保证 exactly-once，重试可能造成重复发布。条目去重与“首次基线”策略可避免正常情况下的重复推送。
 8. RSS 抓取默认禁止访问非公网地址（SSRF 防护）。自建 RSSHub 与转发器同机时，需把主机名加入 `RSS_ALLOWED_PRIVATE_HOSTS` 白名单。
 9. RSS 自动翻译使用 OpenAI 兼容的 `/v1/chat/completions` 接口（可自选服务商与模型），译文质量与限流取决于所选服务；翻译失败会自动回退原文，不影响发布。
+10. **个人微信只能“回复”最近主动给本号发过消息的联系人**。微信 iLink 协议要求每次发送都携带该联系人的 `context_token`，它只能从对方发来的消息中获得。因此转发到微信前，需要对方先发一条消息；收到后程序会自动缓存，并在 `data/weixin/<账号>/credentials.json` 中持久化。
+11. 个人微信走的是腾讯 `openclaw-weixin` / iLink 通道（扫码登录 + 长轮询），不是公开稳定的开放平台接口，协议细节可能调整；登录态失效（`errcode=-14`）时程序会清空凭证并重新等待扫码。
+12. 微信来源只支持好友私聊（1:1），不支持群聊；语音消息保存为 `.silk`，不做转码。
 
 ## 文件结构
 
 ```text
 app/
   main.py                    # 主入口
+  channels/                  # 跨平台投递路由（QQ / 微信）
   telegram_user/             # Telegram 用户账号登录与监听
   telegram_admin/            # Telegram 管理 Bot
+  weixin/                    # 个人微信 iLink 通道（扫码登录、长轮询、媒体加解密）
   qq_official/               # QQ 官方机器人 WebSocket 发送模块
   rules/                     # 转发规则匹配与格式化
   rss/                       # RSS / RSSHub 订阅抓取、去重、发布与调度
@@ -301,17 +308,93 @@ MINI_APP_ALLOWED_ORIGINS=https://你的域名.example.com
 # 单条 QQ 发送（含多图与重试）总超时；超时后记失败并继续消费队列
 QQ_SEND_TIMEOUT_SECONDS=120
 FORWARD_QUEUE_SIZE=1000
+
+# 个人微信（可选，默认关闭）。开启后可用扫码登录，把微信消息转发到 QQ，
+# 或把 Telegram 消息转发到微信好友。
+WEIXIN_ENABLED=false
+WEIXIN_ACCOUNT_ID=default
+# 登录凭证与 context_token 落盘目录（0600 权限，等同账号凭据）
+WEIXIN_STATE_DIR=/app/data/weixin
+WEIXIN_BASE_URL=https://ilinkai.weixin.qq.com
+WEIXIN_CDN_BASE_URL=https://novac2c.cdn.weixin.qq.com/c2c
+# 扫码 bot 类型，与 openclaw-weixin 默认值一致，一般无需修改
+WEIXIN_BOT_TYPE=3
+# 长轮询超时与接口超时（秒）
+WEIXIN_LONG_POLL_TIMEOUT_SECONDS=35
+WEIXIN_API_TIMEOUT_SECONDS=60
+# 二维码轮询间隔与最多自动刷新次数
+WEIXIN_QR_POLL_INTERVAL_SECONDS=1.5
+WEIXIN_QR_MAX_REFRESH=3
+# 单条微信发送超时（秒）与单条文本长度上限（超长会自动分段）
+WEIXIN_SEND_TIMEOUT_SECONDS=60
+WEIXIN_MAX_TEXT_CHARS=1500
+# 微信媒体收发开关与单文件大小上限
+WEIXIN_DOWNLOAD_MEDIA=true
+WEIXIN_SEND_MEDIA=true
+WEIXIN_MAX_MEDIA_MB=20
 ```
+
+## 个人微信（扫码登录）
+
+个人微信通过腾讯 `openclaw-weixin`（iLink / ClawBot）通道接入：扫码登录换取 `bot_token`，随后用长轮询 `ilink/bot/getupdates` 收消息、`ilink/bot/sendmessage` 发消息，**不需要 Webhook 回调地址，也不需要 AppID / Secret**。
+
+### 1. 开启通道
+
+在 `.env` 中设置 `WEIXIN_ENABLED=true` 后重启容器：
+
+```bash
+docker compose up -d
+```
+
+首次启动没有凭证时，服务会自动申请二维码，日志里会打印二维码图片路径和链接：
+
+```bash
+docker compose logs -f | grep -i weixin
+```
+
+### 2. 扫码登录（两种方式任选）
+
+方式 A：终端扫码登录（推荐，Docker 部署同样适用）
+
+```bash
+docker compose run --rm tgqq-forwarder python -m app.weixin.login
+```
+
+程序会打印二维码图片路径（`/app/data/weixin/default/login-qrcode.png`）或二维码链接，用微信「扫一扫」后在手机上确认即可。凭证写入 `data/weixin/<账号>/credentials.json`，重启后自动复用。
+
+方式 B：管理台扫码
+
+打开 Telegram Mini App 管理台 → 「系统」页 → 「个人微信」面板 → 「扫码登录」，二维码会直接显示在页面上，扫码确认后状态自动变为「已登录」。
+
+### 3. 配置规则
+
+在规则工坊里：
+
+- **来源平台** 选 `Telegram` 或 `个人微信`，留空表示任意；
+- **目标平台** 选 `QQ 机器人` 或 `个人微信`；
+- 目标是微信时，「目标 ID」选一个已缓存联系人（wxid）。
+
+微信目标只能发给最近主动给本号发过消息的联系人，因为协议要求每次发送都带上该联系人的 `context_token`。联系人列表会随收到的消息自动累积，可在规则工坊的微信联系人卡片中直接选择。
+
+### 4. 常见问题
+
+| 现象 | 原因与处理 |
+| --- | --- |
+| 日志提示「微信需要扫码登录」 | 没有凭证或凭证失效，按上面步骤扫码 |
+| 发送失败：缺少 context_token | 对方还没有给本号发过消息，先让对方发一条 |
+| 登录态失效（errcode=-14） | 手机端退出了登录或长时间未使用，程序会清空凭证并重新等待扫码 |
+| 二维码反复过期 | 已自动刷新 3 次后停止；重新点击「扫码登录」或重启服务 |
+| 只想微信→QQ，不需要 Telegram | 设置 `TELEGRAM_ENABLED=false`、`QQ_ENABLED=false/true` 按需组合 |
 
 ## Telegram Mini App 管理台
 
 本项目内置一个 Telegram Mini App 管理台，用于替代复杂的 `/add_rule` 长命令。管理台提供：
 
-- 运行状态总览：Telegram 连接、QQ WebSocket、转发暂停状态、队列深度。
-- 规则工坊：选择 Telegram 会话、QQ 目标，编辑关键词、正则、媒体类型、模板并实时预览。
+- 运行状态总览：Telegram 连接、QQ WebSocket、个人微信登录态、转发暂停状态、队列深度。
+- 规则工坊：选择来源平台/会话、目标平台/目标，编辑关键词、正则、媒体类型、模板并实时预览。
 - 规则库：编辑、复制、启用/禁用、删除规则，关键词规则会自动解码显示。
-- 日志页：查看最近转发结果和错误。
-- 系统页：查看 Mini App 部署状态和排查提示。
+- 日志页：查看最近转发结果和错误（含来源/目标平台）。
+- 系统页：查看 Mini App 部署状态、个人微信扫码登录与排查提示。
 
 ### Mini App 配置
 

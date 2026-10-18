@@ -8,6 +8,7 @@ license = "MIT"
 dependencies = [
   "aiofiles>=25.1.0",
   "aiosqlite>=0.21.0",
+  "cryptography>=43.0.0",
   "fastapi>=0.115.0",
   "feedparser>=6.0.11",
   "httpx[socks]>=0.28.1",
@@ -32,6 +33,7 @@ dev = [
 [project.scripts]
 tgqq-forwarder = "app.main:cli"
 tgqq-login = "app.telegram_user.login:cli"
+tgqq-weixin-login = "app.weixin.login:cli"
 
 [tool.setuptools.packages.find]
 include = ["app*"]

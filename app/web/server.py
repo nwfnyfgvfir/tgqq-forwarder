@@ -28,6 +28,7 @@ class MiniAppServer:
         queue_status_getter,
         rss_service=None,
         rss_worker=None,
+        weixin_service=None,
     ) -> None:
         self.settings = settings
         self.app = create_mini_app(
@@ -39,6 +40,7 @@ class MiniAppServer:
             queue_status_getter=queue_status_getter,
             rss_service=rss_service,
             rss_worker=rss_worker,
+            weixin_service=weixin_service,
         )
         self.server: _EmbeddedUvicornServer | None = None
         self._task: asyncio.Task | None = None

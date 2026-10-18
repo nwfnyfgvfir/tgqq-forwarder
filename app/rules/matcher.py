@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import re
 
-from app.rules.models import TelegramForwardMessage
+from app.rules.models import TelegramForwardMessage, id_key
 from app.storage.models import ForwardRule
 
 logger = logging.getLogger(__name__)
@@ -14,19 +14,26 @@ class RuleMatcher:
         if not rule.enabled:
             return False
 
+        if rule.source_platform and rule.source_platform != message.source_platform:
+            return False
+
         if (
             rule.source_account_id is not None
             and rule.source_account_id != message.account_id
         ):
             return False
 
-        if rule.source_chat_id is not None and rule.source_chat_id != message.chat_id:
+        if rule.source_chat_id is not None and id_key(rule.source_chat_id) != id_key(
+            message.chat_id
+        ):
             return False
 
         if rule.source_chat_type and rule.source_chat_type != message.chat_type:
             return False
 
-        if rule.source_sender_id is not None and rule.source_sender_id != message.sender_id:
+        if rule.source_sender_id is not None and id_key(rule.source_sender_id) != id_key(
+            message.sender_id
+        ):
             return False
 
         if (

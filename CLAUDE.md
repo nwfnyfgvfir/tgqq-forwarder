@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project overview
 
-TGQQ Forwarder forwards selected Telegram user-account messages to QQ Official Bot target sessions. Telegram is handled through a logged-in user session with Telethon; QQ delivery uses QQ Official Bot WebSocket/API via `botpy`.
+TGQQ Forwarder forwards selected messages to QQ Official Bot target sessions and/or personal WeChat friends. Sources are Telegram user accounts (Telethon) and personal WeChat (Tencent iLink / `openclaw-weixin` channel: QR login + long polling). QQ delivery uses QQ Official Bot WebSocket/API via `botpy`; WeChat delivery uses `ilink/bot/sendmessage`.
 
 User-facing documentation in this repository is written in Chinese.
 
@@ -32,6 +32,9 @@ conda run -n tgqq-forwarder python -m ruff check .
 conda run -n tgqq-forwarder python -m app.telegram_user.login --account all
 conda run -n tgqq-forwarder python -m app.telegram_user.login --account main
 conda run -n tgqq-forwarder python -m app.main
+
+# Personal WeChat QR login (writes data/weixin/<account>/credentials.json)
+conda run -n tgqq-forwarder python -m app.weixin.login --account default
 ```
 
 Docker deployment commands:
@@ -49,6 +52,9 @@ docker compose down
 docker compose run --rm tgqq-forwarder python -m app.telegram_user.login --account all
 docker compose run --rm tgqq-forwarder python -m app.telegram_user.login --account main
 
+# First personal WeChat login in Docker (prints QR image path / link)
+docker compose run --rm tgqq-forwarder python -m app.weixin.login
+
 # Local image build instead of GHCR image
 docker compose -f docker-compose.build.yml up -d --build
 ```
@@ -62,8 +68,8 @@ Package/build references:
 ## Configuration and runtime data
 
 - `app/config.py` defines `Settings` with `pydantic-settings`; environment variables map directly to field names, e.g. `telegram_api_id` → `TELEGRAM_API_ID`.
-- `Settings.validate_runtime_requirements()` requires Telegram API credentials and QQ bot credentials before startup.
-- `get_settings()` creates runtime directories for data, logs, media, and Telegram sessions.
+- `Settings.validate_runtime_requirements()` requires Telegram API credentials only when `TELEGRAM_ENABLED` (default true), and QQ bot credentials only when `QQ_ENABLED` (default true). `WEIXIN_ENABLED` needs no static credentials.
+- `get_settings()` creates runtime directories for data, logs, media, Telegram sessions, and WeChat state.
 - Runtime data defaults under `data/`: SQLite DB, logs, Telegram media cache, and Telegram user session.
 - `TELEGRAM_SESSION_PATH` is the legacy single-account session path (maps to account id `default`) and should be treated as account credentials.
 - Multi-account config uses `TELEGRAM_ACCOUNTS_JSON` (`[{id, session_path?, phone?, enabled?, api_id?, api_hash?}, ...]`).
@@ -87,7 +93,7 @@ Important media/link settings:
 
 1. Load settings and configure logging.
 2. Initialize SQLite/SQLModel database.
-3. Start QQ sender, forwarding queue, media cleanup worker, Telegram account manager (N user listeners), and optional Telegram admin bot.
+3. Start QQ sender (skipped when `QQ_ENABLED=false`), forwarding queue, media cleanup worker, Telegram account manager (N user listeners, skipped when `TELEGRAM_ENABLED=false`), WeChat service, and optional Telegram admin bot.
 4. Stop components in reverse order on shutdown.
 
 ### Telegram ingestion path
@@ -116,11 +122,18 @@ Rules and logs are SQLModel tables in `app/storage/models.py`, accessed through 
 
 `app/rules/service.py` combines repositories, `RuleMatcher`, and `MessageFormatter`:
 
-- `RuleMatcher` filters by enabled state, Telegram account id, chat ID/type, sender ID/bot flag, media type, include regex, and exclude regex.
+- `RuleMatcher` filters by enabled state, source platform, Telegram/WeChat account id, chat ID/type, sender ID/bot flag, media type, include regex, and exclude regex.
 - Keyword rules are encoded/decoded in `app/rules/keywords.py` as regex with metadata.
 - `MessageFormatter` renders rule templates, appends missing hidden/button links, and avoids duplicate visible URL notes.
 
-`app/worker/forward_queue.py` consumes parsed Telegram messages, skips work when forwarding is paused, finds matching rules, formats text, builds `QQOutboundMessage`, sends via QQ, and records `ForwardLog` success/failure entries.
+`app/worker/forward_queue.py` consumes parsed messages, skips work when forwarding is paused, finds matching rules, formats text, and hands delivery to `app/channels/router.py` (`DeliveryRouter`), which dispatches by `rule.target_platform` to the QQ sender or the WeChat service and records `ForwardLog` success/failure entries.
+
+Rule platform semantics:
+
+- `ForwardRule.source_platform` is `telegram` / `weixin` / `null` (null = any platform, the legacy behaviour).
+- `ForwardRule.target_platform` is `qq` (default) or `weixin`.
+- Delivery targets keep the historical `qq_*` column names to avoid a data migration: for WeChat rules `qq_target_type` is fixed to `friend` and `qq_target_id` holds the WeChat `user_id`/wxid.
+- `source_chat_id` / `source_sender_id` / log ID columns use `FlexibleId` (TEXT affinity, numeric values still read back as `int`) so Telegram integer IDs and WeChat string IDs share the same columns.
 
 ### QQ integration
 
@@ -132,6 +145,18 @@ Rules and logs are SQLModel tables in `app/storage/models.py`, accessed through 
 - Multiple media files are sent sequentially; the first media carries full text and later media use continuation text.
 - Group/C2C media uses QQ media upload; channel/DMS image sending uses `file_image`; unsupported media can degrade to a text note.
 - QQ markdown is attempted when enabled and falls back to plain text if QQ rejects native markdown.
+
+### WeChat integration
+
+`app/weixin/` implements the personal-WeChat channel used by AstrBot's `weixin_oc` adapter:
+
+- `client.py`: `WeixinIlinkClient` over httpx. Endpoints: `ilink/bot/get_bot_qrcode`, `ilink/bot/get_qrcode_status`, `ilink/bot/getupdates` (long poll, cursor = `get_updates_buf`), `ilink/bot/sendmessage`, `ilink/bot/getuploadurl`. Required headers: `AuthorizationType: ilink_bot_token`, random `X-WECHAT-UIN`, `Authorization: Bearer <bot_token>`; QR status polling adds `iLink-App-ClientVersion: 1`. `errcode/ret == -14` means the login session expired.
+- `crypto.py`: media uses AES-128-ECB + PKCS#7; `aes_key` may be base64(raw 16 bytes) or base64(32 hex chars).
+- `media.py`: inbound media is downloaded from the CDN and decrypted; outbound media is encrypted, uploaded, and referenced by the `x-encrypted-param` response header.
+- `credentials.py`: `data/weixin/<account>/credentials.json` (0600) stores `bot_token`, the long-poll cursor, per-contact `context_token`, and known contacts.
+- `service.py`: `WeixinService` owns the login state machine, the long-poll loop, reconnect/backoff, inbound parsing into `TelegramForwardMessage` (`source_platform="weixin"`, `chat_id` = wxid), and outbound sending.
+- **Protocol constraint**: `sendmessage` requires the recipient's `context_token`, which only arrives with an inbound message from that contact. Forwarding to WeChat therefore only works for contacts who have messaged the account; tokens are cached and persisted.
+- `app/web/app.py` exposes `/api/weixin/status`, `/api/weixin/contacts`, `POST/GET /api/weixin/login`, `POST /api/weixin/logout`; the Mini App system page renders the QR code from `login.image_data_url`.
 
 ### Telegram admin bot
 
@@ -157,3 +182,9 @@ Existing tests are organized by subsystem:
 - `tests/test_media_downloader.py`: media download and link preview skip behavior.
 - `tests/test_admin_commands.py`: admin command argument parsing.
 - `tests/test_db.py`: database/repository/service behavior.
+- `tests/test_weixin_crypto.py`: PKCS#7 + AES-ECB roundtrip and `aes_key` parsing.
+- `tests/test_weixin_client.py`: iLink request headers/payloads, envelope unwrapping, errcode handling, media upload/download (httpx `MockTransport`).
+- `tests/test_weixin_service.py`: inbound parsing, dedupe, context_token caching, send splitting, QR login flow, session expiry.
+- `tests/test_weixin_api.py`: Mini App WeChat endpoints and platform-aware rule creation.
+- `tests/test_delivery_router.py`: target-platform dispatch, disabled channel, timeout wrapping.
+- `tests/test_rule_platforms.py`: platform matching, string IDs, schema normalisation, DB roundtrip.

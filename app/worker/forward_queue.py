@@ -4,12 +4,13 @@ import asyncio
 import logging
 import time
 
+from app.channels.router import DeliveryError, DeliveryRouter
 from app.config import Settings
-from app.qq_official.models import QQOutboundMessage
 from app.qq_official.sender import QQOfficialSender
 from app.rules.models import TelegramForwardMessage
 from app.rules.service import ForwardRuleService
 from app.storage.models import ForwardRule, ForwardStatus
+from app.weixin.service import WeixinService
 
 logger = logging.getLogger(__name__)
 
@@ -20,10 +21,15 @@ class ForwardQueue:
         settings: Settings,
         service: ForwardRuleService,
         qq_sender: QQOfficialSender,
+        weixin_service: WeixinService | None = None,
+        *,
+        router: DeliveryRouter | None = None,
     ) -> None:
         self.settings = settings
         self.service = service
         self.qq_sender = qq_sender
+        self.weixin_service = weixin_service
+        self.router = router or DeliveryRouter(settings, qq_sender, weixin_service)
         self.queue: asyncio.Queue[TelegramForwardMessage] = asyncio.Queue(
             maxsize=settings.forward_queue_size
         )
@@ -235,27 +241,8 @@ class ForwardQueue:
 
         for rule in rules:
             forwarded_text = self.service.formatter.format(rule, message)
-            outbound = QQOutboundMessage(
-                target_type=rule.qq_target_type,
-                target_id=rule.qq_channel_id or rule.qq_target_id,
-                text=forwarded_text,
-                media_path=message.media_path,
-                media_type=message.media_type,
-                media_paths=message.media_paths,
-                media_types=message.media_types,
-                media_caption=rule.name.strip() or "媒体",
-                guild_id=rule.qq_guild_id,
-                channel_id=rule.qq_channel_id,
-            )
             try:
-                timeout = self.settings.qq_send_timeout_seconds
-                if timeout and timeout > 0:
-                    await asyncio.wait_for(
-                        self.qq_sender.send(outbound),
-                        timeout=timeout,
-                    )
-                else:
-                    await self.qq_sender.send(outbound)
+                await self.router.deliver(rule, message, forwarded_text)
                 await self._safe_add_forward_log(
                     rule=rule,
                     message=message,
@@ -263,21 +250,26 @@ class ForwardQueue:
                     forwarded_text=forwarded_text,
                 )
                 logger.info(
-                    "Forwarded Telegram message %s from account %s chat %s by rule %s to QQ %s:%s",
+                    "Forwarded %s message %s from account %s chat %s by rule %s to %s %s:%s",
+                    message.source_platform,
                     message.message_id,
                     message.account_id,
                     message.chat_id,
                     rule.id,
+                    getattr(rule, "target_platform", "qq"),
                     rule.qq_target_type,
                     rule.qq_target_id,
                 )
             except Exception as exc:
-                logger.exception("Failed to forward Telegram message by rule %s", rule.id)
+                logger.exception("Failed to forward message by rule %s", rule.id)
                 error_message = str(exc).strip() or type(exc).__name__
                 if isinstance(exc, TimeoutError):
                     error_message = (
-                        f"QQ send timed out after {self.settings.qq_send_timeout_seconds}s"
+                        f"发送超时（QQ {self.settings.qq_send_timeout_seconds}s / "
+                        f"微信 {self.settings.weixin_send_timeout_seconds}s）"
                     )
+                elif isinstance(exc, DeliveryError):
+                    error_message = str(exc)
                 await self._safe_add_forward_log(
                     rule=rule,
                     message=message,

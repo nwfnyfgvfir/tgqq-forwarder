@@ -186,6 +186,8 @@ class Settings(BaseSettings):
 
     telegram_api_id: int = 0
     telegram_api_hash: str = ""
+    # 只做微信 / 只做 QQ 时可以关掉 Telegram 监听（默认开启，行为与历史版本一致）
+    telegram_enabled: bool = True
     # Root directory for multi-account sessions: <dir>/<account_id>/account.session
     telegram_sessions_dir: Path = Path("data/sessions")
     # Legacy single-account session file. Used only when TELEGRAM_ACCOUNTS_JSON is unset.
@@ -389,6 +391,27 @@ class Settings(BaseSettings):
     qq_use_markdown: bool = True
     # Hard cap for one QQ outbound send (includes multi-media sequence + retries).
     qq_send_timeout_seconds: float = 120.0
+    # 只做微信收发时可以关掉 QQ 目标（默认开启，行为与历史版本一致）
+    qq_enabled: bool = True
+
+    # ---------------- 个人微信（腾讯 iLink / ClawBot 协议） ----------------
+    # 扫码登录 + 长轮询，不需要 AppID / Secret / Webhook。
+    weixin_enabled: bool = False
+    weixin_account_id: str = "default"
+    # 登录凭证（bot_token / context_token / 长轮询游标）落盘目录
+    weixin_state_dir: Path = Path("data/weixin")
+    weixin_base_url: str = "https://ilinkai.weixin.qq.com"
+    weixin_cdn_base_url: str = "https://novac2c.cdn.weixin.qq.com/c2c"
+    weixin_bot_type: str = "3"
+    weixin_long_poll_timeout_seconds: float = 35.0
+    weixin_api_timeout_seconds: float = 60.0
+    weixin_qr_poll_interval_seconds: float = 1.5
+    weixin_qr_max_refresh: int = 3
+    weixin_send_timeout_seconds: float = 60.0
+    weixin_max_text_chars: int = 1500
+    weixin_download_media: bool = True
+    weixin_send_media: bool = True
+    weixin_max_media_mb: int = 20
 
     forward_queue_size: int = 1000
     default_message_template: str = DEFAULT_MESSAGE_TEMPLATE
@@ -422,6 +445,28 @@ class Settings(BaseSettings):
             raise ValueError("TELEGRAM_API_ID must be >= 0")
         return value
 
+    @field_validator("weixin_account_id")
+    @classmethod
+    def validate_weixin_account_id(cls, value: str) -> str:
+        text = (value or "").strip()
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", text) is None:
+            raise ValueError(
+                "WEIXIN_ACCOUNT_ID must match [A-Za-z0-9][A-Za-z0-9_-]{0,63}"
+            )
+        return text
+
+    @field_validator("weixin_base_url", "weixin_cdn_base_url", mode="before")
+    @classmethod
+    def validate_weixin_urls(cls, value: object) -> object:
+        if not isinstance(value, str):
+            raise TypeError("WEIXIN_BASE_URL / WEIXIN_CDN_BASE_URL must be URL strings")
+        text = value.strip()
+        if not text:
+            raise ValueError("WEIXIN_BASE_URL / WEIXIN_CDN_BASE_URL must not be empty")
+        if urlsplit(text).scheme.lower() not in {"http", "https"}:
+            raise ValueError("WEIXIN_BASE_URL / WEIXIN_CDN_BASE_URL must start with http(s)://")
+        return text
+
     @model_validator(mode="after")
     def build_telegram_accounts(self) -> Settings:
         self.telegram_accounts = _parse_accounts_payload(
@@ -454,6 +499,7 @@ class Settings(BaseSettings):
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.media_dir.mkdir(parents=True, exist_ok=True)
         self.telegram_sessions_dir.mkdir(parents=True, exist_ok=True)
+        self.weixin_state_dir.mkdir(parents=True, exist_ok=True)
         for account in self.telegram_accounts:
             account.session_path.parent.mkdir(parents=True, exist_ok=True)
         # Keep legacy path parent for older docs/tools.
@@ -461,14 +507,16 @@ class Settings(BaseSettings):
 
     def validate_runtime_requirements(self) -> None:
         missing: list[str] = []
-        if not self.telegram_api_id:
-            missing.append("TELEGRAM_API_ID")
-        if not self.telegram_api_hash:
-            missing.append("TELEGRAM_API_HASH")
-        if not self.qq_bot_appid:
-            missing.append("QQ_BOT_APPID")
-        if not self.qq_bot_secret:
-            missing.append("QQ_BOT_SECRET")
+        if self.telegram_enabled:
+            if not self.telegram_api_id:
+                missing.append("TELEGRAM_API_ID")
+            if not self.telegram_api_hash:
+                missing.append("TELEGRAM_API_HASH")
+        if self.qq_enabled:
+            if not self.qq_bot_appid:
+                missing.append("QQ_BOT_APPID")
+            if not self.qq_bot_secret:
+                missing.append("QQ_BOT_SECRET")
         if self.mini_app_enabled:
             if not self.tg_admin_bot_token:
                 missing.append("TG_ADMIN_BOT_TOKEN")
@@ -477,8 +525,12 @@ class Settings(BaseSettings):
         if missing:
             joined = ", ".join(missing)
             raise RuntimeError(f"Missing required settings: {joined}")
-        if not self.enabled_telegram_accounts():
+        if self.telegram_enabled and not self.enabled_telegram_accounts():
             raise RuntimeError("No enabled Telegram accounts configured")
+        if not (self.telegram_enabled or self.qq_enabled or self.weixin_enabled):
+            raise RuntimeError(
+                "No channel enabled: set TELEGRAM_ENABLED / QQ_ENABLED / WEIXIN_ENABLED"
+            )
 
 
 @lru_cache(maxsize=1)

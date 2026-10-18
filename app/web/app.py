@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from app.config import Settings
+from app.platforms import Platform
 from app.qq_official.client import QQTargetInfo
 from app.rss.errors import RssError
 from app.rss.service import RssService
@@ -42,7 +43,12 @@ from app.web.schemas import (
     RuleUpdateRequest,
     StatusResponse,
     TelegramAccountStatusResponse,
+    WeixinContactResponse,
+    WeixinLoginResponse,
+    WeixinStatusResponse,
 )
+from app.weixin.models import WeixinError
+from app.weixin.service import WeixinService
 
 STATIC_DIR = Path(__file__).with_name("static")
 TEMPLATE_VARIABLES = [
@@ -98,6 +104,7 @@ def create_mini_app(
     queue_status_getter: Callable[[], dict[str, object]],
     rss_service: RssService | None = None,
     rss_worker: RssWorker | None = None,
+    weixin_service: WeixinService | None = None,
 ) -> FastAPI:
     app = FastAPI(title="TGQQ Forwarder Mini App", docs_url=None, redoc_url=None)
     if settings.mini_app_allowed_origins:
@@ -154,6 +161,13 @@ def create_mini_app(
                 TelegramAccountStatusResponse.from_status(item) for item in account_statuses
             ],
             qq_status=qq_status_getter(),
+            qq_enabled=settings.qq_enabled,
+            telegram_enabled=settings.telegram_enabled,
+            weixin=(
+                WeixinStatusResponse.from_status(weixin_service.status())
+                if weixin_service is not None
+                else None
+            ),
             forwarding_paused=await service.is_paused(),
             total_rules=total_rules,
             enabled_rules=enabled_rules,
@@ -230,6 +244,73 @@ def create_mini_app(
         _ = session
         return [QQTargetResponse.from_target(target) for target in qq_targets_getter()]
 
+    def _require_weixin() -> WeixinService:
+        if weixin_service is None or not weixin_service.enabled:
+            raise api_error(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "weixin_disabled",
+                "微信通道未启用，请设置 WEIXIN_ENABLED=true 并重启",
+            )
+        return weixin_service
+
+    @app.get("/api/weixin/status", response_model=WeixinStatusResponse)
+    async def weixin_status(
+        session: MiniAppSession = Depends(require_admin_session),
+    ) -> WeixinStatusResponse:
+        _ = session
+        return WeixinStatusResponse.from_status(_require_weixin().status())
+
+    @app.get("/api/weixin/contacts", response_model=list[WeixinContactResponse])
+    async def weixin_contacts(
+        session: MiniAppSession = Depends(require_admin_session),
+    ) -> list[WeixinContactResponse]:
+        _ = session
+        return [
+            WeixinContactResponse.from_contact(contact)
+            for contact in _require_weixin().list_contacts()
+        ]
+
+    @app.post("/api/weixin/login", response_model=WeixinLoginResponse)
+    async def weixin_login(
+        session: MiniAppSession = Depends(require_admin_session),
+        force: bool = False,
+    ) -> WeixinLoginResponse:
+        _ = session
+        service_ = _require_weixin()
+        try:
+            login = await service_.begin_login(force=force)
+        except WeixinError as exc:
+            raise api_error(
+                status.HTTP_502_BAD_GATEWAY,
+                "weixin_login_failed",
+                str(exc),
+            ) from exc
+        return WeixinLoginResponse.from_login(login)
+
+    @app.get("/api/weixin/login", response_model=WeixinLoginResponse)
+    async def weixin_login_status(
+        session: MiniAppSession = Depends(require_admin_session),
+    ) -> WeixinLoginResponse:
+        _ = session
+        service_ = _require_weixin()
+        try:
+            login = await service_.refresh_login_status()
+        except WeixinError as exc:
+            raise api_error(
+                status.HTTP_502_BAD_GATEWAY,
+                "weixin_login_failed",
+                str(exc),
+            ) from exc
+        return WeixinLoginResponse.from_login(login)
+
+    @app.post("/api/weixin/logout")
+    async def weixin_logout(
+        session: MiniAppSession = Depends(require_admin_session),
+    ) -> dict[str, bool]:
+        _ = session
+        await _require_weixin().logout()
+        return {"logged_out": True}
+
     @app.get("/api/rules", response_model=list[RuleResponse])
     async def rules(
         session: MiniAppSession = Depends(require_admin_session),
@@ -246,7 +327,7 @@ def create_mini_app(
         session: MiniAppSession = Depends(require_admin_session),
     ) -> RuleCreateResponse:
         _ = session
-        _validate_source_account(payload.source_account_id)
+        _validate_source_account(payload.source_account_id, payload.source_platform)
         result = await service.create_or_merge_rule(payload.to_rule())
         return RuleCreateResponse(
             rule=RuleResponse.from_rule(result.rule),
@@ -297,6 +378,11 @@ def create_mini_app(
             if "sender_is_bot" not in message_fields and rule.source_sender_is_bot is not None
             else payload.message.sender_is_bot
         )
+        preview_platform = (
+            payload.message.source_platform
+            if "source_platform" in message_fields
+            else (rule.source_platform or payload.message.source_platform)
+        )
         message = TelegramForwardMessage(
             message_id=1,
             chat_id=preview_chat_id,
@@ -311,6 +397,7 @@ def create_mini_app(
             media_path=None,
             date=None,
             account_id=preview_account_id,
+            source_platform=preview_platform,
             links=[
                 TelegramLink(
                     text=str(item.get("text") or item.get("url") or ""),
@@ -352,7 +439,7 @@ def create_mini_app(
         session: MiniAppSession = Depends(require_admin_session),
     ) -> RuleResponse:
         _ = session
-        _validate_source_account(payload.source_account_id)
+        _validate_source_account(payload.source_account_id, payload.source_platform)
         rule = await service.update_rule(rule_id, payload.to_rule_values())
         if rule is None:
             raise api_error(status.HTTP_404_NOT_FOUND, "rule_not_found", "规则不存在")
@@ -420,23 +507,41 @@ def create_mini_app(
         session: MiniAppSession = Depends(require_admin_session),
     ) -> OptionsResponse:
         _ = session
+        weixin_status_snapshot = (
+            WeixinStatusResponse.from_status(weixin_service.status())
+            if weixin_service is not None
+            else None
+        )
         return OptionsResponse(
-            qq_target_types=[item.value for item in QQTargetType],
+            qq_target_types=[item.value for item in QQTargetType] + ["friend"],
             chat_types=["private", "group", "channel", "unknown"],
             media_types=MEDIA_TYPES,
             template_variables=TEMPLATE_VARIABLES,
             telegram_account_ids=[account.id for account in settings.telegram_accounts],
+            source_platforms=[Platform.TELEGRAM.value, Platform.WEIXIN.value],
+            target_platforms=[Platform.QQ.value, Platform.WEIXIN.value],
+            weixin_enabled=bool(weixin_service and weixin_service.enabled),
+            weixin_account_id=settings.weixin_account_id if weixin_service else None,
+            weixin_logged_in=bool(weixin_status_snapshot and weixin_status_snapshot.logged_in),
+            weixin_contacts=[
+                WeixinContactResponse.from_contact(contact)
+                for contact in (weixin_service.list_contacts() if weixin_service else [])
+            ],
         )
 
-    def _validate_source_account(account_id: str | None) -> None:
+    def _validate_source_account(account_id: str | None, platform: str | None = None) -> None:
         if account_id is None:
             return
-        known = {account.id for account in settings.telegram_accounts}
+        known = set()
+        if platform in (None, Platform.TELEGRAM.value):
+            known |= {account.id for account in settings.telegram_accounts}
+        if platform in (None, Platform.WEIXIN.value) and settings.weixin_enabled:
+            known.add(settings.weixin_account_id)
         if account_id not in known:
             raise api_error(
                 HTTP_422,
                 "invalid_source_account_id",
-                f"未知 Telegram 账号：{account_id}",
+                f"未知来源账号：{account_id}",
             )
 
     if STATIC_DIR.exists():

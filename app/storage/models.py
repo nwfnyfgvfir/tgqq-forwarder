@@ -12,6 +12,34 @@ def utc_now() -> datetime:
     return datetime.now(UTC)
 
 
+class FlexibleId(TypeDecorator):
+    """会话/发送者 ID。
+
+    Telegram 用整数 ID，个人微信用 wxid 这类字符串，因此列按 TEXT 存储：
+
+    * 写入时统一转成字符串（SQLite 的 INTEGER 亲和性会把纯数字再还原成整数）；
+    * 读取时纯数字还原成 ``int``，保证旧库里的 Telegram 规则行为完全不变。
+    """
+
+    impl = Text
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        return str(value)
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return None
+        if isinstance(value, int):
+            return value
+        text = str(value)
+        if text.lstrip("-").isdigit() and len(text) <= 18:
+            return int(text)
+        return text
+
+
 class ChatType(StrEnum):
     PRIVATE = "private"
     GROUP = "group"
@@ -37,16 +65,27 @@ class ForwardRule(SQLModel, table=True):
     name: str = Field(index=True, max_length=120)
     enabled: bool = Field(default=True, index=True)
 
+    # 来源平台：telegram / weixin；None 表示任意平台（历史规则保持此语义）
+    source_platform: str | None = Field(default=None, index=True, max_length=32)
     source_account_id: str | None = Field(default=None, index=True, max_length=64)
-    source_chat_id: int | None = Field(default=None, index=True)
+    source_chat_id: int | str | None = Field(
+        default=None,
+        sa_column=Column(FlexibleId, nullable=True, index=True),
+    )
     source_chat_type: str | None = Field(default=None, max_length=32)
-    source_sender_id: int | None = Field(default=None, index=True)
+    source_sender_id: int | str | None = Field(
+        default=None,
+        sa_column=Column(FlexibleId, nullable=True, index=True),
+    )
     source_sender_is_bot: bool | None = Field(default=None)
 
     text_include_regex: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
     text_exclude_regex: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
     media_types: list[str] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
 
+    # 目标平台：qq / weixin。下面三列是「目标描述」，weixin 时 qq_target_type 固定 friend、
+    # qq_target_id 存好友 wxid / user_id（列名沿用历史命名，避免破坏既有数据与接口）。
+    target_platform: str = Field(default="qq", max_length=32, index=True)
     qq_target_type: str = Field(default=QQTargetType.GROUP.value, max_length=32)
     qq_target_id: str = Field(max_length=128)
     qq_guild_id: str | None = Field(default=None, max_length=128)
@@ -58,17 +97,38 @@ class ForwardRule(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
+    @property
+    def target_id(self) -> str:
+        """投递目标 ID（QQ 群 openid / C2C openid / 微信 user_id）。"""
+        return self.qq_channel_id or self.qq_target_id
+
+    @property
+    def target_type(self) -> str:
+        return self.qq_target_type
+
+    @property
+    def targets_weixin(self) -> bool:
+        return self.target_platform == "weixin"
+
 
 class ForwardLog(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     rule_id: int | None = Field(default=None, foreign_key="forwardrule.id", index=True)
+    source_platform: str = Field(default="telegram", max_length=32, index=True)
     tg_account_id: str | None = Field(default=None, index=True, max_length=64)
     tg_account_user_id: int | None = Field(default=None, index=True)
-    tg_chat_id: int | None = Field(default=None, index=True)
-    tg_message_id: int | None = Field(default=None, index=True)
-    tg_sender_id: int | None = Field(default=None, index=True)
+    tg_chat_id: int | str | None = Field(
+        default=None, sa_column=Column(FlexibleId, nullable=True, index=True)
+    )
+    tg_message_id: int | str | None = Field(
+        default=None, sa_column=Column(FlexibleId, nullable=True, index=True)
+    )
+    tg_sender_id: int | str | None = Field(
+        default=None, sa_column=Column(FlexibleId, nullable=True, index=True)
+    )
     tg_chat_title: str | None = Field(default=None, max_length=256)
     tg_sender_name: str | None = Field(default=None, max_length=256)
+    target_platform: str = Field(default="qq", max_length=32, index=True)
     qq_target_type: str = Field(max_length=32)
     qq_target_id: str = Field(max_length=128)
     status: str = Field(default=ForwardStatus.SUCCESS.value, max_length=32, index=True)

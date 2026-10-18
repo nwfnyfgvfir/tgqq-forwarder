@@ -1,4 +1,4 @@
-import { emptyState, escapeHtml, formatDate, logRow, pageHeader, statTile, statusPill } from '../components.js?v=20260707-rule-studio-2';
+import { emptyState, escapeHtml, formatDate, logRow, pageHeader, statTile, statusPill } from '../components.js?v=20261018-weixin-1';
 
 export function renderDashboard(state) {
   const status = state.status;
@@ -14,16 +14,26 @@ export function renderDashboard(state) {
   const accountSummary = accounts.length
     ? `${connectedAccounts}/${accounts.length} 在线`
     : (status.telegram_connected ? '在线' : '断开');
+  const weixin = status.weixin;
+  const weixinTile = weixin && weixin.enabled
+    ? statTile(
+        '个人微信',
+        weixin.logged_in ? (weixin.connected ? '已登录' : '登录中') : '未登录',
+        `${weixin.contacts || 0} 位联系人可发送`,
+        weixin.logged_in ? 'good' : 'warning'
+      )
+    : '';
   return `
     ${pageHeader(
       'CONTROL DECK',
       '转发控制舱',
-      '在 Telegram 内直接管理 TG → QQ 的规则、目标、日志与运行状态。',
+      '在 Telegram 内直接管理 Telegram / 微信 → QQ / 微信的规则、目标、日志与运行状态。',
       `<button class="primary" data-route="studio">新建规则</button>`
     )}
     <section class="signal-grid">
       ${statTile('Telegram', accountSummary, '多用户账号监听', telegramState)}
       ${statTile('QQ WebSocket', status.qq_status, '官方机器人通道', status.qq_status === 'running' ? 'good' : 'warning')}
+      ${weixinTile}
       ${statTile('转发开关', status.forwarding_paused ? '已暂停' : '运行中', '全局队列控制', pausedState)}
       ${statTile('队列深度', status.queue_size, '待处理消息', status.queue_size > 0 ? 'warning' : 'neutral')}
     </section>

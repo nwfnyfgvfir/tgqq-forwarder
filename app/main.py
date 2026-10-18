@@ -15,6 +15,7 @@ from app.storage.db import Database
 from app.telegram_admin.bot import TelegramAdminBot
 from app.telegram_user.accounts import TelegramAccountManager
 from app.web.server import MiniAppServer
+from app.weixin.service import WeixinService
 from app.worker.forward_queue import ForwardQueue
 from app.worker.media_cleanup import MediaCleanupWorker
 
@@ -28,7 +29,13 @@ class ApplicationRuntime:
         self.db = Database(self.settings.database_url)
         self.rule_service = ForwardRuleService(self.db)
         self.qq_sender = QQOfficialSender(self.settings)
-        self.forward_queue = ForwardQueue(self.settings, self.rule_service, self.qq_sender)
+        self.weixin_service = WeixinService(self.settings, self._enqueue_forward)
+        self.forward_queue = ForwardQueue(
+            self.settings,
+            self.rule_service,
+            self.qq_sender,
+            self.weixin_service,
+        )
         self.media_cleanup = MediaCleanupWorker(self.settings)
         self.account_manager: TelegramAccountManager | None = None
         self.rss_service = RssService(self.db, self.settings)
@@ -52,27 +59,40 @@ class ApplicationRuntime:
             self.forward_queue.status_snapshot,
             rss_service=self.rss_service,
             rss_worker=self.rss_worker,
+            weixin_service=self.weixin_service,
         )
         self.stop_event = asyncio.Event()
 
+    async def _enqueue_forward(self, message) -> None:
+        await self.forward_queue.enqueue(message)
+
     async def _can_publish_rss(self) -> bool:
-        return bool(
-            self.account_manager
-            and self.account_manager.is_any_connected()
-            and not await self.rule_service.is_paused()
-        )
+        if self.account_manager is not None:
+            if not self.account_manager.is_any_connected():
+                return False
+        elif not self.settings.weixin_enabled:
+            # 没有 Telegram 监听、也没开微信通道时，RSS 不应发布。
+            return False
+        return not await self.rule_service.is_paused()
 
     async def start(self) -> None:
         self.settings.validate_runtime_requirements()
         await self.db.init()
-        await self.qq_sender.start()
+        if self.settings.qq_enabled:
+            await self.qq_sender.start()
+        else:
+            logger.info("QQ delivery disabled (QQ_ENABLED=false)")
         await self.forward_queue.start()
         await self.media_cleanup.start()
-        self.account_manager = TelegramAccountManager(
-            self.settings,
-            self.forward_queue.enqueue,
-        )
-        await self.account_manager.start()
+        if self.settings.telegram_enabled:
+            self.account_manager = TelegramAccountManager(
+                self.settings,
+                self.forward_queue.enqueue,
+            )
+            await self.account_manager.start()
+        else:
+            logger.info("Telegram ingestion disabled (TELEGRAM_ENABLED=false)")
+        await self.weixin_service.start()
         await self.admin_bot.start()
         await self.rss_worker.start()
         await self.mini_app_server.start()
@@ -106,11 +126,13 @@ class ApplicationRuntime:
         await self.mini_app_server.stop()
         await self.rss_worker.stop()
         await self.admin_bot.stop()
+        await self.weixin_service.stop()
         if self.account_manager:
             await self.account_manager.stop()
         await self.media_cleanup.stop()
         await self.forward_queue.stop()
-        await self.qq_sender.stop()
+        if self.settings.qq_enabled:
+            await self.qq_sender.stop()
         await self.db.dispose()
 
 
