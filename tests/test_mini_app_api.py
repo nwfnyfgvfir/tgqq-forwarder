@@ -179,7 +179,7 @@ async def test_status_me_dialogs_targets_and_static(api_client) -> None:
     targets = await client.get("/api/qq-targets")
     options = await client.get("/api/options")
     index = await client.get("/")
-    app_js = await client.get("/static/app.js?v=20261018-tgtg")
+    app_js = await client.get("/static/app.js?v=20261018-tgtg2")
 
     assert me.status_code == 200
     assert me.json()["user"]["id"] == 1
@@ -200,11 +200,11 @@ async def test_status_me_dialogs_targets_and_static(api_client) -> None:
     assert index.status_code == 200
     assert index.headers["cache-control"] == "no-store, no-cache, must-revalidate, max-age=0"
     assert "TGQQ Forwarder Mini App" in index.text
-    assert "/static/styles.css?v=20261018-tgtg" in index.text
-    assert "/static/app.js?v=20261018-tgtg" in index.text
+    assert "/static/styles.css?v=20261018-tgtg2" in index.text
+    assert "/static/app.js?v=20261018-tgtg2" in index.text
     assert app_js.status_code == 200
     assert app_js.headers["cache-control"] == "no-store, no-cache, must-revalidate, max-age=0"
-    assert "./views/rule-studio.js?v=20261018-tgtg" in app_js.text
+    assert "./views/rule-studio.js?v=20261018-tgtg2" in app_js.text
 
 
 async def test_rule_crud_preview_and_pause(api_client) -> None:

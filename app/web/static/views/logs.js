@@ -1,4 +1,4 @@
-import { emptyState, logRow, pageHeader } from '../components.js?v=20261018-tgtg';
+import { emptyState, logRow, pageHeader } from '../components.js?v=20261018-tgtg2';
 
 export function renderLogs(state) {
   const logs = state.logs || [];

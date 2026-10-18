@@ -1,4 +1,4 @@
-import { api } from './api.js?v=20261018-tgtg';
+import { api } from './api.js?v=20261018-tgtg2';
 
 export const state = {
   route: 'dashboard',

@@ -1,6 +1,6 @@
-import { api } from '../api.js?v=20261018-tgtg';
-import { escapeHtml, pageHeader, short, statusPill } from '../components.js?v=20261018-tgtg';
-import { refreshRules } from '../state.js?v=20261018-tgtg';
+import { api } from '../api.js?v=20261018-tgtg2';
+import { escapeHtml, pageHeader, short, statusPill } from '../components.js?v=20261018-tgtg2';
+import { refreshRules } from '../state.js?v=20261018-tgtg2';
 
 const DEFAULT_TEMPLATE = '# {source_title_md}\n\n**发送者：{sender_name_md}**\n\n{text}\n\n{footer_note}';
 const TARGET_TYPES_BY_PLATFORM = {
@@ -38,7 +38,7 @@ export function renderRuleStudio(state) {
           <div class="step-index">01</div>
           <div>
             <h2>消息来源</h2>
-            <p>先选平台，再选监听账号与来源会话；平台或账号留空代表任意。微信来源只能收到好友私聊，QQ 来源是机器人收到的群 / 频道 / 私聊消息。</p>
+            <p>先选平台，再选监听账号与来源会话；平台或账号留空代表任意。微信来源只能收到好友私聊，QQ 来源是机器人收到的群 / 频道 / 私聊消息（只有一个机器人实例，没有账号维度）。</p>
           </div>
           <label>规则名称<input name="name" required maxlength="120" value="${escapeHtml(editRule?.name || '')}" placeholder="例如：LINUX DO AI 关键词" /></label>
           <div class="grid-2">
@@ -54,6 +54,7 @@ export function renderRuleStudio(state) {
               ${weixinAccountId ? option(weixinAccountId, `微信 · ${weixinAccountId}`, editRule?.source_account_id || '') : ''}
             </select></label>
           </div>
+          <p class="muted" data-qq-account-hint hidden>QQ 来源没有账号维度：程序只连一个 QQ 机器人，选中它时监听账号固定为「任意账号」。</p>
           <div class="grid-2">
             <label>来源会话 ID<input name="source_chat_id" value="${escapeHtml(editRule?.source_chat_id ?? '')}" placeholder="* / -100... / wxid_... / QQ openid" /></label>
             <label>会话类型<select name="source_chat_type">
@@ -468,6 +469,16 @@ function syncPlatformPanels(form) {
   form.querySelectorAll('[data-source-panel]').forEach((panel) => {
     panel.hidden = Boolean(source) && panel.dataset.sourcePanel !== source;
   });
+  // QQ 来源只有一个机器人实例，没有账号维度：账号下拉禁用并清空，
+  // 避免选到一个永远匹配不上 QQ 消息的账号。
+  const isQQ = source === 'qq';
+  const accountSelect = form.elements.source_account_id;
+  if (accountSelect) {
+    accountSelect.disabled = isQQ;
+    if (isQQ) accountSelect.value = '';
+  }
+  const hint = form.querySelector('[data-qq-account-hint]');
+  if (hint) hint.hidden = !isQQ;
 }
 
 function targetsFromForm(form) {

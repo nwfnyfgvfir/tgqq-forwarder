@@ -1,12 +1,12 @@
-import { api } from './api.js?v=20261018-tgtg';
-import { renderShell } from './components.js?v=20261018-tgtg';
-import { bootstrapData, navigate, refreshLogs, refreshRules, refreshStatus, refreshSubscriptions, setState, state, subscribe } from './state.js?v=20261018-tgtg';
-import { renderDashboard } from './views/dashboard.js?v=20261018-tgtg';
-import { renderLogs } from './views/logs.js?v=20261018-tgtg';
-import { filterRules, renderRules } from './views/rules.js?v=20261018-tgtg';
-import { bindRuleStudio, renderRuleStudio } from './views/rule-studio.js?v=20261018-tgtg';
-import { renderSystem, bindSystem } from './views/system.js?v=20261018-tgtg';
-import { bindSubscriptions, canRefreshSubscriptions, renderSubscriptions, updateSubscriptions } from './views/subscriptions.js?v=20261018-tgtg';
+import { api } from './api.js?v=20261018-tgtg2';
+import { renderShell } from './components.js?v=20261018-tgtg2';
+import { bootstrapData, navigate, refreshLogs, refreshRules, refreshStatus, refreshSubscriptions, setState, state, subscribe } from './state.js?v=20261018-tgtg2';
+import { renderDashboard } from './views/dashboard.js?v=20261018-tgtg2';
+import { renderLogs } from './views/logs.js?v=20261018-tgtg2';
+import { filterRules, renderRules } from './views/rules.js?v=20261018-tgtg2';
+import { bindRuleStudio, renderRuleStudio } from './views/rule-studio.js?v=20261018-tgtg2';
+import { renderSystem, bindSystem } from './views/system.js?v=20261018-tgtg2';
+import { bindSubscriptions, canRefreshSubscriptions, renderSubscriptions, updateSubscriptions } from './views/subscriptions.js?v=20261018-tgtg2';
 
 const tg = window.Telegram?.WebApp;
 const root = document.querySelector('#app');

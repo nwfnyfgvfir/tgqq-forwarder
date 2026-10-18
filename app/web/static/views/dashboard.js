@@ -1,4 +1,4 @@
-import { emptyState, escapeHtml, formatDate, logRow, pageHeader, statTile, statusPill } from '../components.js?v=20261018-tgtg';
+import { emptyState, escapeHtml, formatDate, logRow, pageHeader, statTile, statusPill } from '../components.js?v=20261018-tgtg2';
 
 export function renderDashboard(state) {
   const status = state.status;

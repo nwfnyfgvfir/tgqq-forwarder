@@ -1,6 +1,6 @@
-import { api } from '../api.js?v=20261018-tgtg';
-import { escapeHtml, pageHeader, statusPill } from '../components.js?v=20261018-tgtg';
-import { refreshStatus, state } from '../state.js?v=20261018-tgtg';
+import { api } from '../api.js?v=20261018-tgtg2';
+import { escapeHtml, pageHeader, statusPill } from '../components.js?v=20261018-tgtg2';
+import { refreshStatus, state } from '../state.js?v=20261018-tgtg2';
 
 let loginPollTimer = null;
 
