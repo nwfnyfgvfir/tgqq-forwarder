@@ -243,6 +243,7 @@ async def parse_event(
     sender_is_bot = bool(getattr(sender, "bot", False)) if isinstance(sender, User) else False
     media_type = _media_type(event, include_link_preview_media=include_link_preview_media)
     webpage_preview = _extract_webpage_preview(event.message)
+    file_name = _file_name(event.message)
 
     return TelegramForwardMessage(
         message_id=event.message.id,
@@ -265,4 +266,13 @@ async def parse_event(
         grouped_id=getattr(event.message, "grouped_id", None),
         media_paths=[media_path] if media_path else [],
         media_types=[media_type] if media_type else [],
+        media_filenames=[file_name] if (media_path and file_name) else [],
     )
+
+
+def _file_name(message: Any) -> str | None:
+    """Telegram 文档的原始文件名（照片等没有文件名时返回 None）。"""
+    file_info = getattr(message, "file", None)
+    name = getattr(file_info, "name", None) if file_info is not None else None
+    text = str(name or "").strip()
+    return text or None

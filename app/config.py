@@ -402,6 +402,11 @@ class Settings(BaseSettings):
     qq_use_markdown: bool = True
     # Hard cap for one QQ outbound send (includes multi-media sequence + retries).
     qq_send_timeout_seconds: float = 120.0
+    # QQ 入站附件（图片/视频/文件）下载开关与单文件大小上限；QQ CDN 链接有时效，
+    # 关闭后转发只会带上 `[图片] https://...` 文本说明。
+    qq_download_media: bool = True
+    qq_max_media_mb: int = 20
+    qq_media_timeout_seconds: float = 30.0
     # 只做微信收发时可以关掉 QQ 目标（默认开启，行为与历史版本一致）
     qq_enabled: bool = True
 

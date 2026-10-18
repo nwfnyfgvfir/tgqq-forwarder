@@ -90,8 +90,8 @@ class WeixinMediaStore:
         item: dict[str, Any],
         *,
         from_user_id: str,
-    ) -> tuple[Path, str] | None:
-        """下载并解密一条入站媒体，返回 ``(路径, 媒体类型)``。"""
+    ) -> tuple[Path, str, str | None] | None:
+        """下载并解密一条入站媒体，返回 ``(路径, 媒体类型, 原始文件名)``。"""
         if not self.enabled:
             return None
         item_type = _item_type(item)
@@ -128,7 +128,15 @@ class WeixinMediaStore:
         except OSError:
             logger.exception("Failed to write Weixin media to %s", path)
             return None
-        return path, media_type
+        return path, media_type, self._original_name(item, item_type)
+
+    @staticmethod
+    def _original_name(item: dict[str, Any], item_type: WeixinItemType) -> str | None:
+        """只有文件类消息带原始文件名，图片/语音/视频由客户端自己命名。"""
+        if item_type != WeixinItemType.FILE:
+            return None
+        file_name = str((item.get("file_item") or {}).get("file_name") or "").strip()
+        return file_name or None
 
     def _suffix_for(self, item: dict[str, Any], item_type: WeixinItemType, content: bytes) -> str:
         if item_type == WeixinItemType.IMAGE:
@@ -148,6 +156,7 @@ class WeixinMediaStore:
         target_user_id: str,
         media_paths: list[Path],
         media_types: list[str | None],
+        file_names: list[str | None] | None = None,
         caption: str | None = None,
     ) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
@@ -171,10 +180,12 @@ class WeixinMediaStore:
             elif upload_type == WeixinUploadMediaType.VIDEO:
                 items.append(build_video_item(media, size=padded_size))
             else:
+                # 文件名必须带扩展名，否则微信端无法识别格式；caption 只用于兜底命名。
+                requested = file_names[index] if file_names and index < len(file_names) else None
                 items.append(
                     build_file_item(
                         media,
-                        file_name=caption or media_path.name,
+                        file_name=_display_file_name(requested, media_path, caption),
                         raw_size=media_path.stat().st_size,
                     )
                 )
@@ -220,6 +231,20 @@ def extract_media_params(item: dict[str, Any]) -> tuple[str, str] | None:
     if not encrypted_query_param or not aes_key:
         return None
     return encrypted_query_param, aes_key
+
+
+def _display_file_name(
+    requested: str | None,
+    media_path: Path,
+    fallback: str | None = None,
+) -> str:
+    """决定 file_item.file_name：优先原始文件名，且必须带扩展名。"""
+    name = (requested or "").strip().replace("\\", "/").rsplit("/", 1)[-1].strip()
+    if not name:
+        name = media_path.name if media_path.suffix else (fallback or media_path.name)
+    if not Path(name).suffix and media_path.suffix:
+        name = f"{name}{media_path.suffix}"
+    return name
 
 
 def _upload_type(media_type: str | None, media_path: Path) -> WeixinUploadMediaType:

@@ -217,6 +217,43 @@ async def test_user_sender_sends_media_with_caption(tmp_path: Path) -> None:
     assert client.messages == []
 
 
+async def test_user_sender_splits_long_caption(tmp_path: Path) -> None:
+    path = tmp_path / "a.png"
+    path.write_bytes(b"x")
+    client = FakeTelethonClient()
+    sender = TelegramUserSender(
+        make_settings(), lambda: FakeAccountManager(FakeListener(client)), SentMessageRegistry()
+    )
+    long_text = "字" * 1200
+
+    await sender.send(
+        telegram_target("-1001"),
+        make_message(media_type="photo", media_path=path, media_paths=[path]),
+        long_text,
+    )
+
+    assert client.messages[0][1] == long_text
+    assert client.files[0][2]["caption"] is None
+
+
+async def test_bot_sender_splits_long_caption(tmp_path: Path) -> None:
+    path = tmp_path / "a.png"
+    path.write_bytes(b"x")
+    bot = FakeBot()
+    sender = TelegramBotSender(make_settings(), SentMessageRegistry(), bot=bot)
+    long_text = "字" * 1200
+
+    await sender.send(
+        telegram_target("-1001", target_type=TELEGRAM_TARGET_BOT),
+        make_message(media_type="photo", media_path=path, media_paths=[path]),
+        long_text,
+    )
+
+    assert [item[0] for item in bot.calls] == ["message", "photo"]
+    assert bot.calls[0][1]["text"] == long_text
+    assert bot.calls[1][1]["caption"] is None
+
+
 async def test_user_sender_requires_connected_account() -> None:
     sender = TelegramUserSender(
         make_settings(), lambda: FakeAccountManager(None), SentMessageRegistry()
@@ -407,3 +444,44 @@ async def test_queue_forwards_to_other_telegram_chat() -> None:
 
     assert sent == ["-100999"]
     assert service.log_calls[0]["status"] == ForwardStatus.SUCCESS
+
+
+async def test_user_sender_uses_original_document_name(tmp_path: Path) -> None:
+    path = tmp_path / "cache_173_bin"
+    path.write_bytes(b"pdf")
+    client = FakeTelethonClient()
+    sender = TelegramUserSender(
+        make_settings(), lambda: FakeAccountManager(FakeListener(client)), SentMessageRegistry()
+    )
+    message = make_message(
+        media_type="document",
+        media_path=path,
+        media_paths=[path],
+        media_types=["document"],
+        media_filenames=["季度报表.pdf"],
+    )
+
+    await sender.send(telegram_target("-1001"), message, "")
+
+    kwargs = client.files[0][2]
+    assert kwargs["force_document"] is True
+    assert kwargs["attributes"][0].file_name == "季度报表.pdf"
+
+
+async def test_bot_sender_uses_original_document_name(tmp_path: Path) -> None:
+    path = tmp_path / "cache_173_bin"
+    path.write_bytes(b"pdf")
+    bot = FakeBot()
+    sender = TelegramBotSender(make_settings(), SentMessageRegistry(), bot=bot)
+    message = make_message(
+        media_type="document",
+        media_path=path,
+        media_paths=[path],
+        media_types=["document"],
+        media_filenames=["季度报表.pdf"],
+    )
+
+    await sender.send(telegram_target("-1001", target_type=TELEGRAM_TARGET_BOT), message, "")
+
+    assert bot.calls[0][0] == "document"
+    assert bot.calls[0][1]["filename"] == "季度报表.pdf"

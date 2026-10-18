@@ -137,11 +137,19 @@ class WeixinOutboundMessage:
     text: str
     media_paths: list[Path] = field(default_factory=list)
     media_types: list[str] = field(default_factory=list)
+    # 与 media_paths 一一对应的原始文件名，微信侧用于 file_item.file_name
+    media_filenames: list[str] = field(default_factory=list)
     media_caption: str | None = None
 
     def media_type_at(self, index: int) -> str | None:
         if index < len(self.media_types):
             return self.media_types[index]
+        return None
+
+    def media_filename_at(self, index: int) -> str | None:
+        if index < len(self.media_filenames):
+            name = (self.media_filenames[index] or "").strip()
+            return name or None
         return None
 
 

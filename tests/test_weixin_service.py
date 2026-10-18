@@ -396,3 +396,67 @@ async def test_service_loop_logs_in_then_receives(tmp_path, fake_client) -> None
     assert stored["token"] == "loop-token"
     assert stored["context_tokens"]["wxid_loop"] == "ctx-loop"
     assert stored["get_updates_buf"] == "buf-loop"
+
+
+async def test_inbound_file_keeps_original_name(service, fake_client) -> None:
+    raw = {
+        "message_id": "msg-file-1",
+        "from_user_id": "wxid_friend",
+        "item_list": [
+            {
+                "type": 4,
+                "file_item": {
+                    "media": {"encrypt_query_param": "eqp", "aes_key": "a2V5"},
+                    "file_name": "季度报表.xlsx",
+                },
+            }
+        ],
+    }
+
+    await service._handle_inbound(raw)
+
+    message = service.collected[0]
+    assert message.media_types == ["document"]
+    assert message.media_filenames == ["季度报表.xlsx"]
+    assert message.media_paths[0].suffix == ".xlsx"
+
+
+async def test_send_uses_original_file_name(service, fake_client, tmp_path) -> None:
+    service.state.context_tokens["wxid_friend"] = "ctx-1"
+    media = tmp_path / "local.bin"
+    media.write_bytes(b"pdf-bytes")
+
+    await service.send(
+        WeixinOutboundMessage(
+            target_user_id="wxid_friend",
+            text="",
+            media_paths=[media],
+            media_types=["document"],
+            media_filenames=["季度报表.pdf"],
+        )
+    )
+
+    file_calls = [call for call in fake_client.sent if call["item_list"][0]["type"] == 4]
+    assert len(file_calls) == 1
+    assert file_calls[0]["item_list"][0]["file_item"]["file_name"] == "季度报表.pdf"
+
+
+async def test_send_appends_suffix_when_file_name_lacks_one(
+    service, fake_client, tmp_path
+) -> None:
+    service.state.context_tokens["wxid_friend"] = "ctx-1"
+    media = tmp_path / "local.pdf"
+    media.write_bytes(b"pdf-bytes")
+
+    await service.send(
+        WeixinOutboundMessage(
+            target_user_id="wxid_friend",
+            text="",
+            media_paths=[media],
+            media_types=["document"],
+            media_filenames=["季度报表"],
+        )
+    )
+
+    file_calls = [call for call in fake_client.sent if call["item_list"][0]["type"] == 4]
+    assert file_calls[0]["item_list"][0]["file_item"]["file_name"] == "季度报表.pdf"

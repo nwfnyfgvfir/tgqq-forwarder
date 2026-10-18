@@ -23,6 +23,7 @@ from app.qq_official.client import (
     QQTargetInfo,
     ensure_group_message_create_parser,
 )
+from app.qq_official.media import QQAttachmentDownloader
 from app.qq_official.models import QQOutboundMessage
 from app.storage.models import QQTargetType
 
@@ -78,11 +79,19 @@ class QQOfficialSender:
             public_guild_messages=True,
             direct_message=settings.qq_enable_guild_direct_message,
         )
+        # 入站附件落盘：QQ CDN 链接有时效，收到消息就要立刻下载。
+        self.media = QQAttachmentDownloader(
+            settings.media_dir,
+            enabled=settings.qq_download_media,
+            max_media_mb=settings.qq_max_media_mb,
+            timeout_seconds=settings.qq_media_timeout_seconds,
+        )
         self.client = ForwarderQQClient(
             intents=intents,
             bot_log=False,
             timeout=20,
             on_message=on_message,
+            attachment_downloader=self.media,
         )
         self._task: asyncio.Task | None = None
         self._started = asyncio.Event()
@@ -160,19 +169,19 @@ class QQOfficialSender:
         )
 
     async def stop(self) -> None:
-        if self._task is None:
-            return
-        try:
-            await self.client.close()
-        except Exception:
-            logger.exception("Failed to close QQ client cleanly")
-        if not self._task.done():
-            self._task.cancel()
+        if self._task is not None:
             try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-        logger.info("QQ Official Bot WebSocket client stopped")
+                await self.client.close()
+            except Exception:
+                logger.exception("Failed to close QQ client cleanly")
+            if not self._task.done():
+                self._task.cancel()
+                try:
+                    await self._task
+                except asyncio.CancelledError:
+                    pass
+            logger.info("QQ Official Bot WebSocket client stopped")
+        await self.media.aclose()
 
     async def send(self, outbound: QQOutboundMessage) -> Any:
         target_type = QQTargetType(str(outbound.target_type))
@@ -198,12 +207,14 @@ class QQOfficialSender:
             media_type = None
             if index <= len(outbound.media_types):
                 media_type = outbound.media_types[index - 1]
+            file_name = outbound.media_filename_at(index - 1)
             item = QQOutboundMessage(
                 target_type=outbound.target_type,
                 target_id=outbound.target_id,
                 text=media_text,
                 media_path=media_path,
                 media_type=media_type,
+                media_filenames=[file_name or ""],
                 media_caption=outbound.media_caption,
                 guild_id=outbound.guild_id,
                 channel_id=outbound.channel_id,
@@ -249,22 +260,43 @@ class QQOfficialSender:
 
         if target_type == QQTargetType.GROUP:
             payload = self._group_proactive_payload(text)
-            media = await self._upload_group_or_c2c_media(
-                media_path,
-                media_type,
-                group_openid=outbound.target_id,
-            )
+            try:
+                media = await self._upload_group_or_c2c_media(
+                    media_path,
+                    media_type,
+                    group_openid=outbound.target_id,
+                )
+            except botpy.errors.ServerError:
+                # QQ 的文件类型（file_type=4）在部分场景不开放；退化成带文件名的文本。
+                logger.warning(
+                    "QQ group media upload rejected; fall back to text path=%s", media_path
+                )
+                return await self._send_text(
+                    outbound,
+                    target_type,
+                    self._media_fallback_text(text, outbound, media_path),
+                )
             payload.update({"media": media, "msg_type": 7, "content": text})
             payload.pop("markdown", None)
             return await self._post_group_message(outbound.target_id, payload)
 
         if target_type == QQTargetType.C2C:
             payload = self._v2_payload(outbound.target_id, text, include_msg_id=False)
-            media = await self._upload_group_or_c2c_media(
-                media_path,
-                media_type,
-                openid=outbound.target_id,
-            )
+            try:
+                media = await self._upload_group_or_c2c_media(
+                    media_path,
+                    media_type,
+                    openid=outbound.target_id,
+                )
+            except botpy.errors.ServerError:
+                logger.warning(
+                    "QQ c2c media upload rejected; fall back to text path=%s", media_path
+                )
+                return await self._send_text(
+                    outbound,
+                    target_type,
+                    self._media_fallback_text(text, outbound, media_path),
+                )
             payload.update({"media": media, "msg_type": 7, "content": text})
             payload.pop("markdown", None)
             return await self._post_c2c_message(outbound.target_id, **payload)
@@ -274,7 +306,7 @@ class QQOfficialSender:
             if media_type == IMAGE_FILE_TYPE:
                 payload["file_image"] = str(media_path)
             else:
-                payload["content"] = f"{text}\n[媒体文件]".strip()
+                payload["content"] = self._media_fallback_text(text, outbound, media_path)
             return await self._post_channel_message(outbound.target_id, payload)
 
         if target_type == QQTargetType.DMS:
@@ -283,7 +315,7 @@ class QQOfficialSender:
             if media_type == IMAGE_FILE_TYPE:
                 payload["file_image"] = str(media_path)
             else:
-                payload["content"] = f"{text}\n[媒体文件]".strip()
+                payload["content"] = self._media_fallback_text(text, outbound, media_path)
             return await self._post_dms_message(guild_id, payload)
 
         raise ValueError(f"Unsupported QQ target type: {target_type}")
@@ -467,13 +499,21 @@ class QQOfficialSender:
         )
 
     @staticmethod
+    def _media_fallback_text(text: str, outbound: QQOutboundMessage, media_path: Path) -> str:
+        """QQ 频道/频道私信不能直接上传文件，至少把原始文件名写进正文。"""
+        name = outbound.media_filename_at(0) or media_path.name
+        label = f"[文件] {name}" if name else "[媒体文件]"
+        return f"{text}\n{label}".strip()
+
+    @staticmethod
     def _qq_media_type(media_type: str | None, media_path: Path) -> int:
         suffix = media_path.suffix.lower()
         if media_type == "photo" or suffix in {".jpg", ".jpeg", ".png", ".gif", ".webp"}:
             return IMAGE_FILE_TYPE
         if media_type == "video" or suffix in {".mp4", ".mov", ".mkv", ".webm"}:
             return VIDEO_FILE_TYPE
-        if media_type in {"voice", "audio"} or suffix in {".mp3", ".wav", ".ogg", ".m4a"}:
+        # QQ 的语音消息只认 silk/amr；ogg/mp3 这类按文件发，否则会变成无法播放的语音。
+        if suffix in {".silk", ".amr"}:
             return VOICE_FILE_TYPE
         return FILE_FILE_TYPE
 

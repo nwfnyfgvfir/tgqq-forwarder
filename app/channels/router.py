@@ -80,6 +80,7 @@ class DeliveryRouter:
             media_type=message.media_type,
             media_paths=message.media_paths,
             media_types=message.media_types,
+            media_filenames=list(message.media_filenames),
             media_caption=(getattr(rule, "name", "") or "").strip() or "媒体",
             guild_id=target.guild_id,
             channel_id=target.channel_id,
@@ -104,6 +105,7 @@ class DeliveryRouter:
             text=text,
             media_paths=list(message.media_paths),
             media_types=list(message.media_types),
+            media_filenames=list(message.media_filenames),
             media_caption=(getattr(rule, "name", "") or "").strip() or "媒体",
         )
         try:

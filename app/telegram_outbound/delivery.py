@@ -21,6 +21,7 @@ from typing import Any
 
 from telegram import Bot, LinkPreviewOptions
 from telegram.request import HTTPXRequest
+from telethon.tl.types import DocumentAttributeFilename
 
 from app.config import Settings
 from app.platforms import TELEGRAM_TARGET_BOT, TELEGRAM_TARGET_CHAT
@@ -33,18 +34,24 @@ logger = logging.getLogger(__name__)
 
 SAVED_MESSAGE_ALIASES = {"me", "self", "saved", "saved_messages", "savedmessages"}
 _NUMERIC_ID_RE = re.compile(r"^-?\d+$")
+# Telegram 单条媒体说明（caption）上限；超长必须先单独发文本。
+MAX_CAPTION_LENGTH = 1024
 
 
 class TelegramDeliveryError(Exception):
     """Telegram 目标不可用或发送失败。"""
 
 
-def _existing_media(message: TelegramForwardMessage) -> list[Path]:
-    paths: list[Path] = []
-    for path in message.media_paths or []:
-        if path and Path(path).exists():
-            paths.append(Path(path))
-    return paths
+def _existing_media(
+    message: TelegramForwardMessage,
+) -> list[tuple[Path, str | None, str | None]]:
+    """``[(路径, 媒体类型, 原始文件名)]``；缺失文件会被跳过，但索引仍按原位置取。"""
+    items: list[tuple[Path, str | None, str | None]] = []
+    for index, path in enumerate(message.media_paths or []):
+        if not path or not Path(path).exists():
+            continue
+        items.append((Path(path), _media_kind(message, index), message.media_filename_at(index)))
+    return items
 
 
 def _media_kind(message: TelegramForwardMessage, index: int) -> str | None:
@@ -52,6 +59,17 @@ def _media_kind(message: TelegramForwardMessage, index: int) -> str | None:
     if index < len(types):
         return types[index]
     return message.media_type
+
+
+def _safe_filename(value: str | None) -> str | None:
+    """只保留文件名本身，去掉路径分隔符并限长，避免 Telegram 拒绝。"""
+    text = (value or "").strip().replace("\\", "/")
+    if not text:
+        return None
+    name = text.rsplit("/", 1)[-1].strip()
+    if not name or name in {".", ".."}:
+        return None
+    return name[:255]
 
 
 def _user_chat_ref(target_id: str) -> object:
@@ -118,19 +136,47 @@ class TelegramUserSender:
         self.registry.mark_outgoing(text)
         media = _existing_media(message)
         if media:
-            sent = await client.send_file(
-                entity,
-                str(media[0]),
-                caption=text or None,
-                parse_mode=None,
+            caption = text or None
+            if caption is not None and len(caption) > MAX_CAPTION_LENGTH:
+                # Telegram caption 有 1024 字上限，超长时正文单独发一条。
+                sent = await client.send_message(
+                    entity, text, parse_mode=None, link_preview=False
+                )
+                self._remember(sent)
+                caption = None
+            first_path, first_kind, first_name = media[0]
+            sent = await self._send_file(
+                client, entity, first_path, first_kind, caption, first_name
             )
             self._remember(sent)
-            for path in media[1:]:
-                sent = await client.send_file(entity, str(path), parse_mode=None)
+            for path, kind, filename in media[1:]:
+                sent = await self._send_file(client, entity, path, kind, None, filename)
                 self._remember(sent)
             return
         sent = await client.send_message(entity, text, parse_mode=None, link_preview=False)
         self._remember(sent)
+
+    @staticmethod
+    async def _send_file(
+        client: Any,
+        entity: object,
+        path: Path,
+        kind: str | None,
+        caption: str | None,
+        filename: str | None,
+    ) -> Any:
+        # 文档类目标用原始文件名（否则接收方看到的是本地缓存名）；照片/视频/语音不需要。
+        safe_name = _safe_filename(filename)
+        if kind == "document" and safe_name:
+            return await client.send_file(
+                entity,
+                str(path),
+                caption=caption,
+                parse_mode=None,
+                attributes=[DocumentAttributeFilename(safe_name)],
+                force_document=True,
+            )
+        return await client.send_file(entity, str(path), caption=caption, parse_mode=None)
 
     def _remember(self, sent: Any) -> None:
         for item in sent if isinstance(sent, list | tuple) else [sent]:
@@ -180,10 +226,23 @@ class TelegramBotSender:
         chat_id = _bot_chat_ref(target.target_id)
         media = _existing_media(message)
         if media:
-            sent = await self._send_media(bot, chat_id, media[0], _media_kind(message, 0), text)
+            caption = text
+            if len(caption) > MAX_CAPTION_LENGTH:
+                sent = await bot.send_message(
+                    chat_id=chat_id,
+                    text=caption,
+                    parse_mode=None,
+                    link_preview_options=LinkPreviewOptions(is_disabled=True),
+                )
+                self._remember(sent)
+                caption = ""
+            first_path, first_kind, first_name = media[0]
+            sent = await self._send_media(
+                bot, chat_id, first_path, first_kind, caption, first_name
+            )
             self._remember(sent)
-            for index, path in enumerate(media[1:], start=1):
-                sent = await self._send_media(bot, chat_id, path, _media_kind(message, index), "")
+            for path, kind, filename in media[1:]:
+                sent = await self._send_media(bot, chat_id, path, kind, "", filename)
                 self._remember(sent)
             return
         sent = await bot.send_message(
@@ -201,6 +260,7 @@ class TelegramBotSender:
         path: Path,
         kind: str | None,
         caption: str,
+        filename: str | None = None,
     ) -> Any:
         kwargs: dict[str, Any] = {"chat_id": chat_id, "caption": caption or None}
         suffix = path.suffix.lower()
@@ -210,15 +270,20 @@ class TelegramBotSender:
         elif kind == "video" or suffix in {".mp4", ".mov", ".mkv", ".webm"}:
             method = bot.send_video
             kwargs["video"] = path.open("rb")
-        elif kind == "voice" or suffix in {".ogg", ".opus"}:
+        elif suffix in {".ogg", ".opus"}:
             method = bot.send_voice
             kwargs["voice"] = path.open("rb")
-        elif kind in {"audio", "voice"} or suffix in {".mp3", ".m4a", ".wav"}:
+        elif suffix in {".mp3", ".m4a", ".wav"}:
             method = bot.send_audio
             kwargs["audio"] = path.open("rb")
         else:
+            # .silk / .amr 这类 Telegram 不认识的语音按文件发，避免 send_voice 报错。
             method = bot.send_document
             kwargs["document"] = path.open("rb")
+        if filename:
+            safe_name = _safe_filename(filename)
+            if safe_name:
+                kwargs["filename"] = safe_name
         try:
             return await method(**kwargs)
         finally:

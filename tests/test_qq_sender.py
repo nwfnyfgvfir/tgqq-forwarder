@@ -245,3 +245,46 @@ async def test_valid_token_is_not_refreshed() -> None:
     await sender._http.request(Route("GET", "/users/@me"))
 
     assert state.refreshes == 0
+
+
+async def test_group_media_upload_failure_falls_back_to_text(tmp_path) -> None:
+    sender = QQOfficialSender(Settings())
+    media = tmp_path / "cache_173_bin"
+    media.write_bytes(b"pdf")
+    sent: list[str] = []
+
+    async def fake_upload(*_args: Any, **_kwargs: Any):
+        raise botpy.errors.ServerError("文件类型暂不开放")
+
+    async def fake_send_text(self, outbound, target_type, text):
+        sent.append(text)
+        return {"kind": "text", "text": text}
+
+    sender._upload_group_or_c2c_media = fake_upload  # type: ignore[method-assign]
+    sender._send_text = MethodType(fake_send_text, sender)
+    outbound = QQOutboundMessage(
+        target_type="group",
+        target_id="group-openid",
+        text="正文",
+        media_path=media,
+        media_type="document",
+        media_filenames=["季度报表.pdf"],
+    )
+
+    result = await sender._send_media(outbound, QQTargetType.GROUP, "正文")
+
+    assert result == {"kind": "text", "text": "正文\n[文件] 季度报表.pdf"}
+    assert sent == ["正文\n[文件] 季度报表.pdf"]
+
+
+def test_qq_media_type_keeps_audio_as_file(tmp_path) -> None:
+    from app.qq_official.sender import FILE_FILE_TYPE, VOICE_FILE_TYPE
+
+    mp3 = tmp_path / "song.mp3"
+    silk = tmp_path / "voice.silk"
+    mp3.write_bytes(b"")
+    silk.write_bytes(b"")
+
+    # QQ 语音只认 silk/amr，mp3 按文件发，避免变成无法播放的语音气泡。
+    assert QQOfficialSender._qq_media_type("audio", mp3) == FILE_FILE_TYPE
+    assert QQOfficialSender._qq_media_type("voice", silk) == VOICE_FILE_TYPE

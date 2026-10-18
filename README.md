@@ -8,6 +8,7 @@ TGQQ Forwarder 用于在 Telegram、QQ 官方机器人、个人微信之间按�
 - 并行监听各账号可见的频道、群组、私聊、Bot 消息。
 - 支持个人微信作为来源与目标：扫码登录、长轮询收消息、按 wxid 定向发送。
 - **支持 QQ / 微信 → Telegram**：机器人收到的消息可以按规则转发到 Telegram 频道、群或私聊；用用户账号发送时可以发到任意会话（含收藏夹 `me`），也可以改用 Bot API 发送。
+- QQ / 微信入站的图片、视频、语音、文件会下载落盘后作为真实文件转发（不是只发链接）。
 - 按规则筛选要转发的消息。
 - 支持按来源平台、Telegram 账号、会话、发送者、Bot 标记、关键词、文本正则、媒体类型匹配。
 - 一条规则可同时投递到多个目标：多个 QQ 群/频道、多个微信好友、多个 Telegram 会话可以混排；每个目标单独发送、单独记日志，一个失败不影响其它目标。
@@ -38,9 +39,10 @@ TGQQ Forwarder 用于在 Telegram、QQ 官方机器人、个人微信之间按�
 11. 个人微信走的是腾讯 `openclaw-weixin` / iLink 通道（扫码登录 + 长轮询），不是公开稳定的开放平台接口，协议细节可能调整；登录态失效（`errcode=-14`）时程序会清空凭证并重新等待扫码。
 12. 微信来源只支持好友私聊（1:1），不支持群聊；语音消息保存为 `.silk`，不做转码。
 13. **QQ 来源受官方机器人权限限制**：群里通常要 `@机器人` 才会收到消息（部分场景可收到全部群消息），频道只收到 @ 消息，私聊/C2C 正常；机器人不会收到自己发出的消息。
-14. QQ 附件（图片/视频/文件）目前以 `[图片] https://...` 这样的文本形式转发，不下载文件本体；Telegram 来源的媒体仍按原样转发。
-15. **防回环**：转发到 Telegram 后，程序会记录自己发出的消息 ID，监听侧自动跳过；同时「来源会话 = 目标会话」的投递会被直接跳过（日志状态 `skipped`），避免 TG → TG 自激。
-16. 用 Bot API 发送 Telegram 目标时，Bot 必须已经在目标会话里，且不能主动私聊用户；Bot 也无法发送到收藏夹，需要收藏夹时请用用户账号。
+14. QQ 附件（图片/视频/语音/文件）会在收到消息时立刻下载到 `data/media/qq/<会话ID>/`，再作为真实文件转发（Telegram 用 `send_file`，微信走 CDN 上传）；受 `QQ_MAX_MEDIA_MB` 限制，超限或下载失败时退化成 `[图片] https://...` 文本说明。QQ CDN 链接有时效，转发到队列积压过久或关闭下载时只能拿到链接。
+15. **文件名的还原**：微信、QQ 入站时会记录原始文件名（`media_filenames`），转发到 Telegram 用 `DocumentAttributeFilename` / Bot API `filename` 还原，转发到微信写进 `file_item.file_name` 并自动补扩展名。QQ 的上传接口不接收文件名，且只稳定支持 `jpg/png`、`mp4`、`silk` 三类，其它格式（pdf、zip、mp3、ogg 等）可能被 QQ 拒绝，此时会降级成带文件名的文本消息而不是整条失败。
+16. **防回环**：转发到 Telegram 后，程序会记录自己发出的消息 ID，监听侧自动跳过；同时「来源会话 = 目标会话」的投递会被直接跳过（日志状态 `skipped`），避免 TG → TG 自激。
+17. 用 Bot API 发送 Telegram 目标时，Bot 必须已经在目标会话里，且不能主动私聊用户；Bot 也无法发送到收藏夹，需要收藏夹时请用用户账号。
 
 ## 文件结构
 
@@ -313,6 +315,10 @@ MINI_APP_ALLOWED_ORIGINS=https://你的域名.example.com
 
 # 单条 QQ 发送（含多图与重试）总超时；超时后记失败并继续消费队列
 QQ_SEND_TIMEOUT_SECONDS=120
+# QQ 入站附件下载（图片/视频/文件）；关闭后转发只带 `[图片] https://...` 文本
+QQ_DOWNLOAD_MEDIA=true
+QQ_MAX_MEDIA_MB=20
+QQ_MEDIA_TIMEOUT_SECONDS=30
 FORWARD_QUEUE_SIZE=1000
 
 # 转发到 Telegram（QQ / 微信 → TG）。目标用「用户账号」发送时不需要任何新配置，
@@ -418,6 +424,9 @@ docker compose run --rm tgqq-forwarder python -m app.weixin.login
 | QQ / 微信消息没有转发到 Telegram | 确认规则来源平台、来源会话/发送者过滤是否命中；Telegram 目标若是 `Bot 发送`，Bot 必须已在目标会话内；日志里状态 `skipped` 且提示「目标与来源是同一个会话」表示被防回环保护拦下了 |
 | Telegram 目标发送失败：账号未启动 | 目标里选的 `account_id` 不在 `TELEGRAM_ACCOUNTS_JSON` 里，或该账号未登录；留空则使用默认账号 |
 | QQ 群里机器人收不到消息 | QQ 官方机器人在群里通常需要 `@机器人`；确认 `QQ_ENABLE_GROUP_C2C=true`，且机器人已入群 |
+| QQ 图片/文件转发成了链接 | 附件超过 `QQ_MAX_MEDIA_MB`、下载失败（CDN 链接过期/网络问题）或 `QQ_DOWNLOAD_MEDIA=false`；看日志里的 `Skip QQ attachment` / `Failed to download QQ attachment` |
+| 转发到微信的文件名叫「媒体」或没有扩展名 | 旧版本拿规则名当 `file_item.file_name`；现在改为原始文件名并自动补扩展名，重新转发即可 |
+| 文件发到 QQ 变成一条文本 | QQ 只稳定支持 `jpg/png`、`mp4`、`silk`，其它格式（pdf/zip/mp3 等）上传会被拒，程序会降级成 `[文件] 名称` 的文本消息 |
 
 ## Telegram Mini App 管理台
 

@@ -70,7 +70,7 @@ async def test_mention_placeholder_is_stripped() -> None:
     assert captured[0].text == "转发我"
 
 
-async def test_attachments_become_text_notes() -> None:
+async def test_attachments_fall_back_to_text_notes_without_downloader() -> None:
     captured: list = []
     client = make_client(captured)
 
@@ -85,7 +85,9 @@ async def test_attachments_become_text_notes() -> None:
     )
 
     message = captured[0]
-    assert message.media_type == "photo"
+    # 没有下载器（或下载失败）时不假装有媒体，只留文本链接。
+    assert message.media_type is None
+    assert message.media_paths == []
     assert "[图片] https://cdn.example/a.png" in message.text
     assert "[文件] b.pdf https://cdn.example/b.pdf" in message.text
     assert [link.url for link in message.links] == [

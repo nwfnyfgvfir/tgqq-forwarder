@@ -84,6 +84,7 @@ Important media/link settings:
 - `TELEGRAM_FORWARD_LINK_PREVIEW_MEDIA` defaults to false, so Telegram webpage preview media is skipped while real attached media still forwards.
 - `TELEGRAM_ALBUM_BUFFER_SECONDS` controls Telegram grouped album aggregation.
 - Media cache cleanup is controlled by `MEDIA_CLEANUP_INTERVAL_SECONDS` and `MEDIA_RETENTION_SECONDS`.
+- `QQ_DOWNLOAD_MEDIA` (default true) + `QQ_MAX_MEDIA_MB` (20) + `QQ_MEDIA_TIMEOUT_SECONDS` (30) control inbound QQ attachment downloads into `media/qq/<chat_id>/`; when off or failing, QQ attachments forward as `[图片] https://...` text.
 
 Telegram outbound settings (QQ / 微信 → TG):
 
@@ -108,7 +109,7 @@ Telegram outbound settings (QQ / 微信 → TG):
 For each incoming Telegram message:
 
 1. `TelegramMediaDownloader.download()` downloads real media when enabled, respects max size, namespaces files under `media/{account_id}/{chat_id}/`, and skips webpage preview media unless explicitly configured.
-2. `event_parser.parse_event()` builds `TelegramForwardMessage` with chat/sender metadata, raw text/caption, extracted URL entities, URL buttons, media type, media paths, and `grouped_id`.
+2. `event_parser.parse_event()` builds `TelegramForwardMessage` with chat/sender metadata, raw text/caption, extracted URL entities, URL buttons, media type, media paths, `media_filenames` (from `message.file.name`, so documents keep their original name), and `grouped_id`.
 3. The listener stamps `account_id` / account user identity onto the message.
 4. `TelegramAlbumBuffer` merges messages sharing `(account_id, chat_id, grouped_id)` so albums/multi-image posts forward once with ordered media paths.
 5. Parsed messages enter the shared `ForwardQueue.enqueue()`.
@@ -146,7 +147,16 @@ Rule platform semantics:
 
 ### QQ integration
 
-`app/qq_official/client.py` subclasses `botpy.Client`. Incoming QQ events do two things: they cache QQ target IDs / latest message IDs needed by QQ Official API sending contexts, and (when an `on_message` callback is supplied) they build a `TelegramForwardMessage` with `source_platform="qq"` and enqueue it, so QQ → Telegram / 微信 rules work. `chat_id` is `group_openid` (group), `channel_id` (channel), `guild_id` (DMS) or `user_openid` (C2C); `<@!id>` placeholders are stripped and attachments become `[图片] https://...` text notes (files are not downloaded). Duplicate event ids are ignored because QQ may fire both the @-mention and the plain group event for one message.
+`app/qq_official/client.py` subclasses `botpy.Client`. Incoming QQ events do two things: they cache QQ target IDs / latest message IDs needed by QQ Official API sending contexts, and (when an `on_message` callback is supplied) they build a `TelegramForwardMessage` with `source_platform="qq"` and enqueue it, so QQ → Telegram / 微信 rules work. `chat_id` is `group_openid` (group), `channel_id` (channel), `guild_id` (DMS) or `user_openid` (C2C); `<@!id>` placeholders are stripped. Duplicate event ids are ignored because QQ may fire both the @-mention and the plain group event for one message.
+
+`app/qq_official/media.py` downloads attachments (image / video / audio / file) into `media/qq/<chat_id>/` **immediately**, because QQ CDN URLs expire: streaming with a `QQ_MAX_MEDIA_MB` cap, suffix from filename → content-type → magic bytes, media type `photo`/`video`/`voice`/`audio`/`document`, and the original `filename` is kept in `TelegramForwardMessage.media_filenames`. Downloaded files become `media_paths` on the message so every target sends the real file; attachments that fail (or `QQ_DOWNLOAD_MEDIA=false`) degrade to `[图片] https://...` text notes so nothing is lost. `QQOfficialSender.stop()` closes the downloader's httpx client.
+
+Media naming / format rules across platforms (do not regress):
+
+- `TelegramForwardMessage.media_filenames` is index-aligned with `media_paths` (empty string = unknown); `media_filename_at()` is the only accessor.
+- Telegram user account: documents are sent with `DocumentAttributeFilename` + `force_document=True`; photos/videos/audio keep their native type. Bot API: `filename=` is passed on the upload.
+- WeChat: `file_item.file_name` = original name (extension appended from the local path when missing).
+- QQ upload API takes no filename and only reliably supports `jpg/png` (1), `mp4` (2), `silk/amr` (3); everything else uses `file_type=4`, and a `ServerError` from the upload falls back to a `[文件] name` text message instead of failing the whole send. `.ogg/.mp3` audio is deliberately sent as a file, not as a QQ voice bubble.
 
 `app/qq_official/sender.py` sends outbound messages:
 
@@ -162,7 +172,7 @@ Rule platform semantics:
 - `client.py`: `WeixinIlinkClient` over httpx. Endpoints: `ilink/bot/get_bot_qrcode`, `ilink/bot/get_qrcode_status`, `ilink/bot/getupdates` (long poll, cursor = `get_updates_buf`), `ilink/bot/sendmessage`, `ilink/bot/getuploadurl`. Required headers: `AuthorizationType: ilink_bot_token`, random `X-WECHAT-UIN`, `Authorization: Bearer <bot_token>`; QR status polling adds `iLink-App-ClientVersion: 1`. `errcode/ret == -14` means the login session expired. Both `getupdates` and `get_qrcode_status` are long polls (server returns after ~30s); a client-side timeout is normal and returns `{}` instead of raising.
 - **QR payload gotcha**: `get_bot_qrcode` returns `{"qrcode": "<token>", "qrcode_img_content": "https://liteapp.weixin.qq.com/q/...?qrcode=<token>&bot_type=3", "ret": 0}` — `qrcode_img_content` is a **scan URL, not an image**. `app/weixin/qrcode.py` renders it locally with `segno` (PNG for the Mini App, ASCII for the CLI) and only accepts base64 payloads that pass an image-magic check.
 - `crypto.py`: media uses AES-128-ECB + PKCS#7; `aes_key` may be base64(raw 16 bytes) or base64(32 hex chars).
-- `media.py`: inbound media is downloaded from the CDN and decrypted; outbound media is encrypted, uploaded, and referenced by the `x-encrypted-param` response header.
+- `media.py`: inbound media is downloaded from the CDN and decrypted; outbound media is encrypted, uploaded, and referenced by the `x-encrypted-param` response header. `download_inbound()` returns `(path, media_type, file_name)` and `build_outbound_items(..., file_names=...)` writes the original name (extension appended when missing) into `file_item.file_name` — never the rule name.
 - `credentials.py`: `data/weixin/<account>/credentials.json` (0600) stores `bot_token`, the long-poll cursor, per-contact `context_token`, and known contacts.
 - `service.py`: `WeixinService` owns the login state machine, the long-poll loop, reconnect/backoff, inbound parsing into `TelegramForwardMessage` (`source_platform="weixin"`, `chat_id` = wxid), and outbound sending.
 - **Protocol constraint**: `sendmessage` requires the recipient's `context_token`, which only arrives with an inbound message from that contact. Forwarding to WeChat therefore only works for contacts who have messaged the account; tokens are cached and persisted.
@@ -211,5 +221,6 @@ Existing tests are organized by subsystem:
 - `tests/test_delivery_router.py`: target-platform dispatch, disabled channel, timeout wrapping.
 - `tests/test_rule_platforms.py`: platform matching, string IDs, schema normalisation, DB roundtrip.
 - `tests/test_telegram_delivery.py`: sent-message registry, user-account and Bot senders, router dispatch, echo-target skip in the queue.
-- `tests/test_qq_inbound.py`: QQ inbound parsing into `TelegramForwardMessage` (group / channel / C2C, mention stripping, attachments, dedupe).
+- `tests/test_qq_inbound.py`: QQ inbound parsing into `TelegramForwardMessage` (group / channel / C2C, mention stripping, attachment notes, dedupe).
+- `tests/test_qq_media.py`: QQ attachment download (size cap, suffix/media-type mapping, failures degrade to text notes, client integration).
 - `tests/test_rss_weixin.py`: RSS delivery dispatch, WeChat availability/context-token gating, transient vs permanent failures, worker integration and test-send.

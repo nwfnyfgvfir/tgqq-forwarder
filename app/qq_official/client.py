@@ -7,6 +7,7 @@ from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import botpy
@@ -14,6 +15,7 @@ from botpy import Client
 from botpy.connection import ConnectionState
 
 from app.platforms import Platform
+from app.qq_official.media import QQAttachmentDownloader
 from app.rules.models import TelegramForwardMessage, TelegramLink
 
 logger = logging.getLogger(__name__)
@@ -88,25 +90,20 @@ def _parse_timestamp(value: object) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
-def _attachment_lines(attachments: list[Any]) -> tuple[list[str], list[str]]:
-    """把 QQ 附件转成文本占位行与媒体类型（不下载文件）。"""
-    lines: list[str] = []
-    media_types: list[str] = []
-    for item in attachments or []:
-        content_type = str(getattr(item, "content_type", "") or "").lower()
-        url = str(getattr(item, "url", "") or "").strip()
-        filename = str(getattr(item, "filename", "") or "").strip()
-        if content_type.startswith("image"):
-            label, media_type = "[图片]", "photo"
-        elif content_type.startswith("video"):
-            label, media_type = "[视频]", "video"
-        elif content_type.startswith("audio"):
-            label, media_type = "[音频]", "audio"
-        else:
-            label, media_type = (f"[文件] {filename}" if filename else "[文件]"), "document"
-        media_types.append(media_type)
-        lines.append(f"{label} {url}".strip())
-    return lines, media_types
+def _attachment_note(item: Any) -> str:
+    """下载失败时的文本兜底：``[图片] https://...``。"""
+    content_type = str(getattr(item, "content_type", "") or "").lower()
+    url = str(getattr(item, "url", "") or "").strip()
+    filename = str(getattr(item, "filename", "") or "").strip()
+    if content_type.startswith("image"):
+        label = "[图片]"
+    elif content_type.startswith("video"):
+        label = "[视频]"
+    elif content_type.startswith("audio"):
+        label = "[音频]"
+    else:
+        label = f"[文件] {filename}" if filename else "[文件]"
+    return f"{label} {url}".strip()
 
 
 class ForwarderQQClient(Client):
@@ -123,10 +120,12 @@ class ForwarderQQClient(Client):
         self,
         *args: Any,
         on_message: MessageCallback | None = None,
+        attachment_downloader: QQAttachmentDownloader | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
         self.on_message = on_message
+        self.attachment_downloader = attachment_downloader
         self._session_last_message_id: dict[str, str] = {}
         self._session_scene: dict[str, str] = {}
         self._targets: dict[tuple[str, str], QQTargetInfo] = {}
@@ -271,11 +270,33 @@ class ForwarderQQClient(Client):
             or sender_id
         )
         text = _clean_text(getattr(message, "content", None))
-        attachment_lines, media_types = _attachment_lines(
-            list(getattr(message, "attachments", None) or [])
-        )
-        if attachment_lines:
-            text = "\n".join([text, *attachment_lines]).strip()
+        attachments = list(getattr(message, "attachments", None) or [])
+        media_paths: list[Path] = []
+        media_types: list[str] = []
+        media_filenames: list[str] = []
+        notes: list[str] = []
+        downloaded: dict[int, tuple[Path, str, str | None]] = {}
+        if attachments and self.attachment_downloader is not None:
+            saved = await self.attachment_downloader.download(
+                attachments,
+                chat_id=chat_id,
+                message_id=message_id,
+            )
+            downloaded = {
+                index: (path, media_type, file_name)
+                for index, path, media_type, file_name in saved
+            }
+        for index, item in enumerate(attachments):
+            hit = downloaded.get(index)
+            if hit is not None:
+                media_paths.append(hit[0])
+                media_types.append(hit[1])
+                media_filenames.append(hit[2] or "")
+                continue
+            # 下载失败 / 未开启下载时退化成文本链接，至少不丢信息。
+            notes.append(_attachment_note(item))
+        if notes:
+            text = "\n".join([text, *notes]).strip()
         if not text and not media_types:
             logger.debug("Skip empty QQ message id=%s chat=%s", message_id, chat_id)
             return
@@ -291,12 +312,15 @@ class ForwarderQQClient(Client):
             sender_is_bot=bool(getattr(author, "bot", False)),
             text=text,
             media_type=media_types[0] if media_types else None,
-            media_path=None,
+            media_path=media_paths[0] if media_paths else None,
             date=_parse_timestamp(getattr(message, "timestamp", None)),
             links=[
                 TelegramLink(text=url, url=url, source="visible_url")
                 for url in _extract_urls(text)
             ],
+            media_paths=media_paths,
+            media_types=media_types,
+            media_filenames=media_filenames,
             source_platform=Platform.QQ.value,
         )
         try:

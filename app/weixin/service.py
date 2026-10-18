@@ -515,6 +515,7 @@ class WeixinService:
 
         media_paths: list[Path] = []
         media_types: list[str] = []
+        media_filenames: list[str] = []
         if self.client is not None:
             for item in items:
                 if not isinstance(item, dict):
@@ -528,9 +529,10 @@ class WeixinService:
                 )
                 if saved is None:
                     continue
-                path, media_type = saved
+                path, media_type, file_name = saved
                 media_paths.append(path)
                 media_types.append(media_type)
+                media_filenames.append(file_name or "")
 
         contact = self.state.contacts.get(from_user_id)
         return TelegramForwardMessage(
@@ -549,6 +551,7 @@ class WeixinService:
             grouped_id=None,
             media_paths=media_paths,
             media_types=media_types,
+            media_filenames=media_filenames,
             account_id=self.account_id,
             account_user_id=None,
             account_username=self.account_user_id,
@@ -625,6 +628,9 @@ class WeixinService:
                 target_user_id=target_user_id,
                 media_paths=media_paths,
                 media_types=media_types,
+                file_names=[
+                    outbound.media_filename_at(index) for index in range(len(media_paths))
+                ],
                 caption=outbound.media_caption,
             )
             for item in items:

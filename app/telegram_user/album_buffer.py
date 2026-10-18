@@ -70,6 +70,7 @@ class TelegramAlbumBuffer:
         links: list[TelegramLink] = []
         media_paths: list[Path] = []
         media_types: list[str] = []
+        media_filenames: list[str] = []
         seen_links: set[tuple[str, str]] = set()
         preview_message = next(
             (
@@ -121,6 +122,8 @@ class TelegramAlbumBuffer:
                 )
             media_paths.extend(message.media_paths)
             media_types.extend(message.media_types)
+            for index in range(len(message.media_paths)):
+                media_filenames.append(message.media_filename_at(index) or "")
 
         return replace(
             base,
@@ -135,4 +138,5 @@ class TelegramAlbumBuffer:
             links=links,
             media_paths=media_paths,
             media_types=media_types,
+            media_filenames=media_filenames,
         )

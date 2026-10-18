@@ -134,6 +134,8 @@ class TelegramForwardMessage:
     grouped_id: int | None = None
     media_paths: list[Path] = field(default_factory=list)
     media_types: list[str] = field(default_factory=list)
+    # 与 media_paths 一一对应的原始文件名（拿不到时为 None），投递时用于还原文件名。
+    media_filenames: list[str] = field(default_factory=list)
     account_id: str | None = None
     account_user_id: int | None = None
     account_username: str | None = None
@@ -148,6 +150,13 @@ class TelegramForwardMessage:
     @property
     def sender_name(self) -> str:
         return self.sender_display_name or self.sender_username or str(self.sender_id or "unknown")
+
+    def media_filename_at(self, index: int) -> str | None:
+        """第 ``index`` 个媒体的原始文件名；没有则返回 None（由调用方回退到本地文件名）。"""
+        if 0 <= index < len(self.media_filenames):
+            name = (self.media_filenames[index] or "").strip()
+            return name or None
+        return None
 
     @property
     def webpage_preview_text(self) -> str:
