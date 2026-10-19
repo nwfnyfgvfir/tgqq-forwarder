@@ -4,7 +4,7 @@ import asyncio
 import logging
 import time
 
-from app.channels.router import DeliveryError, DeliveryRouter
+from app.channels.router import DeliveryError, DeliveryPending, DeliveryRouter
 from app.config import Settings
 from app.platforms import Platform
 from app.qq_official.sender import QQOfficialSender
@@ -293,6 +293,17 @@ class ForwardQueue:
                 message.chat_id,
                 rule.id,
                 target.label,
+            )
+        except DeliveryPending as exc:
+            # 已挂起等 token 刷新，不算失败；补发结果会另写一条日志。
+            logger.info("Forward pending by rule %s to %s: %s", rule.id, target.label, exc)
+            await self._safe_add_forward_log(
+                rule=rule,
+                message=message,
+                status=ForwardStatus.PENDING,
+                forwarded_text=forwarded_text,
+                error_message=str(exc),
+                target=target,
             )
         except Exception as exc:
             logger.exception("Failed to forward message by rule %s to %s", rule.id, target.label)

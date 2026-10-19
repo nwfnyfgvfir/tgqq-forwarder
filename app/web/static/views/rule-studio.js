@@ -1,6 +1,6 @@
-import { api } from '../api.js?v=20261018-tgtg2';
-import { escapeHtml, pageHeader, short, statusPill } from '../components.js?v=20261018-tgtg2';
-import { refreshRules } from '../state.js?v=20261018-tgtg2';
+import { api } from '../api.js?v=20261019-wxpending';
+import { escapeHtml, pageHeader, short, statusPill } from '../components.js?v=20261019-wxpending';
+import { refreshRules } from '../state.js?v=20261019-wxpending';
 
 const DEFAULT_TEMPLATE = '# {source_title_md}\n\n**发送者：{sender_name_md}**\n\n{text}\n\n{footer_note}';
 const TARGET_TYPES_BY_PLATFORM = {
@@ -98,7 +98,7 @@ export function renderRuleStudio(state) {
             <div>
               <h3>微信联系人</h3>
               <div class="choice-list horizontal" id="weixin-contacts">${renderWeixinContacts(state.options?.weixin_contacts || [], initialTargets)}</div>
-              <p class="muted">没有联系人？让对方先给本微信号发一条消息，再刷新本页即可。</p>
+              <p class="muted">没有联系人？让对方先给本微信号发一条消息，再刷新本页即可；token 过期（显示「token 已失效」）同样需要对方再发一条。</p>
             </div>
             <div>
               <h3>Telegram 会话</h3>
@@ -452,12 +452,23 @@ function renderTargets(targets, currentTargets) {
   `).join('');
 }
 
+function weixinTokenLabel(contact) {
+  if (contact.token_stale) return 'token 已失效 · 让对方发条消息';
+  if (!contact.has_context_token) return '待对方发消息';
+  if (!contact.token_updated_at) return '可发送';
+  const minutes = Math.max(0, Math.round((Date.now() / 1000 - contact.token_updated_at) / 60));
+  if (minutes < 60) return `可发送 · ${minutes} 分钟前刷新`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `可发送 · ${hours} 小时前刷新`;
+  return `可发送 · ${Math.round(hours / 24)} 天前刷新`;
+}
+
 function renderWeixinContacts(contacts, currentTargets) {
   if (!contacts.length) return '<span class="muted">还没有微信联系人。</span>';
   const selected = new Set((currentTargets || []).filter((item) => item.platform === 'weixin').map((item) => item.target_id));
   return contacts.slice(0, 24).map((contact) => `
     <button type="button" class="choice-card ${selected.has(contact.user_id) ? 'selected' : ''}" data-weixin-user="${escapeHtml(contact.user_id)}">
-      <strong>${contact.has_context_token ? '可发送' : '待对方发消息'}</strong>
+      <strong class="${contact.token_stale ? 'muted' : ''}">${escapeHtml(weixinTokenLabel(contact))}</strong>
       <code>${escapeHtml(short(contact.user_id, 24))}</code>
       <span>${escapeHtml(contact.name || contact.user_id)}</span>
     </button>

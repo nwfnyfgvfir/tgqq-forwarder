@@ -8,9 +8,11 @@ import pytest
 from app.config import Settings
 from app.weixin.models import (
     WeixinApiError,
+    WeixinContact,
     WeixinCredentials,
     WeixinError,
     WeixinOutboundMessage,
+    WeixinPending,
     WeixinSessionExpired,
 )
 from app.weixin.service import WeixinService, split_text
@@ -560,3 +562,146 @@ async def test_partial_media_failure_keeps_other_items(
     # 第一张失败，但第二张仍然发出去了，错误信息里说明是「部分失败」
     assert "部分内容发送失败" in str(excinfo.value)
     assert len(fake_client.sent) == 1
+
+
+async def test_send_retry_uses_refreshed_token(service, fake_client) -> None:
+    """退避期间对方发来消息刷新了 token，重试要立刻用新的。"""
+    service.settings.weixin_send_retry_delays_seconds = [0.0]
+    service.state.context_tokens["wxid_friend"] = "old-token"
+    used: list[str] = []
+
+    async def flaky(*, to_user_id: str, item_list: list[dict], context_token: str):
+        used.append(context_token)
+        if len(used) == 1:
+            service.state.context_tokens["wxid_friend"] = "new-token"
+            raise WeixinApiError("发送微信消息 失败：errcode=-2 prepare failed", errcode=-2)
+        return {}
+
+    fake_client.send_message = flaky  # type: ignore[method-assign]
+
+    await service.send(WeixinOutboundMessage(target_user_id="wxid_friend", text="hi"))
+
+    assert used == ["old-token", "new-token"]
+
+
+async def test_send_stores_token_from_response(service, fake_client) -> None:
+    service.state.context_tokens["wxid_friend"] = "old-token"
+    service.state.contacts["wxid_friend"] = WeixinContact(user_id="wxid_friend")
+
+    async def rotated(*, to_user_id: str, item_list: list[dict], context_token: str):
+        return {"context_token": "rotated-token"}
+
+    fake_client.send_message = rotated  # type: ignore[method-assign]
+
+    await service.send(WeixinOutboundMessage(target_user_id="wxid_friend", text="hi"))
+
+    contact = service.state.contacts["wxid_friend"]
+    assert service.state.context_tokens["wxid_friend"] == "rotated-token"
+    assert contact.token_stale is False
+    assert contact.token_updated_at > 0
+
+
+async def test_send_marks_token_stale_after_exhausting_retries(
+    service, fake_client
+) -> None:
+    service.settings.weixin_send_retry_delays_seconds = []
+    service.state.context_tokens["wxid_friend"] = "ctx-1"
+    service.state.contacts["wxid_friend"] = WeixinContact(user_id="wxid_friend")
+
+    async def always_fail(*, to_user_id: str, item_list: list[dict], context_token: str):
+        raise WeixinApiError("发送微信消息 失败：errcode=-2 prepare failed", errcode=-2)
+
+    fake_client.send_message = always_fail  # type: ignore[method-assign]
+
+    with pytest.raises(WeixinApiError):
+        await service.send(WeixinOutboundMessage(target_user_id="wxid_friend", text="hi"))
+
+    assert service.state.contacts["wxid_friend"].token_stale is True
+
+
+async def test_inbound_message_clears_stale_token(service) -> None:
+    service.state.contacts["wxid_friend"] = WeixinContact(
+        user_id="wxid_friend",
+        has_context_token=True,
+        token_stale=True,
+    )
+
+    await service._handle_inbound(
+        {
+            "message_id": "msg-refresh-1",
+            "from_user_id": "wxid_friend",
+            "message_type": 1,
+            "context_token": "ctx-fresh",
+            "item_list": [{"type": 1, "text_item": {"text": "在吗"}}],
+        }
+    )
+
+    contact = service.state.contacts["wxid_friend"]
+    assert service.state.context_tokens["wxid_friend"] == "ctx-fresh"
+    assert contact.token_stale is False
+    assert contact.token_updated_at > 0
+
+
+async def test_send_parks_message_when_token_missing(service, fake_client) -> None:
+    service.settings.weixin_pending_send_enabled = True
+
+    with pytest.raises(WeixinPending):
+        await service.send(WeixinOutboundMessage(target_user_id="wxid_friend", text="hi"))
+
+    assert service.pending_count() == 1
+    assert fake_client.sent == []
+
+
+async def test_parked_message_flushes_after_new_inbound_token(
+    service, fake_client
+) -> None:
+    service.settings.weixin_pending_send_enabled = True
+    with pytest.raises(WeixinPending):
+        await service.send(WeixinOutboundMessage(target_user_id="wxid_friend", text="补发我"))
+    scheduled: list[str] = []
+    service._schedule_flush = scheduled.append  # type: ignore[method-assign]
+
+    await service._handle_inbound(
+        {
+            "message_id": "msg-flush-1",
+            "from_user_id": "wxid_friend",
+            "message_type": 1,
+            "context_token": "ctx-new",
+            "item_list": [{"type": 1, "text_item": {"text": "我回来了"}}],
+        }
+    )
+
+    assert scheduled == ["wxid_friend"]
+    await service._flush_pending("wxid_friend")
+    assert service.pending_count() == 0
+    assert len(fake_client.sent) == 1
+    assert fake_client.sent[0]["item_list"][0]["text_item"]["text"] == "补发我"
+
+
+async def test_pending_message_expires_after_ttl(service, fake_client) -> None:
+    service.settings.weixin_pending_send_enabled = True
+    service.settings.weixin_pending_send_ttl_seconds = 1
+    with pytest.raises(WeixinPending):
+        await service.send(WeixinOutboundMessage(target_user_id="wxid_friend", text="过期"))
+    service._pending["wxid_friend"][0].created_at -= 10
+    service.state.context_tokens["wxid_friend"] = "ctx-1"
+
+    await service._flush_pending("wxid_friend")
+
+    assert service.pending_count() == 0
+    assert fake_client.sent == []
+
+
+async def test_pending_queue_drops_oldest_when_full(service, fake_client) -> None:
+    service.settings.weixin_pending_send_enabled = True
+    service.settings.weixin_pending_send_max_per_contact = 1
+
+    for text in ("first", "second"):
+        with pytest.raises(WeixinPending):
+            await service.send(
+                WeixinOutboundMessage(target_user_id="wxid_friend", text=text)
+            )
+
+    queue = service._pending["wxid_friend"]
+    assert len(queue) == 1
+    assert queue[0].outbound.text == "second"

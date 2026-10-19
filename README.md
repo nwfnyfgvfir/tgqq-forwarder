@@ -35,7 +35,7 @@ TGQQ Forwarder 用于在 Telegram、QQ 官方机器人、个人微信之间按�
 7. RSS 订阅为进程内单实例调度；Telegram 发送在“响应丢失 / 进程中断”后不能保证 exactly-once，重试可能造成重复发布。条目去重与“首次基线”策略可避免正常情况下的重复推送。
 8. RSS 抓取默认禁止访问非公网地址（SSRF 防护）。自建 RSSHub 与转发器同机时，需把主机名加入 `RSS_ALLOWED_PRIVATE_HOSTS` 白名单。
 9. RSS 自动翻译使用 OpenAI 兼容的 `/v1/chat/completions` 接口（可自选服务商与模型），译文质量与限流取决于所选服务；翻译失败会自动回退原文，不影响发布。
-10. **个人微信只能“回复”最近主动给本号发过消息的联系人**。微信 iLink 协议要求每次发送都携带该联系人的 `context_token`，它只能从对方发来的消息中获得。因此转发到微信前，需要对方先发一条消息；收到后程序会自动缓存，并在 `data/weixin/<账号>/credentials.json` 中持久化。**token 会过期**：长期没互动后首次发送会返回 `errcode=-2 prepare failed`，让对方再发一条消息即可恢复（程序也会自动退避重试）。
+10. **个人微信只能“回复”最近主动给本号发过消息的联系人**。微信 iLink 协议要求每次发送都携带该联系人的 `context_token`，它只能从对方发来的消息中获得。因此转发到微信前，需要对方先发一条消息；收到后程序会自动缓存，并在 `data/weixin/<账号>/credentials.json` 中持久化。**token 无法主动刷新**（协议里没有换发接口），只能等对方再发一条消息；程序能做的优化是：每次重试都重新读取最新 token、`sendmessage` 响应里若带回新 token 会自动落库、管理台联系人卡片显示 token 新鲜度、失效后打上 `token_stale` 标记并在对方下次发消息时自动清除。
 11. 个人微信走的是腾讯 `openclaw-weixin` / iLink 通道（扫码登录 + 长轮询），不是公开稳定的开放平台接口，协议细节可能调整；登录态失效（`errcode=-14`）时程序会清空凭证并重新等待扫码。
 12. 微信来源只支持好友私聊（1:1），不支持群聊；语音消息保存为 `.silk`，不做转码。
 13. **QQ 来源受官方机器人权限限制**：群里通常要 `@机器人` 才会收到消息（部分场景可收到全部群消息），频道只收到 @ 消息，私聊/C2C 正常；机器人不会收到自己发出的消息。
@@ -350,6 +350,11 @@ WEIXIN_MAX_TEXT_CHARS=1500
 # 微信连续发送会被限流（errcode=-2 prepare failed）；两条消息最小间隔与 -2 重试间隔
 WEIXIN_SEND_MIN_INTERVAL_SECONDS=2
 WEIXIN_SEND_RETRY_DELAYS_SECONDS=2,4
+# token 失效时把消息挂起，等对方发消息（token 刷新）后自动补发（默认关闭）
+WEIXIN_PENDING_SEND_ENABLED=false
+WEIXIN_PENDING_SEND_TTL_SECONDS=3600
+WEIXIN_PENDING_SEND_MAX_PER_CONTACT=5
+WEIXIN_PENDING_SEND_RETRY_SECONDS=120
 # 微信媒体收发开关与单文件大小上限
 WEIXIN_DOWNLOAD_MEDIA=true
 WEIXIN_SEND_MEDIA=true
@@ -359,6 +364,19 @@ WEIXIN_MAX_MEDIA_MB=20
 ## 个人微信（扫码登录）
 
 个人微信通过腾讯 `openclaw-weixin`（iLink / ClawBot）通道接入：扫码登录换取 `bot_token`，随后用长轮询 `ilink/bot/getupdates` 收消息、`ilink/bot/sendmessage` 发消息，**不需要 Webhook 回调地址，也不需要 AppID / Secret**。
+
+### token 失效与「挂起补发」
+
+`context_token` 只能从对方发来的消息里拿到，协议**没有换发/刷新接口**。所以当它过期时（`errcode=-2 prepare failed`，与限流同码），唯一能刷新它的方式就是让对方再给本号发一条消息。
+
+打开 `WEIXIN_PENDING_SEND_ENABLED=true` 后，发送失败的消息不会被丢弃，而是**挂起等待**：
+
+- 对方下次发消息 → token 刷新 → 立刻自动补发（按原顺序）
+- 后台每 `WEIXIN_PENDING_SEND_RETRY_SECONDS` 秒也会再试一次（覆盖「只是限流」的情况）
+- 最多等 `WEIXIN_PENDING_SEND_TTL_SECONDS`（默认 1 小时），每个联系人最多挂起 `WEIXIN_PENDING_SEND_MAX_PER_CONTACT` 条，超出丢最旧的
+- 挂起的消息在日志里状态是 `pending`（页面显示「挂起」），不算失败；系统页能看到当前挂起条数
+
+注意：挂起队列在内存里，**重启进程会丢失**；挂起超过保留时长后媒体文件也可能已被清理。
 
 ### 1. 开启通道
 
@@ -420,7 +438,7 @@ docker compose run --rm tgqq-forwarder python -m app.weixin.login
 | 日志提示「微信需要扫码登录」 | 没有凭证或凭证失效，按上面步骤扫码 |
 | 管理台二维码显示「二维码图片未能生成」 | 镜像里缺少 `segno`（旧镜像），重新构建镜像；也可改用终端 `python -m app.weixin.login` 扫码 |
 | 发送失败：缺少 context_token | 对方还没有给本号发过消息，先让对方发一条 |
-| 发送失败：errcode=-2 prepare failed | 要么是连续发送触发限流，要么是该联系人的 context_token 已过期（两者错误码相同）。程序会按 `WEIXIN_SEND_RETRY_DELAYS_SECONDS` 自动退避重试；仍失败就让对方在微信里给本号发一条消息刷新 token，或调大 `WEIXIN_SEND_MIN_INTERVAL_SECONDS` 降低发送频率 |
+| 发送失败：errcode=-2 prepare failed | 要么是连续发送触发限流，要么是该联系人的 context_token 已过期（两者错误码相同）。程序会按 `WEIXIN_SEND_RETRY_DELAYS_SECONDS` 自动退避重试，并在重试时重新读取最新 token；仍失败会让对方在微信里给本号发一条消息刷新 token，或调大 `WEIXIN_SEND_MIN_INTERVAL_SECONDS` 降低发送频率。规则工坊的微信联系人卡片会显示「token 已失效 / N 小时前刷新」 |
 | 登录态失效（errcode=-14） | 手机端退出了登录或长时间未使用，程序会清空凭证并重新等待扫码 |
 | 二维码反复过期 | 已自动刷新 3 次后停止；重新点击「扫码登录」或重启服务 |
 | RSS 订阅发不到微信 | 订阅只发 Telegram；需要在订阅页点「配置转发规则」，在该频道上建一条目标为微信的转发规则，并确保该微信联系人给本号发过消息（context_token） |

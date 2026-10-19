@@ -1,4 +1,4 @@
-import { emptyState, logRow, pageHeader } from '../components.js?v=20261018-tgtg2';
+import { emptyState, logRow, pageHeader } from '../components.js?v=20261019-wxpending';
 
 export function renderLogs(state) {
   const logs = state.logs || [];
@@ -8,6 +8,7 @@ export function renderLogs(state) {
       <button data-action="logs-filter" data-status="">全部</button>
       <button data-action="logs-filter" data-status="success">成功</button>
       <button data-action="logs-filter" data-status="failed">错误</button>
+      <button data-action="logs-filter" data-status="pending">挂起</button>
       <button data-action="logs-filter" data-status="skipped">跳过</button>
     </section>
     <section class="log-list">

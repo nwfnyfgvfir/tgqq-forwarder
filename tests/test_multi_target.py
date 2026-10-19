@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
-from app.channels.router import DeliveryRouter
+from app.channels.router import DeliveryPending, DeliveryRouter
 from app.config import Settings
 from app.rules.models import TelegramForwardMessage
 from app.rules.service import ForwardRuleService
@@ -305,6 +305,29 @@ async def test_one_target_failure_does_not_block_others() -> None:
     ]
     assert service.log_calls[0]["target"].target_id == "qq-a"
     assert "qq boom" in service.log_calls[0]["error_message"]
+
+
+async def test_queue_logs_pending_status_for_parked_delivery() -> None:
+    settings = Settings()
+    rule = SimpleNamespace(id=1, name="rule")
+    service = FakeService(rule, [target("weixin", "friend", "wxid_c")])
+
+    class PendingRouter:
+        async def deliver(self, rule, message, text, target=None):
+            raise DeliveryPending("微信 token 暂不可用，消息已挂起")
+
+    queue = ForwardQueue(
+        settings,
+        service,
+        FakeQQSender(),
+        FakeWeixinService(),
+        router=PendingRouter(),  # type: ignore[arg-type]
+    )
+
+    await queue._process_message(make_message())
+
+    assert [call["status"] for call in service.log_calls] == [ForwardStatus.PENDING]
+    assert "挂起" in service.log_calls[0]["error_message"]
 
 
 async def test_rule_without_enabled_target_sends_nothing() -> None:

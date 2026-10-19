@@ -92,6 +92,23 @@ class WeixinSessionExpired(WeixinApiError):
     """登录态失效（errcode = -14），必须重新扫码。"""
 
 
+class WeixinMissingToken(WeixinError):
+    """还没有拿到该联系人的 context_token（对方从未给本号发过消息）。"""
+
+
+class WeixinPending(WeixinError):
+    """消息已挂起，等 token 刷新后自动补发。"""
+
+
+@dataclass(slots=True)
+class PendingWeixinMessage:
+    """等待 token 刷新后补发的出站消息。"""
+
+    outbound: WeixinOutboundMessage
+    created_at: float = field(default_factory=time.time)
+    attempts: int = 0
+
+
 class WeixinLoginError(WeixinError):
     """扫码登录流程失败。"""
 
@@ -124,6 +141,10 @@ class WeixinContact:
     name: str | None = None
     last_seen: float = field(default_factory=time.time)
     has_context_token: bool = False
+    # context_token 只能从对方发来的消息里拿到，这里记录它最后一次刷新的时间，
+    # 以及最近一次发送被判为失效（errcode=-2）的标记，供管理台提示。
+    token_updated_at: float = 0.0
+    token_stale: bool = False
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -131,6 +152,8 @@ class WeixinContact:
             "name": self.name,
             "last_seen": self.last_seen,
             "has_context_token": self.has_context_token,
+            "token_updated_at": self.token_updated_at,
+            "token_stale": self.token_stale,
         }
 
 
@@ -202,6 +225,8 @@ class WeixinStatus:
     inbound_total: int = 0
     outbound_total: int = 0
     error_total: int = 0
+    # 已挂起、等待 token 刷新后补发的消息数
+    pending_outbound: int = 0
     last_error: str | None = None
     login: WeixinLoginState | None = None
 
@@ -217,6 +242,7 @@ class WeixinStatus:
             "inbound_total": self.inbound_total,
             "outbound_total": self.outbound_total,
             "error_total": self.error_total,
+            "pending_outbound": self.pending_outbound,
             "last_error": self.last_error,
             "login": self.login.to_dict() if self.login else None,
         }

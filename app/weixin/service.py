@@ -32,6 +32,7 @@ from app.weixin.models import (
     DEFAULT_BOT_TYPE,
     PLATFORM_WEIXIN,
     PREPARE_FAILED_ERRCODE,
+    PendingWeixinMessage,
     WeixinApiError,
     WeixinContact,
     WeixinCredentials,
@@ -40,7 +41,9 @@ from app.weixin.models import (
     WeixinLoginError,
     WeixinLoginState,
     WeixinMessageType,
+    WeixinMissingToken,
     WeixinOutboundMessage,
+    WeixinPending,
     WeixinSessionExpired,
     WeixinStatus,
 )
@@ -101,6 +104,11 @@ class WeixinService:
         # 出站节流：ilink 对连续 sendmessage 会返回 errcode=-2（限流）。
         self._last_send_at = 0.0
         self._send_lock = asyncio.Lock()
+        # token 失效时挂起的消息（按联系人），等对方发消息刷新 token 后补发。
+        self._pending: dict[str, list[PendingWeixinMessage]] = {}
+        self._pending_task: asyncio.Task | None = None
+        self._flush_tasks: set[asyncio.Task] = set()
+        self._flush_lock = asyncio.Lock()
 
     # ---------------------------------------------------------------- 生命周期
 
@@ -131,6 +139,10 @@ class WeixinService:
         self._ensure_client()
         self._stopping.clear()
         self._task = asyncio.create_task(self._run(), name="weixin-channel")
+        if self.settings.weixin_pending_send_enabled:
+            self._pending_task = asyncio.create_task(
+                self._pending_loop(), name="weixin-pending-send"
+            )
         await asyncio.sleep(0)
         logger.info(
             "Weixin channel started account=%s logged_in=%s",
@@ -140,6 +152,16 @@ class WeixinService:
 
     async def stop(self) -> None:
         self._stopping.set()
+        if self._pending_task is not None:
+            self._pending_task.cancel()
+            try:
+                await self._pending_task
+            except asyncio.CancelledError:
+                pass
+            self._pending_task = None
+        for task in list(self._flush_tasks):
+            task.cancel()
+        self._flush_tasks.clear()
         if self._task is not None:
             self._task.cancel()
             try:
@@ -169,9 +191,13 @@ class WeixinService:
             inbound_total=self._inbound_total,
             outbound_total=self._outbound_total,
             error_total=self._error_total,
+            pending_outbound=self.pending_count(),
             last_error=self._last_error,
             login=self.login,
         )
+
+    def pending_count(self) -> int:
+        return sum(len(items) for items in self._pending.values())
 
     def list_contacts(self) -> list[WeixinContact]:
         contacts = list(self.state.contacts.values())
@@ -492,8 +518,15 @@ class WeixinService:
 
         contact = self.state.contacts.get(from_user_id) or WeixinContact(user_id=from_user_id)
         contact.last_seen = time.time()
+        if context_token:
+            # 对方又发消息了 = token 已刷新，之前判定的失效标记要清掉。
+            contact.token_updated_at = contact.last_seen
+            contact.token_stale = False
         contact.has_context_token = from_user_id in self.state.context_tokens
         self.state.contacts[from_user_id] = contact
+        if context_token:
+            # 新 token 到手，立刻尝试补发之前挂起的消息。
+            self._schedule_flush(from_user_id)
 
         message = await self._build_forward_message(
             raw,
@@ -602,6 +635,24 @@ class WeixinService:
     # ---------------------------------------------------------------- 出站
 
     async def send(self, outbound: WeixinOutboundMessage) -> None:
+        """发送消息；token 失效且开启了挂起补发时，消息会排队等 token 刷新。"""
+        try:
+            await self._send_now(outbound)
+        except (WeixinMissingToken, WeixinApiError) as exc:
+            if self._can_park(exc) and self._queue_pending(outbound):
+                raise WeixinPending(
+                    f"微信 token 暂不可用，消息已挂起，等对方发消息后自动补发：{exc}"
+                ) from exc
+            raise
+
+    def _can_park(self, exc: WeixinError) -> bool:
+        if not self.settings.weixin_pending_send_enabled:
+            return False
+        if isinstance(exc, WeixinMissingToken):
+            return True
+        return isinstance(exc, WeixinApiError) and exc.errcode == PREPARE_FAILED_ERRCODE
+
+    async def _send_now(self, outbound: WeixinOutboundMessage) -> None:
         if not self.logged_in or self.client is None:
             raise WeixinError("微信未登录，无法发送消息")
         target_user_id = (outbound.target_user_id or "").strip()
@@ -609,20 +660,24 @@ class WeixinService:
             raise WeixinError("微信目标用户为空")
         context_token = self.state.context_tokens.get(target_user_id)
         if not context_token:
-            raise WeixinError(
+            raise WeixinMissingToken(
                 "缺少该联系人的 context_token：微信协议要求对方先给本微信号发一条消息，"
                 "才能回复他（收到消息后会自动缓存）"
             )
 
         text = (outbound.text or "").strip()
         max_chars = max(50, int(self.settings.weixin_max_text_chars))
+        delivered = False
         for chunk in split_text(text, max_chars):
             await self._send_items(
                 to_user_id=target_user_id,
                 item_list=[build_text_item(chunk)],
                 context_token=context_token,
                 label="文本",
+                # 前面已经有内容发出去了，说明 token 没问题，失败更可能是限流/内容问题。
+                mark_stale=not delivered,
             )
+            delivered = True
 
         media_paths = [path for path in outbound.media_paths if path and Path(path).exists()]
         if media_paths and self.settings.weixin_send_media:
@@ -649,7 +704,9 @@ class WeixinService:
                         item_list=[item],
                         context_token=context_token,
                         label=f"媒体 {index + 1}/{len(items)}",
+                        mark_stale=not delivered,
                     )
+                    delivered = True
                 except WeixinSessionExpired:
                     raise
                 except WeixinError as exc:
@@ -674,12 +731,16 @@ class WeixinService:
         item_list: list[dict[str, Any]],
         context_token: str,
         label: str,
+        mark_stale: bool = True,
     ) -> None:
         """单次 sendmessage：节流 + 对 errcode=-2 做退避重试。
 
         ilink 对连续发送会返回 ``errcode=-2 prepare failed``，它既可能是限流，
         也可能是 ``context_token`` 过期，光看错误码分不出来，所以先重试几次，
         仍然失败时在错误信息里给出可操作提示。
+
+        每次重试都会重新读取 ``context_token``：退避期间对方如果刚好发来消息，
+        新 token 就已经落库，可以直接用新的再试一次。
         """
         client = self.client
         if client is None:
@@ -688,12 +749,14 @@ class WeixinService:
         last_error: WeixinApiError | None = None
         for attempt in range(len(delays) + 1):
             await self._wait_send_slot()
+            token = self.state.context_tokens.get(to_user_id) or context_token
             try:
-                await client.send_message(
+                data = await client.send_message(
                     to_user_id=to_user_id,
                     item_list=item_list,
-                    context_token=context_token,
+                    context_token=token,
                 )
+                self._remember_context_token(to_user_id, data)
                 return
             except WeixinSessionExpired:
                 raise
@@ -711,11 +774,145 @@ class WeixinService:
                     attempt + 1,
                 )
                 await asyncio.sleep(delay)
+        if mark_stale:
+            self._mark_token_stale(to_user_id)
         raise WeixinApiError(
             f"{last_error}（{label}；-2 通常是限流或 context_token 失效，已重试 {len(delays)} 次。"
             "持续失败时请让该联系人在微信里给本号发一条消息，刷新 token 后再试）",
             errcode=PREPARE_FAILED_ERRCODE,
         )
+
+    def _remember_context_token(self, user_id: str, payload: dict[str, Any] | None) -> None:
+        """sendmessage 的响应如果带了新的 context_token，就顺手更新，减少后续失效。"""
+        if not isinstance(payload, dict):
+            return
+        candidates: list[Any] = [payload.get("context_token")]
+        for container_key in ("msg", "data"):
+            container = payload.get(container_key)
+            if isinstance(container, dict):
+                candidates.append(container.get("context_token"))
+                nested = container.get("msg")
+                if isinstance(nested, dict):
+                    candidates.append(nested.get("context_token"))
+        for candidate in candidates:
+            if isinstance(candidate, str) and candidate.strip():
+                token = candidate.strip()
+                if self.state.context_tokens.get(user_id) != token:
+                    self.state.context_tokens[user_id] = token
+                    self._touch_token(user_id)
+                return
+
+    def _touch_token(self, user_id: str) -> None:
+        contact = self.state.contacts.get(user_id) or WeixinContact(user_id=user_id)
+        contact.has_context_token = True
+        contact.token_updated_at = time.time()
+        contact.token_stale = False
+        self.state.contacts[user_id] = contact
+        self._persist()
+
+    def _mark_token_stale(self, user_id: str) -> None:
+        contact = self.state.contacts.get(user_id)
+        if contact is None:
+            return
+        contact.token_stale = True
+        self._persist()
+
+    # ---------------------------------------------------------------- 挂起补发
+
+    def _queue_pending(self, outbound: WeixinOutboundMessage) -> bool:
+        """token 失效时把消息挂起，等对方下次发消息（token 刷新）后补发。"""
+        if not self.settings.weixin_pending_send_enabled:
+            return False
+        user_id = (outbound.target_user_id or "").strip()
+        if not user_id:
+            return False
+        limit = max(1, int(self.settings.weixin_pending_send_max_per_contact))
+        queue = self._pending.setdefault(user_id, [])
+        if len(queue) >= limit:
+            dropped = queue.pop(0)
+            logger.warning(
+                "Weixin pending queue full (%s), drop oldest user=%s text=%r",
+                limit,
+                user_id,
+                (dropped.outbound.text or "")[:40],
+            )
+        queue.append(PendingWeixinMessage(outbound=outbound))
+        logger.info(
+            "Queued Weixin message until token refresh user=%s pending=%s", user_id, len(queue)
+        )
+        return True
+
+    async def _flush_pending(self, user_id: str) -> None:
+        """尝试补发某联系人的挂起消息；token 仍不可用时原样保留。"""
+        async with self._flush_lock:
+            items = list(self._pending.get(user_id) or [])
+            if not items:
+                self._pending.pop(user_id, None)
+                return
+            ttl = max(0, int(self.settings.weixin_pending_send_ttl_seconds))
+            now = time.time()
+            kept: list[PendingWeixinMessage] = []
+            delivered = 0
+            for index, item in enumerate(items):
+                if ttl and now - item.created_at > ttl:
+                    logger.warning(
+                        "Weixin pending message expired user=%s age=%ss",
+                        user_id,
+                        int(now - item.created_at),
+                    )
+                    continue
+                item.attempts += 1
+                try:
+                    await self._send_now(item.outbound)
+                except (WeixinSessionExpired, WeixinMissingToken):
+                    kept.extend(items[index:])
+                    break
+                except WeixinApiError as exc:
+                    if exc.errcode == PREPARE_FAILED_ERRCODE:
+                        # token 还是不行，后面的也不用试了，留到下次。
+                        kept.extend(items[index:])
+                        break
+                    logger.warning("Drop pending Weixin message user=%s: %s", user_id, exc)
+                    continue
+                except WeixinError as exc:
+                    logger.warning("Drop pending Weixin message user=%s: %s", user_id, exc)
+                    continue
+                delivered += 1
+            if kept:
+                self._pending[user_id] = kept
+            else:
+                self._pending.pop(user_id, None)
+            if delivered:
+                logger.info(
+                    "Flushed %s pending Weixin message(s) user=%s remaining=%s",
+                    delivered,
+                    user_id,
+                    len(kept),
+                )
+
+    def _schedule_flush(self, user_id: str) -> None:
+        if not self._pending.get(user_id):
+            return
+        task = asyncio.create_task(
+            self._flush_pending(user_id), name=f"weixin-flush-{user_id}"
+        )
+        self._flush_tasks.add(task)
+        task.add_done_callback(self._flush_tasks.discard)
+
+    async def _pending_loop(self) -> None:
+        """定期尝试补发：覆盖「限流导致的 -2」这种不需要等对方发消息的情况。"""
+        interval = max(15.0, float(self.settings.weixin_pending_send_retry_seconds))
+        while not self._stopping.is_set():
+            try:
+                await asyncio.wait_for(self._stopping.wait(), timeout=interval)
+                return
+            except TimeoutError:
+                pass
+            for user_id in list(self._pending.keys()):
+                try:
+                    await self._flush_pending(user_id)
+                except Exception:
+                    logger.exception("Failed to flush pending Weixin messages user=%s", user_id)
 
     async def _wait_send_slot(self) -> None:
         """保证两条 sendmessage 之间至少间隔 ``weixin_send_min_interval_seconds``。"""

@@ -58,6 +58,8 @@ class ForwardStatus(StrEnum):
     SUCCESS = "success"
     SKIPPED = "skipped"
     FAILED = "failed"
+    # 已挂起，等 token 刷新 / 条件满足后自动补发（目前用于微信 token 失效）
+    PENDING = "pending"
 
 
 class ForwardRule(SQLModel, table=True):

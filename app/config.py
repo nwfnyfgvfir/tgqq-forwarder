@@ -429,6 +429,11 @@ class Settings(BaseSettings):
     weixin_send_min_interval_seconds: float = 2.0
     # 命中 -2 后的重试间隔（秒），逗号分隔；空字符串表示不重试。
     weixin_send_retry_delays_seconds: Annotated[list[float], NoDecode] = [2.0, 4.0]
+    # token 失效时把消息挂起，等对方再发消息（token 刷新）后自动补发。
+    weixin_pending_send_enabled: bool = False
+    weixin_pending_send_ttl_seconds: int = 3600
+    weixin_pending_send_max_per_contact: int = 5
+    weixin_pending_send_retry_seconds: float = 120.0
     weixin_download_media: bool = True
     weixin_send_media: bool = True
     weixin_max_media_mb: int = 20

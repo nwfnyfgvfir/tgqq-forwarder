@@ -12,7 +12,7 @@ from app.qq_official.sender import QQOfficialSender
 from app.rules.models import TelegramForwardMessage
 from app.storage.models import ForwardRule, ForwardTarget, legacy_target
 from app.telegram_outbound.delivery import TelegramDelivery, TelegramDeliveryError
-from app.weixin.models import WeixinError, WeixinOutboundMessage
+from app.weixin.models import WeixinError, WeixinOutboundMessage, WeixinPending
 from app.weixin.service import WeixinService
 
 logger = logging.getLogger(__name__)
@@ -20,6 +20,10 @@ logger = logging.getLogger(__name__)
 
 class DeliveryError(Exception):
     """目标平台不可用或目标配置非法。"""
+
+
+class DeliveryPending(Exception):
+    """消息已挂起，等条件满足后自动补发（不算失败）。"""
 
 
 class DeliveryRouter:
@@ -114,6 +118,8 @@ class DeliveryRouter:
                 self.settings.weixin_send_timeout_seconds,
                 "微信",
             )
+        except WeixinPending as exc:
+            raise DeliveryPending(str(exc)) from exc
         except WeixinError as exc:
             raise DeliveryError(str(exc)) from exc
 

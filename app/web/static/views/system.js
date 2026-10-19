@@ -1,6 +1,6 @@
-import { api } from '../api.js?v=20261018-tgtg2';
-import { escapeHtml, pageHeader, statusPill } from '../components.js?v=20261018-tgtg2';
-import { refreshStatus, state } from '../state.js?v=20261018-tgtg2';
+import { api } from '../api.js?v=20261019-wxpending';
+import { escapeHtml, pageHeader, statusPill } from '../components.js?v=20261019-wxpending';
+import { refreshStatus, state } from '../state.js?v=20261019-wxpending';
 
 let loginPollTimer = null;
 
@@ -70,6 +70,7 @@ function renderWeixinPanel(weixin) {
         <dt>已缓存联系人</dt><dd>${escapeHtml(weixin.contacts)}</dd>
         <dt>收 / 发</dt><dd>${escapeHtml(weixin.inbound_total)} / ${escapeHtml(weixin.outbound_total)}</dd>
         <dt>失败次数</dt><dd>${escapeHtml(weixin.error_total)}</dd>
+        <dt>挂起待补发</dt><dd>${escapeHtml(weixin.pending_outbound ?? 0)}</dd>
         <dt>最近错误</dt><dd>${escapeHtml(weixin.last_error || '-')}</dd>
       </dl>
       ${qrBlock}

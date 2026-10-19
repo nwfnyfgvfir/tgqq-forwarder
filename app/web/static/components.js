@@ -156,10 +156,11 @@ export function ruleCard(rule) {
 }
 
 export function logRow(log) {
+  const statusLabels = { success: '成功', failed: '失败', skipped: '跳过', pending: '挂起' };
   const state = log.status === 'success' ? 'good' : log.status === 'failed' ? 'bad' : 'warning';
   return `
     <article class="log-row">
-      <div>${statusPill(log.status, state)}<strong>#${escapeHtml(log.id)}</strong></div>
+      <div>${statusPill(statusLabels[log.status] || log.status, state)}<strong>#${escapeHtml(log.id)}</strong></div>
       <p>${platformLabel(log.source_platform)} 账号 ${escapeHtml(log.tg_account_id ?? '-')} · ${escapeHtml(log.tg_chat_id ?? '-')} / ${escapeHtml(log.tg_message_id ?? '-')} → ${platformLabel(log.target_platform)} ${escapeHtml(log.qq_target_type)}:${escapeHtml(short(log.qq_target_id, 22))}</p>
       <small>${escapeHtml(formatDate(log.created_at))} · 规则 ${escapeHtml(log.rule_id ?? '-')}</small>
       ${log.error_message ? `<pre>${escapeHtml(log.error_message)}</pre>` : ''}

@@ -1,6 +1,6 @@
-import { api } from '../api.js?v=20261018-tgtg2';
-import { emptyState, escapeHtml, formatDate, pageHeader, statusPill } from '../components.js?v=20261018-tgtg2';
-import { refreshSubscriptions, state } from '../state.js?v=20261018-tgtg2';
+import { api } from '../api.js?v=20261019-wxpending';
+import { emptyState, escapeHtml, formatDate, pageHeader, statusPill } from '../components.js?v=20261019-wxpending';
+import { refreshSubscriptions, state } from '../state.js?v=20261019-wxpending';
 
 const DEFAULT_TEMPLATE = '━━━━━━━━━━━━━━\n📡 {subscription_name}\n🕒 {published_at}\n\n# {title}\n\n{summary}\n\n┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n🌐 译文\n{translation}\n\n🔗 {link}';
 const ui = {

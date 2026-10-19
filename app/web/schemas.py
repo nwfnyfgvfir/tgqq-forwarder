@@ -116,6 +116,7 @@ class WeixinStatusResponse(BaseModel):
     inbound_total: int = 0
     outbound_total: int = 0
     error_total: int = 0
+    pending_outbound: int = 0
     last_error: str | None = None
     login: WeixinLoginResponse | None = None
 
@@ -132,6 +133,7 @@ class WeixinStatusResponse(BaseModel):
             inbound_total=status.inbound_total,
             outbound_total=status.outbound_total,
             error_total=status.error_total,
+            pending_outbound=status.pending_outbound,
             last_error=status.last_error,
             login=WeixinLoginResponse.from_login(status.login) if status.login else None,
         )
@@ -142,6 +144,8 @@ class WeixinContactResponse(BaseModel):
     name: str | None = None
     last_seen: float | None = None
     has_context_token: bool = False
+    token_updated_at: float | None = None
+    token_stale: bool = False
 
     @classmethod
     def from_contact(cls, contact: WeixinContact) -> WeixinContactResponse:
@@ -150,6 +154,8 @@ class WeixinContactResponse(BaseModel):
             name=contact.name,
             last_seen=contact.last_seen or None,
             has_context_token=contact.has_context_token,
+            token_updated_at=contact.token_updated_at or None,
+            token_stale=contact.token_stale,
         )
 
 

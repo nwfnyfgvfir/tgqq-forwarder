@@ -1,4 +1,4 @@
-import { emptyState, pageHeader, ruleCard } from '../components.js?v=20261018-tgtg2';
+import { emptyState, pageHeader, ruleCard } from '../components.js?v=20261019-wxpending';
 
 export function renderRules(state) {
   const rules = state.rules || [];

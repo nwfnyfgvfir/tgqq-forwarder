@@ -83,11 +83,18 @@ class WeixinStateStore:
                     continue
                 item = value if isinstance(value, dict) else {}
                 last_seen = item.get("last_seen")
+                token_updated_at = item.get("token_updated_at")
                 contacts[key] = WeixinContact(
                     user_id=key,
                     name=str(item.get("name") or "") or None,
                     last_seen=float(last_seen) if isinstance(last_seen, (int, float)) else 0.0,
                     has_context_token=key in context_tokens,
+                    token_updated_at=(
+                        float(token_updated_at)
+                        if isinstance(token_updated_at, (int, float))
+                        else 0.0
+                    ),
+                    token_stale=bool(item.get("token_stale")),
                 )
 
         return WeixinState(
