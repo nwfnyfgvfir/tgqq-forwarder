@@ -35,12 +35,12 @@ TGQQ Forwarder 用于在 Telegram、QQ 官方机器人、个人微信之间按�
 7. RSS 订阅为进程内单实例调度；Telegram 发送在“响应丢失 / 进程中断”后不能保证 exactly-once，重试可能造成重复发布。条目去重与“首次基线”策略可避免正常情况下的重复推送。
 8. RSS 抓取默认禁止访问非公网地址（SSRF 防护）。自建 RSSHub 与转发器同机时，需把主机名加入 `RSS_ALLOWED_PRIVATE_HOSTS` 白名单。
 9. RSS 自动翻译使用 OpenAI 兼容的 `/v1/chat/completions` 接口（可自选服务商与模型），译文质量与限流取决于所选服务；翻译失败会自动回退原文，不影响发布。
-10. **个人微信只能“回复”最近主动给本号发过消息的联系人**。微信 iLink 协议要求每次发送都携带该联系人的 `context_token`，它只能从对方发来的消息中获得。因此转发到微信前，需要对方先发一条消息；收到后程序会自动缓存，并在 `data/weixin/<账号>/credentials.json` 中持久化。
+10. **个人微信只能“回复”最近主动给本号发过消息的联系人**。微信 iLink 协议要求每次发送都携带该联系人的 `context_token`，它只能从对方发来的消息中获得。因此转发到微信前，需要对方先发一条消息；收到后程序会自动缓存，并在 `data/weixin/<账号>/credentials.json` 中持久化。**token 会过期**：长期没互动后首次发送会返回 `errcode=-2 prepare failed`，让对方再发一条消息即可恢复（程序也会自动退避重试）。
 11. 个人微信走的是腾讯 `openclaw-weixin` / iLink 通道（扫码登录 + 长轮询），不是公开稳定的开放平台接口，协议细节可能调整；登录态失效（`errcode=-14`）时程序会清空凭证并重新等待扫码。
 12. 微信来源只支持好友私聊（1:1），不支持群聊；语音消息保存为 `.silk`，不做转码。
 13. **QQ 来源受官方机器人权限限制**：群里通常要 `@机器人` 才会收到消息（部分场景可收到全部群消息），频道只收到 @ 消息，私聊/C2C 正常；机器人不会收到自己发出的消息。
 14. QQ 附件（图片/视频/语音/文件）会在收到消息时立刻下载到 `data/media/qq/<会话ID>/`，再作为真实文件转发（Telegram 用 `send_file`，微信走 CDN 上传）；受 `QQ_MAX_MEDIA_MB` 限制，超限或下载失败时退化成 `[图片] https://...` 文本说明。QQ CDN 链接有时效，转发到队列积压过久或关闭下载时只能拿到链接。
-15. **文件名的还原**：微信、QQ 入站时会记录原始文件名（`media_filenames`），转发到 Telegram 用 `DocumentAttributeFilename` / Bot API `filename` 还原，转发到微信写进 `file_item.file_name` 并自动补扩展名。QQ 的上传接口不接收文件名，且只稳定支持 `jpg/png`、`mp4`、`silk` 三类，其它格式（pdf、zip、mp3、ogg 等）可能被 QQ 拒绝，此时会降级成带文件名的文本消息而不是整条失败。
+15. **文件名的还原**：微信、QQ 入站时会记录原始文件名（`media_filenames`），转发到 Telegram 用 `DocumentAttributeFilename` / Bot API `filename` 还原，转发到微信写进 `file_item.file_name` 并自动补扩展名。**QQ 上传接口必须带 `file_name` 字段，否则客户端显示「未命名」且没有扩展名**——现在会带上原始文件名（缺扩展名时用本地后缀补）。QQ 原生只预览 `jpg/png`、`mp4`、`silk`，其它格式按 `file_type=4` 以文件形式发送；若该场景仍被拒，会降级成带文件名的文本消息而不是整条失败。
 16. **防回环**：转发到 Telegram 后，程序会记录自己发出的消息 ID，监听侧自动跳过；同时「来源会话 = 目标会话」的投递会被直接跳过（日志状态 `skipped`），避免 TG → TG 自激。
 17. 用 Bot API 发送 Telegram 目标时，Bot 必须已经在目标会话里，且不能主动私聊用户；Bot 也无法发送到收藏夹，需要收藏夹时请用用户账号。
 
@@ -347,6 +347,9 @@ WEIXIN_QR_MAX_REFRESH=3
 # 单条微信发送超时（秒）与单条文本长度上限（超长会自动分段）
 WEIXIN_SEND_TIMEOUT_SECONDS=60
 WEIXIN_MAX_TEXT_CHARS=1500
+# 微信连续发送会被限流（errcode=-2 prepare failed）；两条消息最小间隔与 -2 重试间隔
+WEIXIN_SEND_MIN_INTERVAL_SECONDS=2
+WEIXIN_SEND_RETRY_DELAYS_SECONDS=2,4
 # 微信媒体收发开关与单文件大小上限
 WEIXIN_DOWNLOAD_MEDIA=true
 WEIXIN_SEND_MEDIA=true
@@ -417,6 +420,7 @@ docker compose run --rm tgqq-forwarder python -m app.weixin.login
 | 日志提示「微信需要扫码登录」 | 没有凭证或凭证失效，按上面步骤扫码 |
 | 管理台二维码显示「二维码图片未能生成」 | 镜像里缺少 `segno`（旧镜像），重新构建镜像；也可改用终端 `python -m app.weixin.login` 扫码 |
 | 发送失败：缺少 context_token | 对方还没有给本号发过消息，先让对方发一条 |
+| 发送失败：errcode=-2 prepare failed | 要么是连续发送触发限流，要么是该联系人的 context_token 已过期（两者错误码相同）。程序会按 `WEIXIN_SEND_RETRY_DELAYS_SECONDS` 自动退避重试；仍失败就让对方在微信里给本号发一条消息刷新 token，或调大 `WEIXIN_SEND_MIN_INTERVAL_SECONDS` 降低发送频率 |
 | 登录态失效（errcode=-14） | 手机端退出了登录或长时间未使用，程序会清空凭证并重新等待扫码 |
 | 二维码反复过期 | 已自动刷新 3 次后停止；重新点击「扫码登录」或重启服务 |
 | RSS 订阅发不到微信 | 订阅只发 Telegram；需要在订阅页点「配置转发规则」，在该频道上建一条目标为微信的转发规则，并确保该微信联系人给本号发过消息（context_token） |
@@ -426,7 +430,7 @@ docker compose run --rm tgqq-forwarder python -m app.weixin.login
 | QQ 群里机器人收不到消息 | QQ 官方机器人在群里通常需要 `@机器人`；确认 `QQ_ENABLE_GROUP_C2C=true`，且机器人已入群 |
 | QQ 图片/文件转发成了链接 | 附件超过 `QQ_MAX_MEDIA_MB`、下载失败（CDN 链接过期/网络问题）或 `QQ_DOWNLOAD_MEDIA=false`；看日志里的 `Skip QQ attachment` / `Failed to download QQ attachment` |
 | 转发到微信的文件名叫「媒体」或没有扩展名 | 旧版本拿规则名当 `file_item.file_name`；现在改为原始文件名并自动补扩展名，重新转发即可 |
-| 文件发到 QQ 变成一条文本 | QQ 只稳定支持 `jpg/png`、`mp4`、`silk`，其它格式（pdf/zip/mp3 等）上传会被拒，程序会降级成 `[文件] 名称` 的文本消息 |
+| 文件发到 QQ 显示「未命名」或格式不对 | QQ 上传接口要求带 `file_name`；现在会带上原始文件名并补扩展名。若文件仍变成一条文本，说明该场景拒绝了 `file_type=4`，程序已降级为 `[文件] 名称` |
 
 ## Telegram Mini App 管理台
 
@@ -631,7 +635,9 @@ MEDIA_CLEANUP_INTERVAL_SECONDS=3600
 MEDIA_RETENTION_SECONDS=86400
 ```
 
-含义：每 3600 秒检查一次 `data/media/`，删除修改时间超过 86400 秒的媒体文件。设置任一值为 `0` 可禁用清理任务。
+含义：启动时先扫一次，之后每 3600 秒检查一次 `data/media/`（含 `telegram/`、`weixin/`、`qq/` 三个来源的落盘文件），删除修改时间超过 86400 秒的媒体文件，并顺手删掉空目录。设置任一值为 `0` 可禁用清理任务。
+
+因此默认情况下**下载的文件会在 24 小时后被自动删除**。如果希望保留更久（例如做归档），把 `MEDIA_RETENTION_SECONDS` 调大；转发队列积压超过保留时长时，消息里的媒体文件可能已被清掉，投递会失败或只剩文本。
 
 ## RSS / RSSHub 订阅推送
 

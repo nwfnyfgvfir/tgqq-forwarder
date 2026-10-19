@@ -123,12 +123,15 @@ async def test_group_media_payload_removes_markdown_and_uses_rich_media_type() -
     sender = QQOfficialSender(Settings(qq_use_markdown=True))
     captured = {}
 
-    async def fake_upload(self, media_path, file_type, *, openid=None, group_openid=None):
+    async def fake_upload(
+        self, media_path, file_type, *, openid=None, group_openid=None, file_name=None
+    ):
         captured["upload"] = {
             "media_path": media_path,
             "file_type": file_type,
             "openid": openid,
             "group_openid": group_openid,
+            "file_name": file_name,
         }
         return "MEDIA"
 
@@ -288,3 +291,69 @@ def test_qq_media_type_keeps_audio_as_file(tmp_path) -> None:
     # QQ 语音只认 silk/amr，mp3 按文件发，避免变成无法播放的语音气泡。
     assert QQOfficialSender._qq_media_type("audio", mp3) == FILE_FILE_TYPE
     assert QQOfficialSender._qq_media_type("voice", silk) == VOICE_FILE_TYPE
+
+
+async def test_upload_payload_includes_file_name(tmp_path) -> None:
+    sender = QQOfficialSender(Settings())
+    media = tmp_path / "cache_173_bin"
+    media.write_bytes(b"pdf-bytes")
+    captured: dict[str, Any] = {}
+
+    async def fake_request(route, **kwargs):
+        captured["path"] = route.path
+        captured["json"] = kwargs["json"]
+        return {"file_uuid": "uuid-1", "file_info": "info-1", "ttl": 0}
+
+    sender.client.api._http.request = fake_request  # type: ignore[method-assign]
+
+    await sender._upload_group_or_c2c_media(
+        media,
+        4,
+        group_openid="group-openid",
+        file_name="季度报表.pdf",
+    )
+
+    assert captured["json"]["file_name"] == "季度报表.pdf"
+    assert captured["json"]["file_type"] == 4
+    assert captured["json"]["srv_send_msg"] is False
+
+
+def test_upload_file_name_falls_back_to_local_name(tmp_path) -> None:
+    media = tmp_path / "cache_173_bin"
+
+    assert QQOfficialSender._upload_file_name(None, media) == "cache_173_bin"
+    assert QQOfficialSender._upload_file_name("", media) == "cache_173_bin"
+    # 没有扩展名时用本地后缀补齐，QQ 才能识别格式
+    assert QQOfficialSender._upload_file_name("季度报表", media.with_suffix(".pdf")) == (
+        "季度报表.pdf"
+    )
+    # 路径分隔符要被去掉
+    assert QQOfficialSender._upload_file_name("../a/b.pdf", media) == "b.pdf"
+
+
+def test_qq_media_type_maps_only_supported_formats(tmp_path) -> None:
+    from app.qq_official.sender import (
+        FILE_FILE_TYPE,
+        IMAGE_FILE_TYPE,
+        VIDEO_FILE_TYPE,
+    )
+
+    def kind(name: str, media_type: str | None = None) -> int:
+        path = tmp_path / name
+        path.write_bytes(b"")
+        return QQOfficialSender._qq_media_type(media_type, path)
+
+    # QQ 原生支持的三类
+    assert kind("a.jpg") == IMAGE_FILE_TYPE
+    assert kind("a.png") == IMAGE_FILE_TYPE
+    assert kind("a.mp4") == VIDEO_FILE_TYPE
+    assert kind("a.silk") == 3
+    # webp / gif / mov 等 QQ 不认，按文件发（带 file_name 后客户端能正确显示）
+    assert kind("a.webp") == FILE_FILE_TYPE
+    assert kind("a.gif") == FILE_FILE_TYPE
+    assert kind("a.mov") == FILE_FILE_TYPE
+    assert kind("a.mp3") == FILE_FILE_TYPE
+    # 无扩展名时退回来源声明的类型
+    assert kind("noext", "photo") == IMAGE_FILE_TYPE
+    assert kind("noext", "video") == VIDEO_FILE_TYPE
+    assert kind("noext", "document") == FILE_FILE_TYPE

@@ -425,6 +425,10 @@ class Settings(BaseSettings):
     weixin_qr_max_refresh: int = 3
     weixin_send_timeout_seconds: float = 60.0
     weixin_max_text_chars: int = 1500
+    # ilink 服务端对连续 sendmessage 会返回 errcode=-2（限流）；这里控制两条消息之间的最小间隔。
+    weixin_send_min_interval_seconds: float = 2.0
+    # 命中 -2 后的重试间隔（秒），逗号分隔；空字符串表示不重试。
+    weixin_send_retry_delays_seconds: Annotated[list[float], NoDecode] = [2.0, 4.0]
     weixin_download_media: bool = True
     weixin_send_media: bool = True
     weixin_max_media_mb: int = 20
@@ -442,6 +446,17 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             return [int(item.strip()) for item in value.split(",") if item.strip()]
         raise TypeError("ADMIN_TELEGRAM_USER_IDS must be a comma-separated string")
+
+    @field_validator("weixin_send_retry_delays_seconds", mode="before")
+    @classmethod
+    def parse_weixin_send_retry_delays(cls, value: object) -> list[float]:
+        if value is None or value == "":
+            return []
+        if isinstance(value, list | tuple):
+            return [float(item) for item in value]
+        if isinstance(value, str):
+            return [float(item.strip()) for item in value.split(",") if item.strip()]
+        raise TypeError("WEIXIN_SEND_RETRY_DELAYS_SECONDS must be a comma-separated string")
 
     @field_validator("mini_app_allowed_origins", mode="before")
     @classmethod

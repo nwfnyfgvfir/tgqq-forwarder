@@ -31,6 +31,8 @@ from app.weixin.models import (
     DEFAULT_BASE_URL,
     DEFAULT_BOT_TYPE,
     PLATFORM_WEIXIN,
+    PREPARE_FAILED_ERRCODE,
+    WeixinApiError,
     WeixinContact,
     WeixinCredentials,
     WeixinError,
@@ -96,6 +98,9 @@ class WeixinService:
         self._error_total = 0
         self._recent_ids: OrderedDict[str, float] = OrderedDict()
         self._qr_expired_count = 0
+        # 出站节流：ilink 对连续 sendmessage 会返回 errcode=-2（限流）。
+        self._last_send_at = 0.0
+        self._send_lock = asyncio.Lock()
 
     # ---------------------------------------------------------------- 生命周期
 
@@ -612,10 +617,11 @@ class WeixinService:
         text = (outbound.text or "").strip()
         max_chars = max(50, int(self.settings.weixin_max_text_chars))
         for chunk in split_text(text, max_chars):
-            await self.client.send_message(
+            await self._send_items(
                 to_user_id=target_user_id,
                 item_list=[build_text_item(chunk)],
                 context_token=context_token,
+                label="文本",
             )
 
         media_paths = [path for path in outbound.media_paths if path and Path(path).exists()]
@@ -633,13 +639,95 @@ class WeixinService:
                 ],
                 caption=outbound.media_caption,
             )
-            for item in items:
-                await self.client.send_message(
-                    to_user_id=target_user_id,
-                    item_list=[item],
-                    context_token=context_token,
+            if media_paths and not items:
+                raise WeixinError("媒体上传全部失败，本次没有发出任何媒体")
+            failures: list[str] = []
+            for index, item in enumerate(items):
+                try:
+                    await self._send_items(
+                        to_user_id=target_user_id,
+                        item_list=[item],
+                        context_token=context_token,
+                        label=f"媒体 {index + 1}/{len(items)}",
+                    )
+                except WeixinSessionExpired:
+                    raise
+                except WeixinError as exc:
+                    # 单个媒体失败不影响后续媒体，最后统一汇报。
+                    failures.append(f"媒体 {index + 1}/{len(items)}: {exc}")
+                    logger.warning(
+                        "Weixin media send failed target=%s index=%s",
+                        target_user_id,
+                        index + 1,
+                        exc_info=True,
+                    )
+            if failures:
+                raise WeixinError(
+                    "部分内容发送失败（其余内容已发送）：" + "；".join(failures)
                 )
         self._outbound_total += 1
+
+    async def _send_items(
+        self,
+        *,
+        to_user_id: str,
+        item_list: list[dict[str, Any]],
+        context_token: str,
+        label: str,
+    ) -> None:
+        """单次 sendmessage：节流 + 对 errcode=-2 做退避重试。
+
+        ilink 对连续发送会返回 ``errcode=-2 prepare failed``，它既可能是限流，
+        也可能是 ``context_token`` 过期，光看错误码分不出来，所以先重试几次，
+        仍然失败时在错误信息里给出可操作提示。
+        """
+        client = self.client
+        if client is None:
+            raise WeixinError("微信未登录，无法发送消息")
+        delays = [max(0.0, float(item)) for item in self.settings.weixin_send_retry_delays_seconds]
+        last_error: WeixinApiError | None = None
+        for attempt in range(len(delays) + 1):
+            await self._wait_send_slot()
+            try:
+                await client.send_message(
+                    to_user_id=to_user_id,
+                    item_list=item_list,
+                    context_token=context_token,
+                )
+                return
+            except WeixinSessionExpired:
+                raise
+            except WeixinApiError as exc:
+                if exc.errcode != PREPARE_FAILED_ERRCODE:
+                    raise
+                last_error = exc
+                if attempt >= len(delays):
+                    break
+                delay = delays[attempt]
+                logger.warning(
+                    "Weixin sendmessage returned -2, retrying in %.1fs label=%s attempt=%s",
+                    delay,
+                    label,
+                    attempt + 1,
+                )
+                await asyncio.sleep(delay)
+        raise WeixinApiError(
+            f"{last_error}（{label}；-2 通常是限流或 context_token 失效，已重试 {len(delays)} 次。"
+            "持续失败时请让该联系人在微信里给本号发一条消息，刷新 token 后再试）",
+            errcode=PREPARE_FAILED_ERRCODE,
+        )
+
+    async def _wait_send_slot(self) -> None:
+        """保证两条 sendmessage 之间至少间隔 ``weixin_send_min_interval_seconds``。"""
+        interval = max(0.0, float(self.settings.weixin_send_min_interval_seconds))
+        if interval <= 0:
+            return
+        async with self._send_lock:
+            loop = asyncio.get_running_loop()
+            wait = self._last_send_at + interval - loop.time()
+            if wait > 0:
+                await asyncio.sleep(wait)
+            self._last_send_at = loop.time()
 
     # ---------------------------------------------------------------- 内部工具
 

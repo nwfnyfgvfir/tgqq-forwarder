@@ -265,6 +265,7 @@ class QQOfficialSender:
                     media_path,
                     media_type,
                     group_openid=outbound.target_id,
+                    file_name=outbound.media_filename_at(0),
                 )
             except botpy.errors.ServerError:
                 # QQ 的文件类型（file_type=4）在部分场景不开放；退化成带文件名的文本。
@@ -287,6 +288,7 @@ class QQOfficialSender:
                     media_path,
                     media_type,
                     openid=outbound.target_id,
+                    file_name=outbound.media_filename_at(0),
                 )
             except botpy.errors.ServerError:
                 logger.warning(
@@ -471,6 +473,7 @@ class QQOfficialSender:
         *,
         openid: str | None = None,
         group_openid: str | None = None,
+        file_name: str | None = None,
     ) -> Media:
         async with aiofiles.open(media_path, "rb") as file:
             file_data = base64.b64encode(await file.read()).decode("utf-8")
@@ -479,6 +482,9 @@ class QQOfficialSender:
             "file_type": file_type,
             "file_data": file_data,
             "srv_send_msg": False,
+            # QQ 上传接口必须带 file_name，否则文件在客户端显示为「未命名」，
+            # 也没有扩展名可供 QQ 判断格式。
+            "file_name": self._upload_file_name(file_name, media_path),
         }
         if openid:
             payload["openid"] = openid
@@ -499,6 +505,16 @@ class QQOfficialSender:
         )
 
     @staticmethod
+    def _upload_file_name(file_name: str | None, media_path: Path) -> str:
+        """QQ 侧展示用的文件名：去路径、补扩展名、限长。"""
+        name = (file_name or "").strip().replace("\\", "/").rsplit("/", 1)[-1].strip()
+        if not name:
+            name = media_path.name
+        if not Path(name).suffix and media_path.suffix:
+            name = f"{name}{media_path.suffix}"
+        return name[:120]
+
+    @staticmethod
     def _media_fallback_text(text: str, outbound: QQOutboundMessage, media_path: Path) -> str:
         """QQ 频道/频道私信不能直接上传文件，至少把原始文件名写进正文。"""
         name = outbound.media_filename_at(0) or media_path.name
@@ -508,13 +524,22 @@ class QQOfficialSender:
     @staticmethod
     def _qq_media_type(media_type: str | None, media_path: Path) -> int:
         suffix = media_path.suffix.lower()
-        if media_type == "photo" or suffix in {".jpg", ".jpeg", ".png", ".gif", ".webp"}:
+        # QQ 只认 png/jpg 图片、mp4 视频、silk 语音；其它格式（webp/gif/mov/mp3…）
+        # 一律按「文件」发，带上 file_name 后 QQ 能正确显示文件名与格式。
+        if suffix in {".jpg", ".jpeg", ".png"}:
             return IMAGE_FILE_TYPE
-        if media_type == "video" or suffix in {".mp4", ".mov", ".mkv", ".webm"}:
+        if suffix == ".mp4":
             return VIDEO_FILE_TYPE
-        # QQ 的语音消息只认 silk/amr；ogg/mp3 这类按文件发，否则会变成无法播放的语音。
-        if suffix in {".silk", ".amr"}:
+        if suffix == ".silk":
             return VOICE_FILE_TYPE
+        if not suffix:
+            # 没有扩展名时只能按来源声明的媒体类型兜底。
+            if media_type == "photo":
+                return IMAGE_FILE_TYPE
+            if media_type == "video":
+                return VIDEO_FILE_TYPE
+            if media_type == "voice":
+                return VOICE_FILE_TYPE
         return FILE_FILE_TYPE
 
     @staticmethod

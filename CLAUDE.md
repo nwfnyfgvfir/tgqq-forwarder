@@ -156,7 +156,7 @@ Media naming / format rules across platforms (do not regress):
 - `TelegramForwardMessage.media_filenames` is index-aligned with `media_paths` (empty string = unknown); `media_filename_at()` is the only accessor.
 - Telegram user account: documents are sent with `DocumentAttributeFilename` + `force_document=True`; photos/videos/audio keep their native type. Bot API: `filename=` is passed on the upload.
 - WeChat: `file_item.file_name` = original name (extension appended from the local path when missing).
-- QQ upload API takes no filename and only reliably supports `jpg/png` (1), `mp4` (2), `silk/amr` (3); everything else uses `file_type=4`, and a `ServerError` from the upload falls back to a `[文件] name` text message instead of failing the whole send. `.ogg/.mp3` audio is deliberately sent as a file, not as a QQ voice bubble.
+- QQ upload API (`/v2/groups|users/{id}/files`) **requires a `file_name` field** — omitting it makes QQ show 「未命名」 with no extension, which also breaks format detection. `_upload_file_name()` strips paths, appends the local suffix when missing, and caps length. Media type is suffix-driven and strict: `jpg/jpeg/png` → 1, `mp4` → 2, `silk` → 3, everything else (webp/gif/mov/mp3/pdf…) → `file_type=4`; extension-less files fall back to the declared media type. A `ServerError` from the upload falls back to a `[文件] name` text message instead of failing the whole send.
 
 `app/qq_official/sender.py` sends outbound messages:
 
@@ -175,7 +175,7 @@ Media naming / format rules across platforms (do not regress):
 - `media.py`: inbound media is downloaded from the CDN and decrypted; outbound media is encrypted, uploaded, and referenced by the `x-encrypted-param` response header. `download_inbound()` returns `(path, media_type, file_name)` and `build_outbound_items(..., file_names=...)` writes the original name (extension appended when missing) into `file_item.file_name` — never the rule name.
 - `credentials.py`: `data/weixin/<account>/credentials.json` (0600) stores `bot_token`, the long-poll cursor, per-contact `context_token`, and known contacts.
 - `service.py`: `WeixinService` owns the login state machine, the long-poll loop, reconnect/backoff, inbound parsing into `TelegramForwardMessage` (`source_platform="weixin"`, `chat_id` = wxid), and outbound sending.
-- **Protocol constraint**: `sendmessage` requires the recipient's `context_token`, which only arrives with an inbound message from that contact. Forwarding to WeChat therefore only works for contacts who have messaged the account; tokens are cached and persisted.
+- **Protocol constraint**: `sendmessage` requires the recipient's `context_token`, which only arrives with an inbound message from that contact. Forwarding to WeChat therefore only works for contacts who have messaged the account; tokens are cached and persisted. Tokens go stale: `errcode=-2 prepare failed` is returned both for rate limiting and for an expired token (indistinguishable by code), so `WeixinService._send_items()` throttles consecutive sends (`WEIXIN_SEND_MIN_INTERVAL_SECONDS`, default 2s), retries `-2` with backoff (`WEIXIN_SEND_RETRY_DELAYS_SECONDS`, default `2,4`), and appends an actionable hint ("让对方再发一条消息刷新 token") when retries are exhausted.
 - `app/web/app.py` exposes `/api/weixin/status`, `/api/weixin/contacts`, `POST/GET /api/weixin/login`, `POST /api/weixin/logout`; the Mini App system page renders the QR code from `login.image_data_url`.
 - RSS subscriptions can target WeChat directly (`app/rss/delivery.py`); `RssWorker` takes `weixin_service` and the publish gate (`ApplicationRuntime._can_publish_rss`) is satisfied by either a connected Telegram listener or a connected WeChat channel.
 
@@ -216,7 +216,7 @@ Existing tests are organized by subsystem:
 - `tests/test_db.py`: database/repository/service behavior.
 - `tests/test_weixin_crypto.py`: PKCS#7 + AES-ECB roundtrip and `aes_key` parsing.
 - `tests/test_weixin_client.py`: iLink request headers/payloads, envelope unwrapping, errcode handling, media upload/download (httpx `MockTransport`).
-- `tests/test_weixin_service.py`: inbound parsing, dedupe, context_token caching, send splitting, QR login flow, session expiry.
+- `tests/test_weixin_service.py`: inbound parsing, dedupe, context_token caching, send splitting, `-2` retry/throttle, QR login flow, session expiry.
 - `tests/test_weixin_api.py`: Mini App WeChat endpoints and platform-aware rule creation.
 - `tests/test_delivery_router.py`: target-platform dispatch, disabled channel, timeout wrapping.
 - `tests/test_rule_platforms.py`: platform matching, string IDs, schema normalisation, DB roundtrip.

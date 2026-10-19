@@ -19,6 +19,9 @@ DEFAULT_BOT_TYPE = "3"
 
 # getupdates / sendmessage 返回该错误码表示登录态已失效，需要重新扫码。
 SESSION_TIMEOUT_ERRCODE = -14
+# sendmessage 返回该错误码时服务端只会给出 "prepare failed"：
+# 既可能是连续发送触发限流，也可能是 context_token 过期，需要重试 + 提示用户。
+PREPARE_FAILED_ERRCODE = -2
 
 
 class WeixinItemType(IntEnum):

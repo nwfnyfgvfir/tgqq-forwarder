@@ -7,6 +7,7 @@ import pytest
 
 from app.config import Settings
 from app.weixin.models import (
+    WeixinApiError,
     WeixinCredentials,
     WeixinError,
     WeixinOutboundMessage,
@@ -25,6 +26,9 @@ def make_settings(tmp_path, **overrides) -> Settings:
         "media_dir": tmp_path / "media",
         "weixin_state_dir": tmp_path / "weixin",
         "weixin_enabled": True,
+        # 测试里不要真的等待节流/退避
+        "weixin_send_min_interval_seconds": 0.0,
+        "weixin_send_retry_delays_seconds": [],
     }
     data.update(overrides)
     return Settings(**data)
@@ -460,3 +464,99 @@ async def test_send_appends_suffix_when_file_name_lacks_one(
 
     file_calls = [call for call in fake_client.sent if call["item_list"][0]["type"] == 4]
     assert file_calls[0]["item_list"][0]["file_item"]["file_name"] == "季度报表.pdf"
+
+
+async def test_send_retries_on_prepare_failed(service, fake_client) -> None:
+    service.settings.weixin_send_retry_delays_seconds = [0.0, 0.0]
+    service.state.context_tokens["wxid_friend"] = "ctx-1"
+    calls: list[list[dict]] = []
+    original = fake_client.send_message
+
+    async def flaky(*, to_user_id: str, item_list: list[dict], context_token: str):
+        calls.append(item_list)
+        if len(calls) == 1:
+            raise WeixinApiError("发送微信消息 失败：errcode=-2 prepare failed", errcode=-2)
+        return await original(
+            to_user_id=to_user_id, item_list=item_list, context_token=context_token
+        )
+
+    fake_client.send_message = flaky  # type: ignore[method-assign]
+
+    await service.send(WeixinOutboundMessage(target_user_id="wxid_friend", text="hi"))
+
+    assert len(calls) == 2
+    assert len(fake_client.sent) == 1
+    assert service.status().outbound_total == 1
+
+
+async def test_send_surfaces_prepare_failed_hint(service, fake_client) -> None:
+    service.settings.weixin_send_retry_delays_seconds = [0.0]
+    service.state.context_tokens["wxid_friend"] = "ctx-1"
+    calls: list[list[dict]] = []
+
+    async def always_fail(*, to_user_id: str, item_list: list[dict], context_token: str):
+        calls.append(item_list)
+        raise WeixinApiError("发送微信消息 失败：errcode=-2 prepare failed", errcode=-2)
+
+    fake_client.send_message = always_fail  # type: ignore[method-assign]
+
+    with pytest.raises(WeixinApiError) as excinfo:
+        await service.send(WeixinOutboundMessage(target_user_id="wxid_friend", text="hi"))
+
+    assert excinfo.value.errcode == -2
+    assert "context_token" in str(excinfo.value)
+    assert "重试 1 次" in str(excinfo.value)
+    assert len(calls) == 2
+
+
+async def test_send_does_not_retry_other_errors(service, fake_client) -> None:
+    service.settings.weixin_send_retry_delays_seconds = [0.0, 0.0]
+    service.state.context_tokens["wxid_friend"] = "ctx-1"
+    calls: list[list[dict]] = []
+
+    async def boom(*, to_user_id: str, item_list: list[dict], context_token: str):
+        calls.append(item_list)
+        raise WeixinApiError("发送微信消息 失败：errcode=-1 unknown", errcode=-1)
+
+    fake_client.send_message = boom  # type: ignore[method-assign]
+
+    with pytest.raises(WeixinApiError):
+        await service.send(WeixinOutboundMessage(target_user_id="wxid_friend", text="hi"))
+
+    assert len(calls) == 1
+
+
+async def test_partial_media_failure_keeps_other_items(
+    service, fake_client, tmp_path
+) -> None:
+    service.state.context_tokens["wxid_friend"] = "ctx-1"
+    first = tmp_path / "a.jpg"
+    second = tmp_path / "b.jpg"
+    first.write_bytes(b"jpeg-1")
+    second.write_bytes(b"jpeg-2")
+    seen: list[int] = []
+
+    async def flaky(*, to_user_id: str, item_list: list[dict], context_token: str):
+        item_type = item_list[0]["type"]
+        seen.append(item_type)
+        if item_type == 2 and seen.count(2) == 1:
+            raise WeixinApiError("发送微信消息 失败：errcode=-2 prepare failed", errcode=-2)
+        fake_client.sent.append(
+            {"to_user_id": to_user_id, "item_list": item_list, "context_token": context_token}
+        )
+
+    fake_client.send_message = flaky  # type: ignore[method-assign]
+
+    with pytest.raises(WeixinError) as excinfo:
+        await service.send(
+            WeixinOutboundMessage(
+                target_user_id="wxid_friend",
+                text="",
+                media_paths=[first, second],
+                media_types=["photo", "photo"],
+            )
+        )
+
+    # 第一张失败，但第二张仍然发出去了，错误信息里说明是「部分失败」
+    assert "部分内容发送失败" in str(excinfo.value)
+    assert len(fake_client.sent) == 1
