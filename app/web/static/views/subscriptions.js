@@ -67,6 +67,19 @@ function statusBar(current) {
   </div>`;
 }
 
+function keywordChips(subscription) {
+  const includes = subscription.include_keywords || [];
+  const excludes = subscription.exclude_keywords || [];
+  if (!includes.length && !excludes.length) {
+    return '<p class="muted">未设置关键词：所有带链接的新条目都会发送，模板里的 <code>{keywords}</code> 渲染为空。</p>';
+  }
+  const chips = [
+    ...includes.map((item) => `<span>${escapeHtml(item)}</span>`),
+    ...excludes.map((item) => `<span>−${escapeHtml(item)}</span>`),
+  ].join('');
+  return `<div class="chips rss-keywords">${chips}</div>`;
+}
+
 function card(subscription) {
   const id = String(subscription.id);
   const busy = ui.busy.has(id);
@@ -84,6 +97,7 @@ function card(subscription) {
       <div><dt>连续失败</dt><dd>${escapeHtml(subscription.failure_count ?? 0)}</dd></div>
     </dl>
     <div class="rss-counts"><span>已发送 <b>${escapeHtml(subscription.sent_count ?? 0)}</b></span><span>待发送 <b>${escapeHtml(subscription.pending_count ?? 0)}</b></span><span class="${subscription.failed_count ? 'rss-error-text' : ''}">失败 <b>${escapeHtml(subscription.failed_count ?? 0)}</b></span></div>
+    ${keywordChips(subscription)}
     ${subscription.last_error ? `<p class="rss-error-text rss-last-error">最近错误：${escapeHtml(subscription.last_error)}</p>` : ''}
     <div class="card-actions">
       ${[['edit', '编辑'], ['toggle', subscription.enabled ? '停用' : '启用'], ['check', '立即检查'], ['test', '立即试发'], ...(subscription.failed_count > 0 ? [['retry', '重试失败']] : []), ['reevaluate', '按关键词重判'], ['history', '条目历史'], ['rule', '配置QQ转发规则'], ['delete', '删除']].map(([action, label]) => `<button type="button" ${busy ? 'disabled' : ''} class="${action === 'delete' ? 'danger' : ''}" data-rss-action="${action}" data-id="${escapeHtml(id)}">${label}</button>`).join('')}
@@ -156,6 +170,7 @@ function editor(current) {
           <label for="rss-summary-length">摘要最大长度（字符）<input id="rss-summary-length" name="max_summary_length" type="number" required min="100" max="2000" step="1" value="${escapeHtml(draft.max_summary_length)}" /></label>
           <label class="switch-line" for="rss-translate"><input id="rss-translate" name="translate" type="checkbox" ${draft.translate ? 'checked' : ''} /> 翻译成中文（源语言自动检测，非中文才翻译；译文显示在原文下方）</label>
           <label for="rss-template">消息模板<textarea id="rss-template" name="message_template" required rows="10">${escapeHtml(draft.message_template)}</textarea></label>
+          <p id="rss-keywords-hint" class="muted"></p>
           <p class="muted">默认变量：<code>{subscription_name}</code>、<code>{title}</code>、<code>{published_at}</code>、<code>{summary}</code>、<code>{translation}</code>、<code>{keywords}</code>、<code>{link}</code>。<code>{keywords}</code> 是本条命中的包含关键词（顿号分隔）；模板里不写它时，也会自动补一行 <code>🔑 关键词：…</code> 到链接上方。<code>{published_at}</code> 渲染为本地时间（如 2026-10-13 08:30）。某一行引用的占位符全为空时整行省略，空行分隔的整段全为空时整段省略——所以可以放心给可选字段加 <code>🕒</code> 这类前缀，源里没时间、没译文时不会留下孤立图标。<code># {title}</code> 里的 <code>#</code> 在转发到 QQ 时会渲染成一号标题（<code>##</code> 为二号），在 Telegram 里按原样显示。<code>{translation}</code> 为译文，只包含模板里写到的原文字段（没写 <code>{title}</code> 就不翻译标题），会排在原文下方。QQ 转发规则使用 <code>{text}</code> 保留发布内容。</p>
         </details>
         <p id="rss-form-error" class="rss-error-text" role="alert">${escapeHtml(ui.formError)}</p>
@@ -261,6 +276,18 @@ function updateFormHints(form) {
   form.querySelector('#rss-initial-help').textContent = latest ? '首次建立基线时，将最近 N 条加入发送队列；后续只处理新条目。' : '首次只建立去重基线，不发送已有文章；之后检查发现的新条目才进入发送队列。';
   form.querySelector('#rss-feed-change').hidden = !ui.original || ui.draft.feed_url.trim() === ui.original.feed_url;
   form.querySelector('#rss-target-change').hidden = !ui.original || ui.draft.tg_chat_id.trim() === String(ui.original.tg_chat_id);
+  const keywordHint = form.querySelector('#rss-keywords-hint');
+  if (keywordHint) {
+    const usesPlaceholder = /\{keywords\}/.test(ui.draft.message_template || '');
+    const count = (ui.draft.include_keywords || '').split(/[,，;；\r\n]+/).map((item) => item.trim()).filter(Boolean).length;
+    if (!usesPlaceholder) {
+      keywordHint.textContent = '模板里没有 {keywords}，消息不会显示关键词；需要就在模板里写一行 {keywords}。';
+    } else if (count === 0) {
+      keywordHint.textContent = '模板里有 {keywords}，但「包含关键词」是空的：这一行渲染出来是空，会被整行省略。';
+    } else {
+      keywordHint.textContent = `模板里的 {keywords} 会渲染成本条命中的词（当前设置 ${count} 个关键词）。`;
+    }
+  }
 }
 
 function formPayload(form) {

@@ -182,17 +182,6 @@ def render_entry(config, entry, feed_title: str | None = None) -> str:
     text = "\n".join(line.rstrip() for line in text.splitlines())
     if entry.link and entry.link not in text:
         text = f"{text}\n\n{entry.link}".strip()
-    # 模板没写 `{keywords}` 时自动补一行到链接上方，老订阅不用改模板也能看到命中词。
-    if values["keywords"] and "keywords" not in template_fields(config.message_template):
-        line = f"🔑 关键词：{values['keywords']}"
-        if entry.link and text.rstrip().endswith(entry.link):
-            # 插在链接所在整行的上方，避免把 `🔗 {link}` 拆成两行。
-            line_start = text.rfind("\n", 0, text.rfind(entry.link)) + 1
-            head = text[:line_start]
-            tail = text[line_start:].strip()
-            text = f"{head}{line}\n{tail}"
-        else:
-            text = f"{text}\n{line}"
     # 占位符为空（如无发布时间）时不留空行。
     return fit_message(BLANK_LINES.sub("\n\n", text), entry.link)
 

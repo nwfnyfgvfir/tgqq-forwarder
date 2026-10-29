@@ -77,7 +77,11 @@ def validate_template(value: str) -> str:
         if re.fullmatch(r"(?:[^{}]|\{\{|\}\}|\{(?:" + fields + r")\})*", value) is None:
             raise ValueError
     except ValueError:
-        raise ValueError("模板仅允许约定的简单占位符，不允许属性、索引或格式化") from None
+        # 报错里直接列出可用占位符：服务端版本比前端旧时，{keywords} 之类的
+        # 新占位符会让整次保存 422 失败，用户只看「不允许」根本定位不到原因。
+        raise ValueError(
+            "模板只支持这些占位符：" + "、".join(f"{{{name}}}" for name in sorted(TEMPLATE_FIELDS))
+        ) from None
     return value
 
 

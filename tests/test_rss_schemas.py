@@ -355,13 +355,12 @@ def test_keywords_line_at_bottom_and_hidden_when_not_matched() -> None:
     assert "🔑" not in render_entry(payload(), entry)
 
 
-def test_keywords_line_falls_back_for_legacy_template() -> None:
+def test_keywords_are_not_auto_appended_without_placeholder() -> None:
+    """模板没写 {keywords} 就不显示，不做任何自动追加。"""
     entry = _keyword_entry()
     legacy = "📡 {subscription_name}\n\n# {title}\n\n{summary}\n\n🔗 {link}"
-    text = render_entry(
-        payload(message_template=legacy, include_keywords=["免费"]), entry
-    )
-    assert text.splitlines()[-2:] == ["🔑 关键词：免费", "🔗 https://example.com/1"]
+    text = render_entry(payload(message_template=legacy, include_keywords=["免费"]), entry)
+    assert "🔑" not in text and "免费" in text.split("🔗")[0]
 
 
 def test_keywords_placeholder_allows_custom_position() -> None:
