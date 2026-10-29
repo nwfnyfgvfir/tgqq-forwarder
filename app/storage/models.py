@@ -266,6 +266,8 @@ class RssEntry(SQLModel, table=True):
     status: str = Field(default="pending", max_length=32, index=True)
     attempts: int = 0
     last_error: str | None = None
+    # 仅 status=skipped 时有值，说明为什么没发（未命中关键词/缺链接/首次基线）。
+    skip_reason: str | None = Field(default=None, max_length=255)
     next_retry_at: datetime | None = Field(
         default=None, sa_column=Column(RssUTCDateTime(), index=True)
     )

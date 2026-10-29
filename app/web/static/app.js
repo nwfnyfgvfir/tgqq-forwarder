@@ -1,12 +1,12 @@
-import { api } from './api.js?v=20261019-wxpending';
-import { renderShell } from './components.js?v=20261019-wxpending';
-import { bootstrapData, navigate, refreshLogs, refreshRules, refreshStatus, refreshSubscriptions, setState, state, subscribe } from './state.js?v=20261019-wxpending';
-import { renderDashboard } from './views/dashboard.js?v=20261019-wxpending';
-import { renderLogs } from './views/logs.js?v=20261019-wxpending';
-import { filterRules, renderRules } from './views/rules.js?v=20261019-wxpending';
-import { bindRuleStudio, renderRuleStudio } from './views/rule-studio.js?v=20261019-wxpending';
-import { renderSystem, bindSystem } from './views/system.js?v=20261019-wxpending';
-import { bindSubscriptions, canRefreshSubscriptions, renderSubscriptions, updateSubscriptions } from './views/subscriptions.js?v=20261019-wxpending';
+import { api } from './api.js?v=20261029-rsskw';
+import { renderShell } from './components.js?v=20261029-rsskw';
+import { bootstrapData, navigate, refreshLogs, refreshRules, refreshStatus, refreshSubscriptions, setState, state, subscribe } from './state.js?v=20261029-rsskw';
+import { renderDashboard } from './views/dashboard.js?v=20261029-rsskw';
+import { renderLogs } from './views/logs.js?v=20261029-rsskw';
+import { filterRules, renderRules } from './views/rules.js?v=20261029-rsskw';
+import { bindRuleStudio, renderRuleStudio } from './views/rule-studio.js?v=20261029-rsskw';
+import { renderSystem, bindSystem } from './views/system.js?v=20261029-rsskw';
+import { bindSubscriptions, canRefreshSubscriptions, renderSubscriptions, updateSubscriptions } from './views/subscriptions.js?v=20261029-rsskw2';
 
 const tg = window.Telegram?.WebApp;
 const root = document.querySelector('#app');

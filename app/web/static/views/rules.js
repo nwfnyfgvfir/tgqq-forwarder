@@ -1,4 +1,4 @@
-import { emptyState, pageHeader, ruleCard } from '../components.js?v=20261019-wxpending';
+import { emptyState, pageHeader, ruleCard } from '../components.js?v=20261029-rsskw';
 
 export function renderRules(state) {
   const rules = state.rules || [];

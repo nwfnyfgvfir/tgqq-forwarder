@@ -12,13 +12,21 @@ from telegram.error import BadRequest, Forbidden, NetworkError, RetryAfter, Tele
 
 from app.config import Settings
 from app.rss.errors import RssError
-from app.rss.formatting import matches_keywords, render_entry, translated_fields
+from app.rss.formatting import (
+    keyword_skip_reason,
+    matches_keywords,
+    render_entry,
+    translated_fields,
+)
 from app.rss.publisher import RssPublisher
 from app.rss.service import RssService
 from app.rss.translator import AITranslator
 from app.storage.models import RssEntry, RssSubscription, utc_now
 
 logger = logging.getLogger(__name__)
+
+# 首次建立基线时被跳过的条目，重新评估关键词时不补发，避免建订阅时的旧文章被灌进频道。
+BASELINE_SKIP_REASON = "首次基线未发送"
 
 
 class RssWorker:
@@ -130,6 +138,58 @@ class RssWorker:
             count = result.rowcount
         self._schedule(subscription_id)
         return {"scheduled": True, "subscription_id": subscription_id, "retried_count": count}
+
+    async def reevaluate_keywords(self, subscription_id: int) -> dict:
+        """按当前关键词重新评估历史跳过条目，把现在命中的放回发送队列。
+
+        用户显式触发：只补发「因关键词被跳过」的条目，首次基线跳过的历史保持不动，
+        避免改一次关键词就把建订阅时的全部旧文章灌进频道。
+        """
+        async with (
+            self.service.subscription_lock(subscription_id),
+            self.service.db.session() as session,
+        ):
+            sub = await self._require_enabled(session, subscription_id)
+            entries = (
+                (
+                    await session.execute(
+                        select(RssEntry).where(
+                            RssEntry.subscription_id == subscription_id,
+                            RssEntry.status == "skipped",
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            requeued = 0
+            kept = 0
+            for entry in entries:
+                if entry.skip_reason == BASELINE_SKIP_REASON:
+                    kept += 1
+                    continue
+                if not (entry.link or "").strip():
+                    kept += 1
+                    continue
+                reason = keyword_skip_reason(sub, entry)
+                if reason is not None:
+                    if entry.skip_reason != reason:
+                        entry.skip_reason = reason
+                    kept += 1
+                    continue
+                entry.status = "pending"
+                entry.skip_reason = None
+                entry.attempts = 0
+                entry.next_retry_at = None
+                requeued += 1
+        if requeued:
+            self._schedule(subscription_id)
+        return {
+            "scheduled": bool(requeued),
+            "subscription_id": subscription_id,
+            "requeued_count": requeued,
+            "kept_count": kept,
+        }
 
     async def test_send_latest(self, subscription_id: int) -> dict:
         """手动试发当前源最新一条，用于端到端自检整条链路。
@@ -420,11 +480,17 @@ class RssWorker:
                 ).scalar_one_or_none()
                 if existing is not None:
                     continue
-                send = bool(entry.link) and matches_keywords(stored, entry)
+                # 关键词过滤先算原因，跳过时把原因落库，便于在条目历史里自查。
+                reason = keyword_skip_reason(stored, entry)
+                if not entry.link:
+                    reason = "条目缺少有效原文链接"
+                send = reason is None
                 if not stored.initialized:
                     send = (
                         send and stored.initial_policy == "latest" and entry.entry_key in selected
                     )
+                    if not send:
+                        reason = reason or BASELINE_SKIP_REASON
                 row = RssEntry(
                     subscription_id=stored.id,
                     entry_key=entry_key,
@@ -434,6 +500,7 @@ class RssWorker:
                     summary=entry.summary,
                     published_at=entry.published_at,
                     status="pending" if send else "skipped",
+                    skip_reason=None if send else reason,
                 )
                 try:
                     async with session.begin_nested():
@@ -493,6 +560,14 @@ class RssWorker:
                 if entry is None or entry.status != "pending":
                     return
                 if entry.next_retry_at is not None and entry.next_retry_at > utc_now():
+                    return
+                # 发送前复查当前关键词：pending 可能来自旧关键词队列或「重试失败」，
+                # 关键词改过之后不能把不再命中的条目发出去。
+                reason = keyword_skip_reason(sub, entry)
+                if reason is not None:
+                    entry.status = "skipped"
+                    entry.skip_reason = reason
+                    entry.next_retry_at = None
                     return
                 if entry.attempts >= self.settings.rss_max_send_attempts:
                     entry.status = "failed"

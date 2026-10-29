@@ -329,3 +329,47 @@ def test_rss_settings_private_hosts_and_secrets(monkeypatch) -> None:
 def test_invalid_rss_settings(overrides) -> None:
     with pytest.raises(ValidationError):
         Settings(_env_file=None, **overrides)
+
+
+def _keyword_entry() -> SimpleNamespace:
+    return SimpleNamespace(
+        title="免费领取加速器",
+        summary="今天有好消息，免费开放注册",
+        link="https://example.com/1",
+        feed_title="feed",
+        published_at=None,
+        translated_title=None,
+        translated_summary=None,
+    )
+
+
+def test_keywords_line_at_bottom_and_hidden_when_not_matched() -> None:
+    entry = _keyword_entry()
+    lines = render_entry(
+        payload(include_keywords=["免费", "好消息", "白嫖"]), entry
+    ).splitlines()
+    # 命中词按订阅里的填写顺序展示，位置在链接上方。
+    assert lines[-2:] == ["🔑 关键词：免费、好消息", "🔗 https://example.com/1"]
+    # 一条都没命中、以及没设关键词（不过滤）时都不留孤立图标。
+    assert "🔑" not in render_entry(payload(include_keywords=["白嫖"]), entry)
+    assert "🔑" not in render_entry(payload(), entry)
+
+
+def test_keywords_line_falls_back_for_legacy_template() -> None:
+    entry = _keyword_entry()
+    legacy = "📡 {subscription_name}\n\n# {title}\n\n{summary}\n\n🔗 {link}"
+    text = render_entry(
+        payload(message_template=legacy, include_keywords=["免费"]), entry
+    )
+    assert text.splitlines()[-2:] == ["🔑 关键词：免费", "🔗 https://example.com/1"]
+
+
+def test_keywords_placeholder_allows_custom_position() -> None:
+    entry = _keyword_entry()
+    template = "{title}\n🔑 {keywords}\n\n{summary}\n\n{link}"
+    lines = render_entry(
+        payload(message_template=template, include_keywords=["免费", "好消息"]), entry
+    ).splitlines()
+    assert lines[:2] == ["免费领取加速器", "🔑 免费、好消息"]
+    # 自定义位置时不再重复补一行。
+    assert sum("🔑" in line for line in lines) == 1

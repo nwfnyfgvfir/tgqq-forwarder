@@ -1,6 +1,6 @@
-import { api } from '../api.js?v=20261019-wxpending';
-import { escapeHtml, pageHeader, statusPill } from '../components.js?v=20261019-wxpending';
-import { refreshStatus, state } from '../state.js?v=20261019-wxpending';
+import { api } from '../api.js?v=20261029-rsskw';
+import { escapeHtml, pageHeader, statusPill } from '../components.js?v=20261029-rsskw';
+import { refreshStatus, state } from '../state.js?v=20261029-rsskw';
 
 let loginPollTimer = null;
 

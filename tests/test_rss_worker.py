@@ -846,3 +846,74 @@ async def test_preview_only_latest_ten_without_baseline_side_effects(context) ->
     assert await service.get_subscription(sub["id"]) == before
     assert await service.list_entries(sub["id"]) == history
     assert publisher.calls == [] and len(fetcher.result.entries) == 500
+
+
+async def test_skip_reason_recorded_for_baseline_and_keywords(context) -> None:
+    _, _, _, publisher, service, worker = context
+    sub = await service.create_subscription(payload(include_keywords=["Entry 2"]))
+    await worker.process_subscription(sub["id"])
+    rows = {row["title"]: row for row in await service.list_entries(sub["id"])}
+    assert rows["Entry 1"]["skip_reason"] == "未命中包含关键词"
+    assert rows["Entry 3"]["skip_reason"] == "未命中包含关键词"
+    assert rows["Entry 2"]["skip_reason"] == "首次基线未发送"
+    assert publisher.calls == []
+
+
+async def test_pending_not_matching_keywords_is_not_sent(context) -> None:
+    db, _, _, publisher, service, worker = context
+    sub = await service.create_subscription(payload(include_keywords=["Entry 2"]))
+    await worker.process_subscription(sub["id"])
+    # 模拟旧关键词队列里遗留的 pending：正文已不再命中当前关键词。
+    async with db.session() as session:
+        row = (
+            await session.execute(
+                select(RssEntry).where(
+                    RssEntry.subscription_id == sub["id"], RssEntry.title == "Entry 1"
+                )
+            )
+        ).scalar_one()
+        row.status = "pending"
+        row.skip_reason = None
+    await worker.process_subscription(sub["id"])
+    assert publisher.calls == []
+    rows = {row["title"]: row for row in await service.list_entries(sub["id"])}
+    assert rows["Entry 1"]["status"] == "skipped"
+    assert rows["Entry 1"]["skip_reason"] == "未命中包含关键词"
+    assert rows["Entry 1"]["attempts"] == 0
+
+
+async def test_update_keywords_withdraws_pending_queue(context) -> None:
+    db, _, _, publisher, service, worker = context
+    sub = await service.create_subscription(payload(include_keywords=["Entry 1"]))
+    await worker.process_subscription(sub["id"])
+    async with db.session() as session:
+        row = (
+            await session.execute(
+                select(RssEntry).where(
+                    RssEntry.subscription_id == sub["id"], RssEntry.title == "Entry 1"
+                )
+            )
+        ).scalar_one()
+        row.status = "pending"
+        row.skip_reason = None
+    await service.update_subscription(sub["id"], payload(include_keywords=["Entry 9"]))
+    rows = {row["title"]: row for row in await service.list_entries(sub["id"])}
+    assert rows["Entry 1"]["status"] == "skipped"
+    assert rows["Entry 1"]["skip_reason"] == "未命中包含关键词"
+    assert publisher.calls == []
+
+
+async def test_reevaluate_keywords_requeues_only_keyword_skips(context) -> None:
+    _, _, _, _, service, worker = context
+    sub = await service.create_subscription(payload(include_keywords=["Entry 2"]))
+    await worker.process_subscription(sub["id"])
+    # 首次基线跳过的历史不补发。
+    first = await worker.reevaluate_keywords(sub["id"])
+    assert first["requeued_count"] == 0 and first["kept_count"] == 3
+    await service.update_subscription(sub["id"], payload(include_keywords=["Entry 1"]))
+    second = await worker.reevaluate_keywords(sub["id"])
+    assert second["requeued_count"] == 1
+    rows = {row["title"]: row for row in await service.list_entries(sub["id"])}
+    assert rows["Entry 1"]["status"] == "pending"
+    assert rows["Entry 1"]["skip_reason"] is None
+    assert rows["Entry 2"]["status"] == "skipped"

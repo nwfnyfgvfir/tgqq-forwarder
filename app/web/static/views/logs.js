@@ -1,4 +1,4 @@
-import { emptyState, logRow, pageHeader } from '../components.js?v=20261019-wxpending';
+import { emptyState, logRow, pageHeader } from '../components.js?v=20261029-rsskw';
 
 export function renderLogs(state) {
   const logs = state.logs || [];

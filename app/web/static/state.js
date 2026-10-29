@@ -1,4 +1,4 @@
-import { api } from './api.js?v=20261019-wxpending';
+import { api } from './api.js?v=20261029-rsskw';
 
 export const state = {
   route: 'dashboard',

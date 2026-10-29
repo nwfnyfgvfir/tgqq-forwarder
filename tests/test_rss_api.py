@@ -41,6 +41,7 @@ ENDPOINTS = [
     ("GET", "/subscriptions/1/entries", None),
     ("POST", "/subscriptions/1/check", None),
     ("POST", "/subscriptions/1/retry", None),
+    ("POST", "/subscriptions/1/reevaluate", None),
     ("POST", "/subscriptions/1/test-send", None),
 ]
 
@@ -406,7 +407,7 @@ async def test_retry_returns_202_and_only_resets_failed_entries(api_context):
     assert len(context.fetcher.calls) == 1
 
 
-@pytest.mark.parametrize("action", ["check", "retry"])
+@pytest.mark.parametrize("action", ["check", "retry", "reevaluate"])
 @pytest.mark.parametrize("disabled", ["subscription", "global"])
 async def test_disabled_check_and_retry_return_409(api_context, action, disabled):
     context = api_context
@@ -425,7 +426,7 @@ async def test_disabled_check_and_retry_return_409(api_context, action, disabled
 
 
 @pytest.mark.parametrize("worker_state", ["missing", "not_started", "stopped"])
-@pytest.mark.parametrize("action", ["check", "retry"])
+@pytest.mark.parametrize("action", ["check", "retry", "reevaluate"])
 async def test_missing_or_nonrunning_worker_returns_503(api_context, worker_state, action):
     context = api_context
     created = await create_subscription(context)
@@ -851,3 +852,20 @@ async def test_test_send_without_worker_returns_503(api_context):
         assert response.status_code == 503
         assert response.json()["detail"]["code"] == "rss_worker_not_ready"
     assert context.publisher.calls == []
+
+
+async def test_reevaluate_returns_202_and_reports_counts(api_context):
+    context = api_context
+    created = await create_subscription(context, include_keywords=["Entry 9"])
+    await context.worker.process_subscription(created["id"])
+    await context.worker.start()
+    response = await context.client.post(
+        f"{PREFIX}/subscriptions/{created['id']}/reevaluate"
+    )
+    assert response.status_code == 202
+    body = response.json()
+    assert body["subscription_id"] == created["id"]
+    assert body["requeued_count"] == 0
+    assert body["kept_count"] >= 1
+    assert body["scheduled"] is False
+    assert_safe_response(response)

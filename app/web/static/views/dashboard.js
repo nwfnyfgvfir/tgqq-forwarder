@@ -1,4 +1,4 @@
-import { emptyState, escapeHtml, formatDate, logRow, pageHeader, statTile, statusPill } from '../components.js?v=20261019-wxpending';
+import { emptyState, escapeHtml, formatDate, logRow, pageHeader, statTile, statusPill } from '../components.js?v=20261029-rsskw';
 
 export function renderDashboard(state) {
   const status = state.status;

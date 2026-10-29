@@ -103,6 +103,11 @@ def create_rss_router(
     async def retry(subscription_id: int) -> dict:
         return await running_worker().retry_failed(subscription_id)
 
+    @router.post("/subscriptions/{subscription_id}/reevaluate", status_code=202)
+    async def reevaluate(subscription_id: int) -> dict:
+        # 按当前关键词重判历史跳过条目，把现在命中的放回发送队列。
+        return await running_worker().reevaluate_keywords(subscription_id)
+
     @router.post("/subscriptions/{subscription_id}/test-send")
     async def test_send(subscription_id: int) -> dict:
         # 同步执行完整链路并立即返回结果；附带 TG → QQ 前置条件提醒。

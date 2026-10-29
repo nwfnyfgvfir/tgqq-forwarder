@@ -59,6 +59,7 @@ def _ensure_schema_compat(sync_conn) -> None:
     _ensure_column(sync_conn, "rss_entry", "detected_language", "VARCHAR(16)")
     _ensure_column(sync_conn, "rss_entry", "translated_title", "TEXT")
     _ensure_column(sync_conn, "rss_entry", "translated_summary", "TEXT")
+    _ensure_column(sync_conn, "rss_entry", "skip_reason", "VARCHAR(255)")
 
 
 def _ensure_column(

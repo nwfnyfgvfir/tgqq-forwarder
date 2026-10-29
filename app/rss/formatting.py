@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from datetime import UTC, datetime
+from difflib import SequenceMatcher
 from html.parser import HTMLParser
 from string import Formatter
 
@@ -11,6 +12,8 @@ from app.rss.schemas import template_fields, validate_template
 BLANK_LINES = re.compile(r"\n{3,}")
 PARAGRAPHS = re.compile(r"\n{2,}")
 TRANSLATED_FIELDS = ("title", "summary")
+# 译文与原文的相似度阈值：超过即视为「模型只是改写了标点」，不当作翻译结果。
+SAME_TEXT_RATIO = 0.95
 
 
 class _PlainText(HTMLParser):
@@ -44,13 +47,58 @@ def plain_text(value: str) -> str:
     return "\n".join(line.strip() for line in "".join(parser.parts).splitlines() if line.strip())
 
 
-def matches_keywords(config, entry) -> bool:
+def keyword_skip_reason(config, entry) -> str | None:
+    """返回该条目被关键词过滤拦下的原因；None 表示通过、可以发送。
+
+    排除词优先：只要命中任一排除词就丢弃（「免费」类文章常同时出现「付费」）。
+    包含词为空 = 不做包含过滤。空字符串关键词不参与匹配，避免 `"" in text`
+    恒为真导致整个过滤形同虚设。
+    """
     text = f"{entry.title}\n{entry.summary}".casefold()
-    includes = config.include_keywords
-    excludes = config.exclude_keywords
-    return (not includes or any(k.casefold() in text for k in includes)) and not any(
-        k.casefold() in text for k in excludes
-    )
+    excludes = [
+        keyword for keyword in config.exclude_keywords if keyword and keyword.casefold() in text
+    ]
+    if excludes:
+        return "命中排除关键词：" + "、".join(excludes)
+    includes = [keyword for keyword in config.include_keywords if keyword]
+    if includes and not any(keyword.casefold() in text for keyword in includes):
+        return "未命中包含关键词"
+    return None
+
+
+def matches_keywords(config, entry) -> bool:
+    return keyword_skip_reason(config, entry) is None
+
+
+def matched_keywords(config, entry) -> list[str]:
+    """条目正文命中的包含关键词，按订阅里填写的顺序返回。"""
+    text = f"{entry.title}\n{entry.summary}".casefold()
+    return [
+        keyword for keyword in config.include_keywords if keyword and keyword.casefold() in text
+    ]
+
+
+def format_keywords(config, entry) -> str:
+    return "、".join(matched_keywords(config, entry))
+
+
+def _comparable(text: str) -> str:
+    """去掉空白、标点与 emoji，只保留字母数字，用于「是否等于没翻译」的比较。"""
+    return "".join(char.casefold() for char in text if char.isalnum())
+
+
+def is_essentially_same(left: str, right: str) -> bool:
+    """两段文本是否实质相同：忽略空白标点大小写，容忍模型只加标点或改词序。
+
+    模型收到中文时偶尔不返回原文，而是「顺手润色」一遍（加个逗号、换个词），
+    严格相等判断认不出来，就会把这段伪译文当成译文贴到消息底部。
+    """
+    a, b = _comparable(left), _comparable(right)
+    if a == b:
+        return True
+    if not a or not b:
+        return False
+    return SequenceMatcher(None, a, b).ratio() >= SAME_TEXT_RATIO
 
 
 def format_published_at(value: datetime | None) -> str:
@@ -82,8 +130,13 @@ def build_translation_block(entry, template: str | None = None) -> str:
     parts = []
     for name in wanted:
         value = values[name]
-        if isinstance(value, str) and value.strip():
-            parts.append(value.strip())
+        if not (isinstance(value, str) and value.strip()):
+            continue
+        # 历史缓存里可能存着「只是加了标点」的伪译文，渲染时兜底不再展示。
+        original = getattr(entry, name, None)
+        if isinstance(original, str) and is_essentially_same(value, original):
+            continue
+        parts.append(value.strip())
     return "\n\n".join(parts)
 
 
@@ -121,6 +174,7 @@ def render_entry(config, entry, feed_title: str | None = None) -> str:
         "link": entry.link,
         "published_at": format_published_at(entry.published_at),
         "translation": build_translation_block(entry, config.message_template),
+        "keywords": format_keywords(config, entry),
     }
     template = drop_empty_blocks(config.message_template, values)
     text = template.format(**values).strip()
@@ -128,6 +182,17 @@ def render_entry(config, entry, feed_title: str | None = None) -> str:
     text = "\n".join(line.rstrip() for line in text.splitlines())
     if entry.link and entry.link not in text:
         text = f"{text}\n\n{entry.link}".strip()
+    # 模板没写 `{keywords}` 时自动补一行到链接上方，老订阅不用改模板也能看到命中词。
+    if values["keywords"] and "keywords" not in template_fields(config.message_template):
+        line = f"🔑 关键词：{values['keywords']}"
+        if entry.link and text.rstrip().endswith(entry.link):
+            # 插在链接所在整行的上方，避免把 `🔗 {link}` 拆成两行。
+            line_start = text.rfind("\n", 0, text.rfind(entry.link)) + 1
+            head = text[:line_start]
+            tail = text[line_start:].strip()
+            text = f"{head}{line}\n{tail}"
+        else:
+            text = f"{text}\n{line}"
     # 占位符为空（如无发布时间）时不留空行。
     return fit_message(BLANK_LINES.sub("\n\n", text), entry.link)
 

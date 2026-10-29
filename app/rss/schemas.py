@@ -20,6 +20,7 @@ DEFAULT_MESSAGE_TEMPLATE = (
     "🌐 译文\n"
     "{translation}\n"
     "\n"
+    "🔑 关键词：{keywords}\n"
     "🔗 {link}"
 )
 TEMPLATE_FIELDS = {
@@ -30,6 +31,7 @@ TEMPLATE_FIELDS = {
     "link",
     "published_at",
     "translation",
+    "keywords",
 }
 
 

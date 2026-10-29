@@ -1,6 +1,6 @@
-import { api } from '../api.js?v=20261019-wxpending';
-import { escapeHtml, pageHeader, short, statusPill } from '../components.js?v=20261019-wxpending';
-import { refreshRules } from '../state.js?v=20261019-wxpending';
+import { api } from '../api.js?v=20261029-rsskw';
+import { escapeHtml, pageHeader, short, statusPill } from '../components.js?v=20261029-rsskw';
+import { refreshRules } from '../state.js?v=20261029-rsskw';
 
 const DEFAULT_TEMPLATE = '# {source_title_md}\n\n**发送者：{sender_name_md}**\n\n{text}\n\n{footer_note}';
 const TARGET_TYPES_BY_PLATFORM = {

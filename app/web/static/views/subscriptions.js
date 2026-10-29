@@ -1,6 +1,6 @@
-import { api } from '../api.js?v=20261019-wxpending';
-import { emptyState, escapeHtml, formatDate, pageHeader, statusPill } from '../components.js?v=20261019-wxpending';
-import { refreshSubscriptions, state } from '../state.js?v=20261019-wxpending';
+import { api } from '../api.js?v=20261029-rsskw';
+import { emptyState, escapeHtml, formatDate, pageHeader, statusPill } from '../components.js?v=20261029-rsskw';
+import { refreshSubscriptions, state } from '../state.js?v=20261029-rsskw';
 
 const DEFAULT_TEMPLATE = '━━━━━━━━━━━━━━\n📡 {subscription_name}\n🕒 {published_at}\n\n# {title}\n\n{summary}\n\n┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n🌐 译文\n{translation}\n\n🔗 {link}';
 const ui = {
@@ -86,7 +86,7 @@ function card(subscription) {
     <div class="rss-counts"><span>已发送 <b>${escapeHtml(subscription.sent_count ?? 0)}</b></span><span>待发送 <b>${escapeHtml(subscription.pending_count ?? 0)}</b></span><span class="${subscription.failed_count ? 'rss-error-text' : ''}">失败 <b>${escapeHtml(subscription.failed_count ?? 0)}</b></span></div>
     ${subscription.last_error ? `<p class="rss-error-text rss-last-error">最近错误：${escapeHtml(subscription.last_error)}</p>` : ''}
     <div class="card-actions">
-      ${[['edit', '编辑'], ['toggle', subscription.enabled ? '停用' : '启用'], ['check', '立即检查'], ['test', '立即试发'], ...(subscription.failed_count > 0 ? [['retry', '重试失败']] : []), ['history', '条目历史'], ['rule', '配置QQ转发规则'], ['delete', '删除']].map(([action, label]) => `<button type="button" ${busy ? 'disabled' : ''} class="${action === 'delete' ? 'danger' : ''}" data-rss-action="${action}" data-id="${escapeHtml(id)}">${label}</button>`).join('')}
+      ${[['edit', '编辑'], ['toggle', subscription.enabled ? '停用' : '启用'], ['check', '立即检查'], ['test', '立即试发'], ...(subscription.failed_count > 0 ? [['retry', '重试失败']] : []), ['reevaluate', '按关键词重判'], ['history', '条目历史'], ['rule', '配置QQ转发规则'], ['delete', '删除']].map(([action, label]) => `<button type="button" ${busy ? 'disabled' : ''} class="${action === 'delete' ? 'danger' : ''}" data-rss-action="${action}" data-id="${escapeHtml(id)}">${label}</button>`).join('')}
     </div>
     <p class="rss-card-notice ${notice?.error ? 'rss-error-text' : 'muted'}" role="status" data-rss-notice>${escapeHtml(busy ? ui.busy.get(id) : notice?.text || '')}</p>
   </article>`;
@@ -156,7 +156,7 @@ function editor(current) {
           <label for="rss-summary-length">摘要最大长度（字符）<input id="rss-summary-length" name="max_summary_length" type="number" required min="100" max="2000" step="1" value="${escapeHtml(draft.max_summary_length)}" /></label>
           <label class="switch-line" for="rss-translate"><input id="rss-translate" name="translate" type="checkbox" ${draft.translate ? 'checked' : ''} /> 翻译成中文（源语言自动检测，非中文才翻译；译文显示在原文下方）</label>
           <label for="rss-template">消息模板<textarea id="rss-template" name="message_template" required rows="10">${escapeHtml(draft.message_template)}</textarea></label>
-          <p class="muted">默认变量：<code>{subscription_name}</code>、<code>{title}</code>、<code>{published_at}</code>、<code>{summary}</code>、<code>{translation}</code>、<code>{link}</code>。<code>{published_at}</code> 渲染为本地时间（如 2026-10-13 08:30）。某一行引用的占位符全为空时整行省略，空行分隔的整段全为空时整段省略——所以可以放心给可选字段加 <code>🕒</code> 这类前缀，源里没时间、没译文时不会留下孤立图标。<code># {title}</code> 里的 <code>#</code> 在转发到 QQ 时会渲染成一号标题（<code>##</code> 为二号），在 Telegram 里按原样显示。<code>{translation}</code> 为译文，只包含模板里写到的原文字段（没写 <code>{title}</code> 就不翻译标题），会排在原文下方。QQ 转发规则使用 <code>{text}</code> 保留发布内容。</p>
+          <p class="muted">默认变量：<code>{subscription_name}</code>、<code>{title}</code>、<code>{published_at}</code>、<code>{summary}</code>、<code>{translation}</code>、<code>{keywords}</code>、<code>{link}</code>。<code>{keywords}</code> 是本条命中的包含关键词（顿号分隔）；模板里不写它时，也会自动补一行 <code>🔑 关键词：…</code> 到链接上方。<code>{published_at}</code> 渲染为本地时间（如 2026-10-13 08:30）。某一行引用的占位符全为空时整行省略，空行分隔的整段全为空时整段省略——所以可以放心给可选字段加 <code>🕒</code> 这类前缀，源里没时间、没译文时不会留下孤立图标。<code># {title}</code> 里的 <code>#</code> 在转发到 QQ 时会渲染成一号标题（<code>##</code> 为二号），在 Telegram 里按原样显示。<code>{translation}</code> 为译文，只包含模板里写到的原文字段（没写 <code>{title}</code> 就不翻译标题），会排在原文下方。QQ 转发规则使用 <code>{text}</code> 保留发布内容。</p>
         </details>
         <p id="rss-form-error" class="rss-error-text" role="alert">${escapeHtml(ui.formError)}</p>
         <div class="card-actions"><button type="submit" class="primary">${ui.formBusy === 'save' ? '正在保存…' : ui.editId === null ? '创建订阅' : '保存配置'}</button><button type="button" data-rss-action="preview">${ui.formBusy === 'preview' ? '正在预览…' : '预览（不保存、不发送）'}</button></div>
@@ -171,7 +171,7 @@ function historyHtml() {
   if (!history) return '';
   const labels = { pending: ['待发送', 'warning'], sending: ['发送中', 'warning'], sent: ['已发送', 'good'], failed: ['失败', 'bad'], skipped: ['已跳过', 'muted'] };
   return `<section class="panel rss-history" aria-labelledby="rss-history-title"><div class="panel-head"><h2 id="rss-history-title">条目历史 · ${escapeHtml(history.name)}</h2><div class="card-actions"><button type="button" data-rss-action="refresh-history" ${history.loading ? 'disabled' : ''}>刷新历史</button><button type="button" data-rss-action="close-history">关闭</button></div></div><p class="muted">最近 50 条 · 手动刷新，不打断阅读。</p>${history.loading ? '<p role="status">正在读取条目…</p>' : ''}${history.error ? `<p class="rss-error-text" role="alert">${escapeHtml(history.error)}</p>` : ''}
-    ${(history.entries || []).map((entry) => { const [label, tone] = labels[entry.status] || [entry.status, 'neutral']; return `<article class="rss-history-entry"><div class="rss-entry-heading"><h3>${escapeHtml(entry.title || '无标题')}</h3>${statusPill(label, tone)}</div><p>${safeLink(entry.link)}</p><p class="muted">#${escapeHtml(entry.id)} · 发布 ${escapeHtml(formatDate(entry.published_at))} · 尝试 ${escapeHtml(entry.attempts ?? 0)} 次 · 创建 ${escapeHtml(formatDate(entry.created_at))} · 发送 ${escapeHtml(formatDate(entry.sent_at))} · TG 消息 ${escapeHtml(entry.tg_message_id ?? '-')}</p>${entry.last_error ? `<pre class="rss-error-text">${escapeHtml(entry.last_error)}</pre>` : ''}</article>`; }).join('')}
+    ${(history.entries || []).map((entry) => { const [label, tone] = labels[entry.status] || [entry.status, 'neutral']; return `<article class="rss-history-entry"><div class="rss-entry-heading"><h3>${escapeHtml(entry.title || '无标题')}</h3>${statusPill(label, tone)}</div><p>${safeLink(entry.link)}</p><p class="muted">#${escapeHtml(entry.id)} · 发布 ${escapeHtml(formatDate(entry.published_at))} · 尝试 ${escapeHtml(entry.attempts ?? 0)} 次 · 创建 ${escapeHtml(formatDate(entry.created_at))} · 发送 ${escapeHtml(formatDate(entry.sent_at))} · TG 消息 ${escapeHtml(entry.tg_message_id ?? '-')}</p>${entry.skip_reason ? `<p class="muted">跳过原因：${escapeHtml(entry.skip_reason)}</p>` : ''}${entry.last_error ? `<pre class="rss-error-text">${escapeHtml(entry.last_error)}</pre>` : ''}</article>`; }).join('')}
     ${!history.loading && !history.error && !history.entries?.length ? '<p class="muted">暂无条目；首次 skip 只建立基线，旧文章不会发送。</p>' : ''}
   </section>`;
 }
@@ -534,6 +534,11 @@ async function cardAction(view, subscription, action, navigate) {
     } else if (action === 'retry') {
       const result = await api.retryRssSubscription(id);
       ui.notices.set(id, { text: `重试已排队，共 ${result.retried_count ?? 0} 条；不代表已发送成功。` });
+    } else if (action === 'reevaluate') {
+      const result = await api.reevaluateRssKeywords(id);
+      ui.notices.set(id, { text: result.requeued_count
+        ? `已按当前关键词重判：${result.requeued_count} 条重新排队，${result.kept_count ?? 0} 条保持跳过（首次基线的历史不补发）。`
+        : `按当前关键词重判后没有可补发的条目：${result.kept_count ?? 0} 条仍不命中。` });
     }
     await refreshSubscriptions();
   } catch (error) {

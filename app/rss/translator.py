@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import weakref
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 import httpx
+
+from app.rss.formatting import is_essentially_same
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +80,11 @@ _HAN_RANGES = (
 )
 _CHINESE_RATIO = 0.5
 
+# 判定语言前先剔除链接与 @提及/#话题，避免长 URL、版本号稀释正文的汉字比例。
+_URL_RE = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
+# 只删 ASCII 的 @user / #tag：`#中文标题` 这种前缀要保留给汉字计数。
+_MENTION_RE = re.compile(r"[@#][A-Za-z0-9_-]+")
+
 # 常见语言标签到提示词中可读名称的映射；未命中时直接把标签交给模型。
 _TARGET_LANGUAGE_NAMES = {
     "zh": "简体中文",
@@ -108,20 +116,35 @@ class TranslationOutcome:
     error: str | None = None
 
 
+def _is_han(code: int) -> bool:
+    return any(low <= code <= high for low, high in _HAN_RANGES)
+
+
+def _is_kana_or_hangul(code: int) -> bool:
+    return 0x3040 <= code <= 0x30FF or 0xAC00 <= code <= 0xD7AF
+
+
 def detect_is_chinese(text: str) -> bool:
-    """本地离线判定：汉字占非空白字符比例 >= 0.5 视为中文（假名不计入汉字）。"""
+    """本地离线判定：汉字占「字母类字符」的比例 >= 0.5 视为中文。
+
+    只看汉字 / 假名 / 谚文 / 拉丁等字母字符，先剔除 URL 与 @提及：
+    中文正文里夹一条长链接时，旧算法按「非空白字符」算分母，链接、数字、
+    标点和 emoji 会把比例压到 0.5 以下，导致中文被送去翻译。假名不计入汉字，
+    所以日文仍按非中文处理。
+    """
+    cleaned = _MENTION_RE.sub(" ", _URL_RE.sub(" ", text))
     han = 0
-    non_space = 0
-    for char in text:
-        if char.isspace():
-            continue
-        non_space += 1
+    letters = 0
+    for char in cleaned:
         code = ord(char)
-        if any(low <= code <= high for low, high in _HAN_RANGES):
+        if _is_han(code):
             han += 1
-    if non_space == 0:
+            letters += 1
+        elif _is_kana_or_hangul(code) or char.isalpha():
+            letters += 1
+    if letters == 0:
         return False
-    return han / non_space >= _CHINESE_RATIO
+    return han / letters >= _CHINESE_RATIO
 
 
 def build_system_prompt(target: str) -> str:
@@ -286,8 +309,8 @@ class AITranslator:
                 logger.warning("RSS 翻译失败（%s），按原文处理", _error_kind(error))
                 results[index] = TranslationOutcome(error=SAFE_ERROR)
                 continue
-            if translated.strip() == text.strip():
-                # 译文与原文相同（含无法翻译时粘贴原文），视为无需翻译。
+            if is_essentially_same(translated, text):
+                # 译文与原文实质相同（模型原样返回，或只改了标点/词序）视为无需翻译。
                 results[index] = TranslationOutcome(language="auto", skipped=True)
             else:
                 # 服务端不保证回传检测到的源语言，统一标记为 auto。

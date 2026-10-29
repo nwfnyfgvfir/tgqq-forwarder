@@ -10,7 +10,12 @@ from sqlalchemy import delete, func, select, update
 from app.config import Settings
 from app.rss.errors import RssError
 from app.rss.fetcher import RssFetcher
-from app.rss.formatting import matches_keywords, render_entry, translated_fields
+from app.rss.formatting import (
+    keyword_skip_reason,
+    matches_keywords,
+    render_entry,
+    translated_fields,
+)
 from app.rss.schemas import SubscriptionInput
 from app.rss.translator import AITranslator
 from app.storage.db import Database
@@ -85,6 +90,10 @@ class RssService:
     async def update_subscription(self, subscription_id: int, payload: SubscriptionInput) -> dict:
         async with self.subscription_lock(subscription_id), self.db.session() as session:
             sub = await self._get(session, subscription_id)
+            keywords_changed = (sub.include_keywords, sub.exclude_keywords) != (
+                payload.include_keywords,
+                payload.exclude_keywords,
+            )
             if sub.feed_url != payload.feed_url:
                 # 保留历史 sent 与去重记录；旧源未完成条目终止，不会错发到新源。
                 await session.execute(
@@ -109,8 +118,40 @@ class RssService:
                 setattr(sub, key, value)
             sub.updated_at = utc_now()
             sub.next_check_at = None
+            if keywords_changed:
+                # 只收紧不放宽：改关键词后把排队中不再命中的条目撤下来，
+                # 但不把历史 skipped 补发出去（补发由用户显式触发）。
+                await self._tighten_pending(session, sub)
             await session.flush()
             return await self._serialize(session, sub)
+
+    @staticmethod
+    async def _tighten_pending(session, sub: RssSubscription) -> int:
+        """关键词变更后，把已排队但不再命中的 pending 条目改成 skipped。"""
+        entries = (
+            (
+                await session.execute(
+                    select(RssEntry).where(
+                        RssEntry.subscription_id == sub.id,
+                        RssEntry.status == "pending",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        changed = 0
+        for entry in entries:
+            reason = keyword_skip_reason(sub, entry)
+            if reason is None:
+                continue
+            entry.status = "skipped"
+            entry.skip_reason = reason
+            entry.next_retry_at = None
+            changed += 1
+        if changed:
+            logger.info("订阅 %s 改关键词后撤回 %s 条排队条目", sub.id, changed)
+        return changed
 
     async def set_enabled(self, subscription_id: int, enabled: bool) -> dict:
         async with self.subscription_lock(subscription_id), self.db.session() as session:

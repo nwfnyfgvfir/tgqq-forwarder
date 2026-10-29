@@ -25,6 +25,7 @@ from app.rss.translator import (
     _retry_delay,
     _translation_gate,
     detect_is_chinese,
+    is_essentially_same,
     resolve_endpoint_url,
 )
 from app.rss.worker import RssWorker
@@ -1011,3 +1012,52 @@ def test_api_key_and_model_normalization() -> None:
 def test_invalid_translation_settings(overrides) -> None:
     with pytest.raises(ValidationError):
         Settings(_env_file=None, **overrides)
+
+
+async def test_chinese_with_long_url_is_not_translated() -> None:
+    """中文正文夹长链接时，旧算法按非空白字符算比例会被稀释到 0.5 以下而误翻。"""
+    text = (
+        "# 这网站是真的牛逼，整理了1439张人物姿势图片，每个姿势都有不同的角度。"
+        "这要是发给GPT参考估计会被越狱😅 地址：https://ai-pose-gallery.pages.dev/"
+    )
+    assert detect_is_chinese(text) is True
+    endpoint = AIEndpoint()
+    translator = endpoint.translator()
+    try:
+        outcomes = await translator.translate([text])
+    finally:
+        await translator.close()
+    assert endpoint.calls == 0
+    assert outcomes[0].skipped is True and outcomes[0].language == "zh"
+
+
+def test_url_and_mention_do_not_affect_chinese_ratio() -> None:
+    assert detect_is_chinese("看这个 https://example.com/a/b/c") is True
+    assert detect_is_chinese("@someone #tag 你好世界") is True
+    # 英文带链接仍然不是中文，别把整段都放过。
+    assert detect_is_chinese("Check https://example.com/a/b/c") is False
+
+
+def test_is_essentially_same_ignores_punctuation_and_spacing() -> None:
+    assert is_essentially_same("这要是发给GPT参考估计会被越狱", "这要是发给GPT参考，估计会被越狱")
+    assert is_essentially_same("Hello world", "Hello  world!")
+    assert not is_essentially_same("Hello world", "你好，世界")
+    assert not is_essentially_same("", "你好")
+
+
+@pytest.mark.parametrize(
+    ("original", "translated"),
+    [
+        ("Breaking: AI model released today", "Breaking: AI model released, today."),
+        ("Hello world", "Hello  world!"),
+    ],
+)
+async def test_punctuation_only_rewrite_is_skipped(original, translated) -> None:
+    endpoint = AIEndpoint([ok(translated)])
+    translator = endpoint.translator()
+    try:
+        outcomes = await translator.translate([original])
+    finally:
+        await translator.close()
+    assert endpoint.calls == 1
+    assert outcomes[0].skipped is True and outcomes[0].text is None
