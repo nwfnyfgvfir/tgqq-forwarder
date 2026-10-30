@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
+
+import botpy.errors
 
 from app.config import Settings
 from app.platforms import Platform
 from app.qq_official.models import QQOutboundMessage
-from app.qq_official.sender import QQOfficialSender
+from app.qq_official.sender import QQOfficialSender, is_qq_audit_error
 from app.rules.models import TelegramForwardMessage
 from app.storage.models import ForwardRule, ForwardTarget, legacy_target
 from app.telegram_outbound.delivery import TelegramDelivery, TelegramDeliveryError
@@ -24,6 +27,14 @@ class DeliveryError(Exception):
 
 class DeliveryPending(Exception):
     """消息已挂起，等条件满足后自动补发（不算失败）。"""
+
+
+@dataclass(slots=True)
+class DeliveryResult:
+    """一次投递的结果。降级发送时 sent_text 是实际发出去的内容。"""
+
+    sent_text: str | None = None
+    note: str | None = None
 
 
 class DeliveryRouter:
@@ -54,19 +65,18 @@ class DeliveryRouter:
         message: TelegramForwardMessage,
         text: str,
         target: ForwardTarget | None = None,
-    ) -> None:
+    ) -> DeliveryResult:
         """投递到单个目标；不传 target 时按规则的历史单目标列投递。"""
         resolved = target if target is not None else legacy_target(rule)
         platform = (resolved.platform or Platform.QQ.value).strip()
         if platform == Platform.WEIXIN.value:
             await self._deliver_weixin(rule, resolved, message, text)
-            return
+            return DeliveryResult()
         if platform == Platform.QQ.value:
-            await self._deliver_qq(rule, resolved, message, text)
-            return
+            return await self._deliver_qq(rule, resolved, message, text)
         if platform == Platform.TELEGRAM.value:
             await self._deliver_telegram(rule, resolved, message, text)
-            return
+            return DeliveryResult()
         raise DeliveryError(f"不支持的目标平台：{platform}")
 
     async def _deliver_qq(
@@ -75,7 +85,7 @@ class DeliveryRouter:
         target: ForwardTarget,
         message: TelegramForwardMessage,
         text: str,
-    ) -> None:
+    ) -> DeliveryResult:
         outbound = QQOutboundMessage(
             target_type=target.target_type,
             target_id=getattr(target, "channel_id", None) or target.target_id,
@@ -89,7 +99,48 @@ class DeliveryRouter:
             guild_id=target.guild_id,
             channel_id=target.channel_id,
         )
-        await self._call(self.qq_sender.send(outbound), self.settings.qq_send_timeout_seconds, "QQ")
+        try:
+            await self._call(
+                self.qq_sender.send(outbound), self.settings.qq_send_timeout_seconds, "QQ"
+            )
+            return DeliveryResult()
+        except botpy.errors.ServerError as error:
+            if not is_qq_audit_error(error) or not self.settings.qq_audit_link_fallback:
+                raise
+            link = self._fallback_link(message)
+            if not link:
+                raise
+            # 只改发原文链接，不改写正文：被拦的内容不会再以另一种形式塞进 QQ。
+            logger.warning(
+                "QQ 审核拦截原文 rule=%s target=%s，降级为只发原文链接 %s",
+                getattr(rule, "id", None),
+                target.label,
+                link,
+            )
+            fallback = QQOutboundMessage(
+                target_type=target.target_type,
+                target_id=getattr(target, "channel_id", None) or target.target_id,
+                text=link,
+                guild_id=target.guild_id,
+                channel_id=target.channel_id,
+            )
+            await self._call(
+                self.qq_sender.send(fallback), self.settings.qq_send_timeout_seconds, "QQ"
+            )
+            return DeliveryResult(
+                sent_text=link,
+                note="原文被 QQ 审核拦截，已降级为只发原文链接",
+            )
+
+    @staticmethod
+    def _fallback_link(message: TelegramForwardMessage) -> str:
+        """优先用网页预览链接，其次正文里的第一个链接。"""
+        candidates = [message.webpage_url, *(link.url for link in message.links)]
+        for value in candidates:
+            url = (value or "").strip()
+            if url.startswith(("http://", "https://")):
+                return url
+        return ""
 
     async def _deliver_weixin(
         self,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from urllib.parse import urlencode
@@ -200,11 +201,12 @@ async def test_status_me_dialogs_targets_and_static(api_client) -> None:
     assert index.status_code == 200
     assert index.headers["cache-control"] == "no-store, no-cache, must-revalidate, max-age=0"
     assert "TGQQ Forwarder Mini App" in index.text
-    assert "/static/styles.css?v=20261019-wxpending" in index.text
-    assert "/static/app.js?v=20261019-wxpending" in index.text
+    # 只断言带了缓存版本号，具体版本随发版变化，别把字面量写死。
+    assert re.search(r"/static/styles\.css\?v=[\w.-]+", index.text)
+    assert re.search(r"/static/app\.js\?v=[\w.-]+", index.text)
     assert app_js.status_code == 200
     assert app_js.headers["cache-control"] == "no-store, no-cache, must-revalidate, max-age=0"
-    assert "./views/rule-studio.js?v=20261019-wxpending" in app_js.text
+    assert re.search(r"\./views/rule-studio\.js\?v=[\w.-]+", app_js.text)
 
 
 async def test_rule_crud_preview_and_pause(api_client) -> None:

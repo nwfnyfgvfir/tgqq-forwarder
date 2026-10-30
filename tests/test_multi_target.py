@@ -440,3 +440,31 @@ async def test_telegram_target_account_id_is_persisted(tmp_path) -> None:
         assert result.rule.qq_target_type == "chat"
     finally:
         await db.dispose()
+
+
+def test_qq_skip_keywords_accepts_string_or_list() -> None:
+    payload = RuleCreateRequest(
+        name="skip",
+        qq_target_id="qq-a",
+        message_template="{text}",
+        qq_skip_keywords="习近平, 违禁词；敏感",
+    )
+    assert payload.qq_skip_keywords == ["习近平", "违禁词", "敏感"]
+    assert payload.to_rule_values()["qq_skip_keywords"] == ["习近平", "违禁词", "敏感"]
+
+    empty = RuleCreateRequest(name="skip", qq_target_id="qq-a", message_template="{text}")
+    assert empty.qq_skip_keywords == []
+    assert empty.to_rule().qq_skip_keywords == []
+
+
+def test_qq_skip_keywords_round_trip_through_response() -> None:
+    payload = RuleCreateRequest(
+        name="skip",
+        qq_target_id="qq-a",
+        message_template="{text}",
+        qq_skip_keywords=["违禁词"],
+    )
+    rule = payload.to_rule()
+    rule.id = 7
+    response = RuleResponse.from_rule(rule)
+    assert response.qq_skip_keywords == ["违禁词"]

@@ -4,7 +4,7 @@ import { bootstrapData, navigate, refreshLogs, refreshRules, refreshStatus, refr
 import { renderDashboard } from './views/dashboard.js?v=20261029-rsskw';
 import { renderLogs } from './views/logs.js?v=20261029-rsskw';
 import { filterRules, renderRules } from './views/rules.js?v=20261029-rsskw';
-import { bindRuleStudio, renderRuleStudio } from './views/rule-studio.js?v=20261029-rsskw';
+import { bindRuleStudio, renderRuleStudio } from './views/rule-studio.js?v=20261030-qqskip';
 import { renderSystem, bindSystem } from './views/system.js?v=20261029-rsskw';
 import { bindSubscriptions, canRefreshSubscriptions, renderSubscriptions, updateSubscriptions } from './views/subscriptions.js?v=20261029-rsskw3';
 

@@ -159,3 +159,78 @@ def test_target_platforms_lists_weixin_only_when_enabled() -> None:
         qq,  # type: ignore[arg-type]
         FakeWeixinService(),  # type: ignore[arg-type]
     ).target_platforms == ["qq", "weixin"]
+
+
+class AuditFailingQQSender(FakeQQSender):
+    """前 fail_times 次抛审核错误，之后正常。"""
+
+    def __init__(self, error: Exception, *, fail_times: int = 1) -> None:
+        super().__init__()
+        self.error = error
+        self.fail_times = fail_times
+
+    async def send(self, outbound) -> dict:
+        self.calls.append(outbound)
+        if len(self.calls) <= self.fail_times:
+            raise self.error
+        return {"ok": True}
+
+
+async def test_qq_audit_error_falls_back_to_source_link() -> None:
+    import botpy.errors
+
+    qq = AuditFailingQQSender(botpy.errors.ServerError("消息内容违规"))
+    router = DeliveryRouter(make_settings(), qq, FakeWeixinService())  # type: ignore[arg-type]
+    message = make_message()
+    message.webpage_url = "https://x.com/NFT_Chen/status/2116054898093764785"
+
+    result = await router.deliver(make_rule(), message, "含敏感词的正文")
+
+    # 第一次发原文被拦，第二次只发链接；正文不会再出现。
+    assert [call.text for call in qq.calls] == [
+        "含敏感词的正文",
+        "https://x.com/NFT_Chen/status/2116054898093764785",
+    ]
+    assert result.sent_text == "https://x.com/NFT_Chen/status/2116054898093764785"
+    assert result.note and "降级" in result.note
+
+
+async def test_qq_audit_fallback_uses_first_body_link_without_webpage() -> None:
+    import botpy.errors
+
+    from app.rules.models import TelegramLink
+
+    qq = AuditFailingQQSender(botpy.errors.ServerError("内容审核不通过"))
+    router = DeliveryRouter(make_settings(), qq, FakeWeixinService())  # type: ignore[arg-type]
+    message = make_message()
+    message.links = [TelegramLink(text="原文", url="https://example.com/a")]
+
+    result = await router.deliver(make_rule(), message, "正文")
+
+    assert result.sent_text == "https://example.com/a"
+
+
+async def test_qq_audit_fallback_can_be_disabled() -> None:
+    import botpy.errors
+
+    qq = AuditFailingQQSender(botpy.errors.ServerError("消息内容违规"))
+    router = DeliveryRouter(
+        make_settings(qq_audit_link_fallback=False), qq, FakeWeixinService()
+    )  # type: ignore[arg-type]
+    message = make_message()
+    message.webpage_url = "https://example.com/a"
+
+    with pytest.raises(botpy.errors.ServerError):
+        await router.deliver(make_rule(), message, "正文")
+    assert len(qq.calls) == 1
+
+
+async def test_qq_audit_error_without_any_link_still_fails() -> None:
+    import botpy.errors
+
+    qq = AuditFailingQQSender(botpy.errors.ServerError("消息内容违规"))
+    router = DeliveryRouter(make_settings(), qq, FakeWeixinService())  # type: ignore[arg-type]
+
+    with pytest.raises(botpy.errors.ServerError):
+        await router.deliver(make_rule(), make_message(), "正文")
+    assert len(qq.calls) == 1

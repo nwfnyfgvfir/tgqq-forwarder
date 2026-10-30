@@ -400,6 +400,9 @@ class Settings(BaseSettings):
     qq_enable_guild_direct_message: bool = False
     qq_allow_send_without_cached_msg_id: bool = True
     qq_use_markdown: bool = True
+    # 被 QQ 审核拦截（「消息内容违规」）时，改发原文链接而不是整条失败。
+    # 只发链接、不改写正文：不会把被拦的内容换个样子再塞进去。
+    qq_audit_link_fallback: bool = True
     # Hard cap for one QQ outbound send (includes multi-media sequence + retries).
     qq_send_timeout_seconds: float = 120.0
     # QQ 入站附件（图片/视频/文件）下载开关与单文件大小上限；QQ CDN 链接有时效，

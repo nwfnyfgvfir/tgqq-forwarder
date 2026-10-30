@@ -276,15 +276,37 @@ class ForwardQueue:
                 target=target,
             )
             return
+        # 命中规则里的 QQ 屏蔽词：只跳过 QQ 目标，同一条规则的其他平台目标照常发。
+        if (target.platform or Platform.QQ.value) == Platform.QQ.value:
+            skip_reason = self._qq_skip_reason(rule, forwarded_text)
+            if skip_reason:
+                logger.info("Skip QQ target by rule %s: %s", rule.id, skip_reason)
+                await self._safe_add_forward_log(
+                    rule=rule,
+                    message=message,
+                    status=ForwardStatus.SKIPPED,
+                    forwarded_text=forwarded_text,
+                    error_message=skip_reason,
+                    target=target,
+                )
+                return
         try:
-            await self.router.deliver(rule, message, forwarded_text, target)
+            result = await self.router.deliver(rule, message, forwarded_text, target)
+            # 审核降级时 sent_text 是实际发出的链接，note 说明降级原因。
+            sent_text = getattr(result, "sent_text", None) or forwarded_text
+            note = getattr(result, "note", None)
             await self._safe_add_forward_log(
                 rule=rule,
                 message=message,
                 status=ForwardStatus.SUCCESS,
-                forwarded_text=forwarded_text,
+                forwarded_text=sent_text,
+                error_message=note,
                 target=target,
             )
+            if note:
+                logger.warning(
+                    "Forward degraded by rule %s to %s: %s", rule.id, target.label, note
+                )
             logger.info(
                 "Forwarded %s message %s from account %s chat %s by rule %s to %s",
                 message.source_platform,
@@ -324,6 +346,18 @@ class ForwardQueue:
                 error_message=error_message,
                 target=target,
             )
+
+    @staticmethod
+    def _qq_skip_reason(rule: ForwardRule, text: str) -> str | None:
+        """规则里配了 QQ 屏蔽词且命中时返回原因，用于只跳过 QQ 目标。"""
+        keywords = [item for item in (getattr(rule, "qq_skip_keywords", None) or []) if item]
+        if not keywords:
+            return None
+        folded = (text or "").casefold()
+        hits = [item for item in keywords if item.casefold() in folded]
+        if not hits:
+            return None
+        return "命中 QQ 屏蔽词：" + "、".join(hits)
 
     @staticmethod
     def _is_echo_target(message: TelegramForwardMessage, target: ForwardTarget) -> bool:

@@ -305,6 +305,7 @@ QQ_ENABLE_GROUP_C2C=true
 QQ_ENABLE_GUILD_DIRECT_MESSAGE=false
 QQ_ALLOW_SEND_WITHOUT_CACHED_MSG_ID=true
 QQ_USE_MARKDOWN=true
+QQ_AUDIT_LINK_FALLBACK=true
 
 MINI_APP_ENABLED=true
 MINI_APP_HOST=0.0.0.0
@@ -643,6 +644,26 @@ QQ_USE_MARKDOWN=true
 ```
 
 程序会优先使用 QQ 原生 markdown 消息。默认模板会把 Telegram 来源作为标题、发送者加粗展示，并在末尾追加隐藏链接、按钮链接和 `检测到关键词：...`。当前不会追加媒体类型摘要。若 QQ 官方接口返回“不允许发送原生 markdown”之类的错误，会自动使用纯文本重发。是否能真正显示 markdown 取决于 QQ 官方机器人权限和目标场景。
+
+### QQ 审核拦截降级
+
+默认配置：
+
+```env
+QQ_AUDIT_LINK_FALLBACK=true
+```
+
+QQ 审核不通过时返回的是「消息内容违规」，不会说明命中了哪个词，重发原文不可能成功。开启后，程序会改为只发送这条消息的原文链接（优先网页预览链接，其次正文里的第一个链接），日志状态记为成功并附带说明「原文被 QQ 审核拦截，已降级为只发原文链接」。
+
+降级只发链接、不改写正文——被拦截的内容不会以删改后的形式再发一次。原文没有可用链接时仍按失败处理。设为 `false` 可关闭降级，恢复为直接记失败。
+
+### QQ 屏蔽词（只跳过 QQ 目标）
+
+规则编辑器里的「QQ 屏蔽词」命中后，这条转发**只跳过 QQ 目标**，同一条规则的其他目标（Telegram / 微信）照常发送；规则只配了 QQ 目标时，效果等同于整条不转发。
+
+- 匹配对象是渲染后的消息正文，不区分大小写、子串匹配；
+- 命中会在转发日志里记一条「已跳过 · 命中 QQ 屏蔽词：xxx」，不消耗发送次数；
+- 与「审核拦截降级」配合使用：先按屏蔽词主动跳过，漏网的再靠审核失败降级发链接。
 
 ### media 目录清理
 

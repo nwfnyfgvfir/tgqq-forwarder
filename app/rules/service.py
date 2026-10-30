@@ -214,6 +214,7 @@ class ForwardRuleService:
                 text_include_regex=source.text_include_regex,
                 text_exclude_regex=source.text_exclude_regex,
                 media_types=list(source.media_types) if source.media_types else None,
+                qq_skip_keywords=list(source.qq_skip_keywords or []),
                 target_platform=source.target_platform,
                 qq_target_type=source.qq_target_type,
                 qq_target_id=source.qq_target_id,
@@ -355,6 +356,8 @@ class ForwardRuleService:
             and left.source_sender_is_bot == right.source_sender_is_bot
             and left.text_exclude_regex == right.text_exclude_regex
             and left.media_types == right.media_types
+            # 屏蔽词不同就是不同规则，别把两条合并成一条把屏蔽词丢了。
+            and list(left.qq_skip_keywords or []) == list(right.qq_skip_keywords or [])
             and left.target_platform == right.target_platform
             and left.qq_target_type == right.qq_target_type
             and left.qq_target_id == right.qq_target_id

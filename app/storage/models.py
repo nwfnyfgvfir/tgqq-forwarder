@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from enum import StrEnum
 
-from sqlalchemy import JSON, Column, DateTime, Text, UniqueConstraint
+from sqlalchemy import JSON, Column, DateTime, Text, UniqueConstraint, text
 from sqlalchemy.types import TypeDecorator
 from sqlmodel import Field, SQLModel
 
@@ -84,6 +84,12 @@ class ForwardRule(SQLModel, table=True):
     text_include_regex: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
     text_exclude_regex: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
     media_types: list[str] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
+    # 命中这些词的转发只跳过 QQ 目标（其余平台目标照发），用来避开 QQ 审核必拦的内容。
+    qq_skip_keywords: list[str] = Field(
+        default_factory=list,
+        # server_default 让不走 ORM 的 INSERT（老库/裸 SQL）也能落默认空列表。
+        sa_column=Column(JSON, nullable=False, server_default=text("'[]'")),
+    )
 
     # 目标平台：qq / weixin。下面三列是「目标描述」，weixin 时 qq_target_type 固定 friend、
     # qq_target_id 存好友 wxid / user_id（列名沿用历史命名，避免破坏既有数据与接口）。

@@ -357,3 +357,39 @@ def test_qq_media_type_maps_only_supported_formats(tmp_path) -> None:
     assert kind("noext", "photo") == IMAGE_FILE_TYPE
     assert kind("noext", "video") == VIDEO_FILE_TYPE
     assert kind("noext", "document") == FILE_FILE_TYPE
+
+
+def test_retry_predicate_skips_audit_errors() -> None:
+    from app.qq_official.sender import _is_retryable_qq_error
+
+    # 内容违规是永久失败：重试只会让队列白等 2/4/8/16 秒。
+    assert _is_retryable_qq_error(botpy.errors.ServerError("消息内容违规")) is False
+    assert _is_retryable_qq_error(botpy.errors.ServerError("内容审核不通过")) is False
+    assert _is_retryable_qq_error(botpy.errors.ServerError("服务繁忙，请稍后重试")) is True
+    assert _is_retryable_qq_error(OSError("connection reset")) is True
+    assert _is_retryable_qq_error(ValueError("unexpected")) is False
+
+
+async def test_group_audit_error_is_not_retried_and_reports_reason() -> None:
+    sender = QQOfficialSender(Settings())
+    calls = []
+
+    async def fake_once(self, group_openid, payload):
+        calls.append(group_openid)
+        raise botpy.errors.ServerError("消息内容违规")
+
+    sender._post_group_message_once = MethodType(fake_once, sender)
+    with pytest.raises(botpy.errors.ServerError):
+        await sender._post_group_message("group-openid", {"content": "x", "msg_type": 0})
+    assert calls == ["group-openid"]
+
+    # 走完整 send() 时错误文案要能直接看懂。
+    async def fake_send_text(self, item, target_type, text):
+        raise botpy.errors.ServerError("消息内容违规")
+
+    sender._send_text = MethodType(fake_send_text, sender)
+    outbound = QQOutboundMessage(target_type="group", target_id="g", text="正文")
+    with pytest.raises(botpy.errors.ServerError) as send_error:
+        await sender.send(outbound)
+    message = str(send_error.value)
+    assert "审核未通过" in message and "停止重试" in message

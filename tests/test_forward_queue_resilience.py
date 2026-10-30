@@ -211,3 +211,92 @@ async def test_supervisor_restarts_after_consumer_crash() -> None:
         assert service.matcher_calls >= 1
     finally:
         await queue.stop()
+
+
+class AuditOnceSender(FakeSender):
+    """第一次抛审核错误，第二次成功。"""
+
+    def __init__(self, error: Exception) -> None:
+        super().__init__()
+        self.error = error
+        self.texts: list[str] = []
+
+    async def send(self, outbound) -> dict:
+        self.calls += 1
+        self.texts.append(outbound.text)
+        if self.calls == 1:
+            raise self.error
+        return {"ok": True}
+
+
+@pytest.mark.asyncio
+async def test_audit_fallback_records_success_with_note() -> None:
+    import botpy.errors
+
+    from app.storage.models import ForwardStatus
+
+    service = FakeService(rules=[make_rule()])
+    sender = AuditOnceSender(botpy.errors.ServerError("消息内容违规"))
+    queue = ForwardQueue(Settings(forward_queue_size=10), service, sender)  # type: ignore[arg-type]
+    message = make_message()
+    message.text = "含敏感词的正文"
+    message.webpage_url = "https://example.com/a"
+
+    await queue._process_message(message)
+
+    assert sender.texts == ["含敏感词的正文", "https://example.com/a"]
+    log = service.log_calls[-1]
+    assert log["status"] == ForwardStatus.SUCCESS
+    assert log["forwarded_text"] == "https://example.com/a"
+    assert "降级" in (log["error_message"] or "")
+
+
+@pytest.mark.asyncio
+async def test_qq_skip_keywords_skip_qq_target_without_sending() -> None:
+    from app.storage.models import ForwardStatus
+
+    service = FakeService(rules=[make_rule()])
+    sender = FakeSender()
+    queue = ForwardQueue(Settings(forward_queue_size=10), service, sender)  # type: ignore[arg-type]
+    service.rules[0].qq_skip_keywords = ["习近平", "违禁词"]
+    message = make_message()
+    message.text = "今天聊聊 习近平 的讲话"
+
+    await queue._process_message(message)
+
+    assert sender.calls == 0
+    log = service.log_calls[-1]
+    assert log["status"] == ForwardStatus.SKIPPED
+    assert "命中 QQ 屏蔽词" in log["error_message"]
+    assert "习近平" in log["error_message"]
+
+
+@pytest.mark.asyncio
+async def test_qq_skip_keywords_match_is_case_insensitive() -> None:
+    service = FakeService(rules=[make_rule()])
+    sender = FakeSender()
+    queue = ForwardQueue(Settings(forward_queue_size=10), service, sender)  # type: ignore[arg-type]
+    service.rules[0].qq_skip_keywords = ["Sensitive"]
+    message = make_message()
+    message.text = "a sensitive topic"
+
+    await queue._process_message(message)
+
+    assert sender.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_qq_skip_keywords_miss_still_sends() -> None:
+    from app.storage.models import ForwardStatus
+
+    service = FakeService(rules=[make_rule()])
+    sender = FakeSender()
+    queue = ForwardQueue(Settings(forward_queue_size=10), service, sender)  # type: ignore[arg-type]
+    service.rules[0].qq_skip_keywords = ["习近平"]
+    message = make_message()
+    message.text = "普通的技术讨论"
+
+    await queue._process_message(message)
+
+    assert sender.calls == 1
+    assert service.log_calls[-1]["status"] == ForwardStatus.SUCCESS

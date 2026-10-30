@@ -50,6 +50,7 @@ def _ensure_schema_compat(sync_conn) -> None:
     _ensure_column(sync_conn, "forwardrule", "source_account_id", "VARCHAR(64)")
     _ensure_column(sync_conn, "forwardrule", "source_platform", "VARCHAR(32)")
     _ensure_column(sync_conn, "forwardrule", "target_platform", "VARCHAR(32)", default="'qq'")
+    _ensure_column(sync_conn, "forwardrule", "qq_skip_keywords", "JSON", default="'[]'")
     _ensure_column(sync_conn, "forwardlog", "tg_account_id", "VARCHAR(64)")
     _ensure_column(sync_conn, "forwardlog", "tg_account_user_id", "INTEGER")
     _ensure_column(sync_conn, "forwardlog", "source_platform", "VARCHAR(32)", default="'telegram'")

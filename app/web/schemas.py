@@ -331,6 +331,8 @@ class RuleBase(BaseModel):
     text_include_regex: str | None = None
     text_exclude_regex: str | None = None
     media_types: list[str] | None = None
+    # 命中这些词的转发只跳过 QQ 目标（其余平台目标照发），用来避开 QQ 审核必拦的内容。
+    qq_skip_keywords: list[str] = Field(default_factory=list)
     target_platform: str = Platform.QQ.value
     qq_target_type: str = QQTargetType.GROUP.value
     qq_target_id: str = Field(default="", max_length=128)
@@ -402,7 +404,7 @@ class RuleBase(BaseModel):
             raise ValueError(f"qq_target_type must be one of: {', '.join(sorted(allowed))}")
         return value
 
-    @field_validator("keywords", mode="before")
+    @field_validator("keywords", "qq_skip_keywords", mode="before")
     @classmethod
     def normalize_keywords(cls, value: object) -> list[str]:
         if value is None or value == "":
@@ -493,6 +495,7 @@ class RuleBase(BaseModel):
             "text_include_regex": include_regex,
             "text_exclude_regex": self.text_exclude_regex,
             "media_types": self.media_types,
+            "qq_skip_keywords": self.qq_skip_keywords,
             "target_platform": self.target_platform,
             "qq_target_type": self.qq_target_type,
             "qq_target_id": self.qq_target_id,
@@ -546,6 +549,7 @@ class RuleResponse(BaseModel):
     text_include_regex: str | None = None
     text_exclude_regex: str | None = None
     media_types: list[str] | None = None
+    qq_skip_keywords: list[str] = Field(default_factory=list)
     target_platform: str = Platform.QQ.value
     qq_target_type: str
     qq_target_id: str
@@ -586,6 +590,7 @@ class RuleResponse(BaseModel):
             text_include_regex=rule.text_include_regex,
             text_exclude_regex=rule.text_exclude_regex,
             media_types=rule.media_types,
+            qq_skip_keywords=list(rule.qq_skip_keywords or []),
             target_platform=rule.target_platform or Platform.QQ.value,
             qq_target_type=rule.qq_target_type,
             qq_target_id=rule.qq_target_id,

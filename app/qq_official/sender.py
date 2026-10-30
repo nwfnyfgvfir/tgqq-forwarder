@@ -14,7 +14,7 @@ import botpy.errors
 from botpy.http import Route
 from botpy.types import message as qq_message
 from botpy.types.message import MarkdownPayload, Media
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from app.config import Settings
 from app.qq_official.client import (
@@ -37,6 +37,31 @@ FILE_FILE_TYPE = 4
 # access_token 名义有效期 2 小时，提前这么久主动刷新，避免「最后一分钟」失效。
 TOKEN_REFRESH_MARGIN_SECONDS = 60.0
 
+# QQ 平台审核类错误：内容违规、敏感词等属于永久失败，重试与降级都没有意义，
+# 只会让队列白白等上几十秒（指数退避 2/4/8/16s）。
+QQ_AUDIT_ERROR_HINTS = ("违规", "审核", "敏感", "内容不合法")
+
+
+def is_qq_audit_error(error: Exception) -> bool:
+    """QQ 平台审核类错误（内容违规/敏感词），重发原文不会成功。"""
+    return isinstance(error, botpy.errors.ServerError) and any(
+        hint in str(error) for hint in QQ_AUDIT_ERROR_HINTS
+    )
+
+
+def _is_retryable_qq_error(error: Exception) -> bool:
+    if is_qq_audit_error(error):
+        return False
+    return isinstance(
+        error,
+        (
+            botpy.errors.ServerError,
+            botpy.errors.SequenceNumberError,
+            OSError,
+            asyncio.TimeoutError,
+        ),
+    )
+
 
 def _patch_qq_botpy_formdata() -> None:
     try:
@@ -53,14 +78,7 @@ ensure_group_message_create_parser()
 
 
 _qq_retry = retry(
-    retry=retry_if_exception_type(
-        (
-            botpy.errors.ServerError,
-            botpy.errors.SequenceNumberError,
-            OSError,
-            asyncio.TimeoutError,
-        )
-    ),
+    retry=retry_if_exception(_is_retryable_qq_error),
     stop=stop_after_attempt(5),
     wait=wait_exponential(multiplier=2, min=2, max=30),
     reraise=True,
@@ -187,9 +205,18 @@ class QQOfficialSender:
         target_type = QQTargetType(str(outbound.target_type))
         text = self._truncate_text(outbound.text)
         media_paths = outbound.media_paths or ([outbound.media_path] if outbound.media_path else [])
-        if media_paths:
-            return await self._send_media_sequence(outbound, target_type, text, media_paths)
-        return await self._send_text(outbound, target_type, text)
+        try:
+            if media_paths:
+                return await self._send_media_sequence(outbound, target_type, text, media_paths)
+            return await self._send_text(outbound, target_type, text)
+        except botpy.errors.ServerError as error:
+            if is_qq_audit_error(error):
+                # 审核不通过是内容问题，重发同样会失败；把原因说清楚，别再让人猜。
+                raise botpy.errors.ServerError(
+                    f"QQ 平台审核未通过（{str(error).strip()}）：属于永久失败，已停止重试；"
+                    "需要修改消息内容或去掉敏感词/链接后手动重发"
+                ) from error
+            raise
 
     async def _send_media_sequence(
         self,

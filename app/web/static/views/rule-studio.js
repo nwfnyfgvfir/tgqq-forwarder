@@ -129,6 +129,7 @@ export function renderRuleStudio(state) {
           <label>Include 正则<textarea name="text_include_regex" rows="2" placeholder="高级模式使用">${escapeHtml(editRule?.match_mode === 'regex' ? editRule?.text_include_regex || '' : '')}</textarea></label>
           <label>Exclude 正则<textarea name="text_exclude_regex" rows="2" placeholder="命中后排除">${escapeHtml(editRule?.text_exclude_regex || '')}</textarea></label>
           <label>媒体类型<input name="media_types" value="${escapeHtml((editRule?.media_types || []).join(', '))}" placeholder="photo, video；留空不限" /></label>
+          <label>QQ 屏蔽词<input name="qq_skip_keywords" value="${escapeHtml((editRule?.qq_skip_keywords || []).join(', '))}" placeholder="命中这些词的转发只跳过 QQ，其他目标照发；支持空格、逗号、分号" /></label>
         </div>
         <div class="step-block">
           <div class="step-index">04</div>
@@ -576,6 +577,7 @@ function payloadFromForm(form) {
     text_include_regex: value('text_include_regex') || null,
     text_exclude_regex: value('text_exclude_regex') || null,
     media_types: value('media_types') || null,
+    qq_skip_keywords: value('qq_skip_keywords') || null,
     targets,
     // 兼容字段：服务端会按 targets[0] 重新计算，这里只是让旧接口也能读懂。
     target_platform: first.platform,
