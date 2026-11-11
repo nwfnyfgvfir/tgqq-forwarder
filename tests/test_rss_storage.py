@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import create_engine, inspect
@@ -7,6 +8,35 @@ from sqlmodel import Session, select
 
 from app.rss.schemas import DEFAULT_MESSAGE_TEMPLATE
 from app.storage.models import RssEntry, RssSubscription, SQLModel
+
+
+async def test_legacy_subscription_gets_local_detection_mode(tmp_path):
+    from sqlalchemy import text
+
+    from app.storage.db import Database
+
+    path = tmp_path / "legacy.db"
+    with sqlite3.connect(path) as connection:
+        connection.execute("CREATE TABLE rss_subscription (id INTEGER PRIMARY KEY)")
+        connection.execute("INSERT INTO rss_subscription VALUES (1)")
+    db = Database(f"sqlite+aiosqlite:///{path}")
+    try:
+        await db.init()
+        async with db.session() as session:
+            mode = (await session.execute(text(
+                "SELECT translation_detection FROM rss_subscription WHERE id = 1"
+            ))).scalar_one()
+            assert mode == "local"
+            await session.execute(text(
+                "UPDATE rss_subscription SET translation_detection = 'ai' WHERE id = 1"
+            ))
+        await db.init()
+        async with db.session() as session:
+            assert (await session.execute(text(
+                "SELECT translation_detection FROM rss_subscription WHERE id = 1"
+            ))).scalar_one() == "ai"
+    finally:
+        await db.dispose()
 
 
 def test_rss_metadata_creates_new_tables_and_utc_roundtrip(tmp_path) -> None:

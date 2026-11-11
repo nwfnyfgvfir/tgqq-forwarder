@@ -94,6 +94,9 @@ class RssService:
                 payload.include_keywords,
                 payload.exclude_keywords,
             )
+            translation_changed = (
+                sub.translate, sub.translation_detection, sub.message_template
+            ) != (payload.translate, payload.translation_detection, payload.message_template)
             if sub.feed_url != payload.feed_url:
                 # 保留历史 sent 与去重记录；旧源未完成条目终止，不会错发到新源。
                 await session.execute(
@@ -118,6 +121,17 @@ class RssService:
                 setattr(sub, key, value)
             sub.updated_at = utc_now()
             sub.next_check_at = None
+            if translation_changed:
+                await session.execute(
+                    update(RssEntry)
+                    .where(
+                        RssEntry.subscription_id == subscription_id,
+                        RssEntry.status.in_(["pending", "failed"]),
+                    )
+                    .values(
+                        detected_language=None, translated_title=None, translated_summary=None
+                    )
+                )
             if keywords_changed:
                 # 只收紧不放宽：改关键词后把排队中不再命中的条目撤下来，
                 # 但不把历史 skipped 补发出去（补发由用户显式触发）。
@@ -207,7 +221,8 @@ class RssService:
         translations: dict[int, dict] = {}
         if payload.translate and self.settings.rss_translate_enabled and selected:
             translations = await self._translate_preview(
-                selected, payload.message_template, warnings
+                selected, payload.message_template, warnings,
+                detection_mode=payload.translation_detection,
             )
         entries = []
         for index, entry in enumerate(selected):
@@ -227,6 +242,7 @@ class RssService:
                     "translated_title": translation.get("translated_title"),
                     "translated_summary": translation.get("translated_summary"),
                     "detected_language": translation.get("detected_language"),
+                    "translation_decisions": translation.get("translation_decisions", []),
                     "rendered_text": rendered,
                     "matches": matches_keywords(payload, entry),
                 }
@@ -252,7 +268,7 @@ class RssService:
         )
 
     async def _translate_preview(
-        self, entries: list, template: str, warnings: list[str]
+        self, entries: list, template: str, warnings: list[str], *, detection_mode: str = "local"
     ) -> dict[int, dict]:
         """批量翻译预览条目（最多 10 条）；失败时提示按原文展示，不写库。"""
         wanted = translated_fields(template)
@@ -267,13 +283,16 @@ class RssService:
             return {}
         try:
             outcomes = await self.translator.translate(
-                texts, target=self.settings.rss_translate_target
+                texts, target=self.settings.rss_translate_target, detection_mode=detection_mode
             )
         except asyncio.CancelledError:
             raise
         except Exception:
             warnings.append("部分条目翻译失败，预览按原文展示")
             return {}
+        for outcome in outcomes:
+            if outcome.warning and outcome.warning not in warnings:
+                warnings.append(outcome.warning)
         if len(outcomes) != len(texts) or any(outcome.error for outcome in outcomes):
             warnings.append("部分条目翻译失败，预览按原文展示")
             return {}
@@ -285,6 +304,10 @@ class RssService:
             )
             if outcome.language and bucket["detected_language"] is None:
                 bucket["detected_language"] = outcome.language
+            if outcome.decision:
+                bucket.setdefault("translation_decisions", []).append(
+                    {"field": field, **outcome.decision.serialize()}
+                )
             if not outcome.skipped and outcome.text:
                 bucket[f"translated_{field}"] = outcome.text
         return result

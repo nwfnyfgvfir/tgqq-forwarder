@@ -217,7 +217,9 @@ class RssWorker:
         warnings = list(result.warnings)
         translation: dict[str, str] = {}
         if sub.translate and self.settings.rss_translate_enabled:
-            translation = await self._translate_for_test(entry, sub.message_template, warnings)
+            translation = await self._translate_for_test(
+                entry, sub.message_template, warnings, detection_mode=sub.translation_detection
+            )
         target = RssService._with_translation(entry, translation)
         try:
             text = render_entry(sub, target, result.feed_title)
@@ -256,7 +258,7 @@ class RssWorker:
         }
 
     async def _translate_for_test(
-        self, entry, template: str, warnings: list[str]
+        self, entry, template: str, warnings: list[str], *, detection_mode: str = "local"
     ) -> dict[str, str]:
         """试发路径的翻译：失败只记 warning 并按原文发送，不阻断试发。"""
         fields = self._translation_fields(entry.title, entry.summary, template)
@@ -264,13 +266,17 @@ class RssWorker:
             return {}
         try:
             outcomes = await self.translator.translate(
-                [text for _, text in fields], target=self.settings.rss_translate_target
+                [text for _, text in fields], target=self.settings.rss_translate_target,
+                detection_mode=detection_mode,
             )
         except asyncio.CancelledError:
             raise
         except Exception:
             warnings.append("翻译失败，本次试发按原文发送。")
             return {}
+        for outcome in outcomes:
+            if outcome.warning and outcome.warning not in warnings:
+                warnings.append(outcome.warning)
         if len(outcomes) != len(fields) or any(outcome.error for outcome in outcomes):
             warnings.append("翻译失败，本次试发按原文发送。")
             return {}
@@ -638,9 +644,10 @@ class RssWorker:
             if entry.detected_language or entry.translated_title or entry.translated_summary:
                 return
             fields = self._translation_fields(entry.title, entry.summary, sub.message_template)
+            policy = (sub.translate, sub.translation_detection, sub.message_template)
         if not fields:
             return
-        result = await self._translate_fields(fields)
+        result = await self._translate_fields(fields, detection_mode=sub.translation_detection)
         if result is None:
             return
         detected, values = result
@@ -649,6 +656,11 @@ class RssWorker:
             self.service.db.session() as session,
         ):
             stored = await session.get(RssEntry, entry_id)
+            current = await session.get(RssSubscription, subscription_id)
+            if current is None or not current.enabled or policy != (
+                current.translate, current.translation_detection, current.message_template
+            ):
+                return
             if stored is None or stored.status != "pending":
                 return
             if stored.detected_language or stored.translated_title or stored.translated_summary:
@@ -671,12 +683,13 @@ class RssWorker:
         return fields
 
     async def _translate_fields(
-        self, fields: list[tuple[str, str]]
+        self, fields: list[tuple[str, str]], *, detection_mode: str = "local"
     ) -> tuple[str | None, dict[str, str]] | None:
         """一次批量调用翻译 title/summary；失败返回 None，由调用方按原文发布。"""
         try:
             outcomes = await self.translator.translate(
-                [text for _, text in fields], target=self.settings.rss_translate_target
+                [text for _, text in fields], target=self.settings.rss_translate_target,
+                detection_mode=detection_mode,
             )
         except asyncio.CancelledError:
             raise

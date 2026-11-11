@@ -164,3 +164,59 @@ def test_rss_translate_target_default_and_validation() -> None:
         with pytest.raises(ValidationError):
             Settings(_env_file=None, rss_translate_target=bad)
 
+
+def test_qq_ai_moderation_options_are_opt_in_and_credentials_are_hidden() -> None:
+    assert Settings(_env_file=None).qq_ai_moderation_enabled is False
+    settings = Settings(
+        _env_file=None,
+        qq_ai_moderation_enabled="true",
+        qq_ai_moderation_api_url=" https://ai.example/v1?key=query-secret ",
+        qq_ai_moderation_api_key=" api-secret ",
+        qq_ai_moderation_model=" model ",
+        qq_ai_moderation_transcribe_api_url="https://speech.example/v1?key=speech-query-secret",
+        qq_ai_moderation_transcribe_api_key="speech-api-secret",
+    )
+    assert settings.qq_ai_moderation_enabled is True
+    assert settings.qq_ai_moderation_api_key == "api-secret"
+    assert settings.qq_ai_moderation_model == "model"
+    for secret in ["api-secret", "query-secret", "speech-query-secret", "speech-api-secret"]:
+        assert secret not in repr(settings)
+        assert secret not in str(settings.model_dump())
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "qq_ai_moderation_api_url",
+        "qq_ai_moderation_api_key",
+        "qq_ai_moderation_model",
+        "qq_ai_moderation_transcribe_api_url",
+        "qq_ai_moderation_transcribe_api_key",
+    ],
+)
+def test_qq_ai_moderation_empty_options_use_translation_fallback(name) -> None:
+    assert getattr(Settings(_env_file=None, **{name: "   "}), name) is None
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"qq_ai_moderation_api_url": "ftp://ai.example/v1"},
+        {"qq_ai_moderation_api_url": "not a url"},
+        {"qq_ai_moderation_api_key": "a" * 4097},
+        {"qq_ai_moderation_model": "a" * 201},
+        {"qq_ai_moderation_timeout_seconds": 0},
+        {"qq_ai_moderation_timeout_seconds": float("nan")},
+        {"qq_ai_moderation_max_chars": 0},
+        {"qq_ai_moderation_max_media_mb": 0},
+        {"qq_ai_moderation_image_max_side": 1},
+        {"qq_ai_moderation_video_frame_interval_seconds": 0},
+        {"qq_ai_moderation_max_video_frames": 0},
+        {"qq_ai_moderation_max_duration_seconds": float("inf")},
+        {"qq_ai_moderation_transcribe_model": " "},
+        {"qq_ai_moderation_transcribe_api_url": "ftp://speech.example"},
+    ],
+)
+def test_qq_ai_moderation_rejects_invalid_configuration(options) -> None:
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, **options)

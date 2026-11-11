@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from pydantic import ValidationError
 
 from app.channels.router import DeliveryPending, DeliveryRouter
 from app.config import Settings
+from app.qq_official.moderation import QQ_VIOLATION_NOTICE, AIContentModerator
 from app.rules.models import TelegramForwardMessage
 from app.rules.service import ForwardRuleService
 from app.storage.db import Database
@@ -468,3 +471,98 @@ def test_qq_skip_keywords_round_trip_through_response() -> None:
     rule.id = 7
     response = RuleResponse.from_rule(rule)
     assert response.qq_skip_keywords == ["违禁词"]
+
+
+@pytest.mark.parametrize("block_mode", ["keyword", "ai"])
+async def test_blocked_qq_targets_notify_while_other_platforms_and_later_messages_continue(
+    block_mode,
+) -> None:
+    settings = Settings(_env_file=None, qq_ai_moderation_enabled=block_mode == "ai")
+    qq = FakeQQSender()
+    weixin = FakeWeixinService()
+    telegram_calls = []
+    review_calls = []
+
+    async def send_telegram(target, message, text):
+        telegram_calls.append(text)
+
+    def review(request):
+        review_calls.append(request)
+        blocked = b"restricted" in request.content
+        content = (
+            '{"blocked":true,"categories":["political_sensitive"]}'
+            if blocked else '{"blocked":false,"categories":[]}'
+        )
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": content}}]},
+        )
+
+    rule = SimpleNamespace(
+        id=1, name="rule", qq_skip_keywords=["restricted"] if block_mode == "keyword" else []
+    )
+    service = FakeService(
+        rule,
+        [
+            target("qq", "group", "qq-a"),
+            target("qq", "c2c", "qq-b"),
+            target("weixin", "friend", "wxid_c"),
+            target("telegram", "chat", "-100456"),
+        ],
+    )
+    router = DeliveryRouter(
+        settings,
+        qq,
+        weixin,
+        telegram_delivery=SimpleNamespace(enabled=True, send=send_telegram),
+    )
+    router.qq_moderator = AIContentModerator(settings, transport=httpx.MockTransport(review))
+    queue = ForwardQueue(settings, service, qq, weixin, router=router)
+    try:
+        await queue._process_message(
+            make_message(
+                text="restricted source https://example.com/private",
+                media_paths=[Path("image.jpg")],
+                media_types=["photo"],
+            )
+        )
+
+        assert [item.text for item in qq.calls] == [QQ_VIOLATION_NOTICE, QQ_VIOLATION_NOTICE]
+        assert all(item.media_paths == [] for item in qq.calls)
+        assert weixin.calls[0].text == "restricted source https://example.com/private"
+        assert weixin.calls[0].media_paths == [Path("image.jpg")]
+        assert telegram_calls == [weixin.calls[0].text]
+        assert [call["status"] for call in service.log_calls] == [
+            ForwardStatus.SKIPPED,
+            ForwardStatus.SKIPPED,
+            ForwardStatus.SUCCESS,
+            ForwardStatus.SUCCESS,
+        ]
+        assert len(review_calls) == (1 if block_mode == "ai" else 0)
+
+        await queue._process_message(make_message(message_id=2, text="safe follow-up"))
+        assert [item.text for item in qq.calls[-2:]] == ["safe follow-up", "safe follow-up"]
+        assert all(call["status"] == ForwardStatus.SUCCESS for call in service.log_calls[-4:])
+        assert len(review_calls) == (2 if block_mode == "ai" else 0)
+    finally:
+        await router.close()
+
+
+async def test_ai_failure_logs_keyword_fallback_as_a_normal_successful_forward() -> None:
+    settings = Settings(_env_file=None, qq_ai_moderation_enabled=True)
+    qq = FakeQQSender()
+    rule = SimpleNamespace(id=1, name="rule", qq_skip_keywords=["restricted"])
+    service = FakeService(rule, [target("qq", "group", "qq-a")])
+    router = DeliveryRouter(settings, qq)
+    router.qq_moderator = AIContentModerator(
+        settings, transport=httpx.MockTransport(lambda request: httpx.Response(503))
+    )
+    queue = ForwardQueue(settings, service, qq, router=router)
+    try:
+        await queue._process_message(make_message(text="ordinary source"))
+        assert [item.text for item in qq.calls] == ["ordinary source"]
+        assert service.log_calls[0]["status"] == ForwardStatus.SUCCESS
+        assert service.log_calls[0]["forwarded_text"] == "ordinary source"
+        assert "回落 QQ 屏蔽词检测" in service.log_calls[0]["error_message"]
+    finally:
+        await router.close()

@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.config import Settings
+from app.qq_official.moderation import QQ_VIOLATION_NOTICE
 from app.rules.models import TelegramForwardMessage
 from app.storage.models import ForwardStatus
 from app.worker.forward_queue import ForwardQueue
@@ -230,7 +231,7 @@ class AuditOnceSender(FakeSender):
 
 
 @pytest.mark.asyncio
-async def test_audit_fallback_records_success_with_note() -> None:
+async def test_audit_notice_records_skipped_with_actual_sent_text() -> None:
     import botpy.errors
 
     from app.storage.models import ForwardStatus
@@ -244,15 +245,15 @@ async def test_audit_fallback_records_success_with_note() -> None:
 
     await queue._process_message(message)
 
-    assert sender.texts == ["含敏感词的正文", "https://example.com/a"]
+    assert sender.texts == ["含敏感词的正文", QQ_VIOLATION_NOTICE]
     log = service.log_calls[-1]
-    assert log["status"] == ForwardStatus.SUCCESS
-    assert log["forwarded_text"] == "https://example.com/a"
-    assert "降级" in (log["error_message"] or "")
+    assert log["status"] == ForwardStatus.SKIPPED
+    assert log["forwarded_text"] == QQ_VIOLATION_NOTICE
+    assert "仅发送提醒" in (log["error_message"] or "")
 
 
 @pytest.mark.asyncio
-async def test_qq_skip_keywords_skip_qq_target_without_sending() -> None:
+async def test_qq_skip_keywords_send_only_notice_and_log_skipped() -> None:
     from app.storage.models import ForwardStatus
 
     service = FakeService(rules=[make_rule()])
@@ -264,9 +265,10 @@ async def test_qq_skip_keywords_skip_qq_target_without_sending() -> None:
 
     await queue._process_message(message)
 
-    assert sender.calls == 0
+    assert sender.calls == 1
     log = service.log_calls[-1]
     assert log["status"] == ForwardStatus.SKIPPED
+    assert log["forwarded_text"] == QQ_VIOLATION_NOTICE
     assert "命中 QQ 屏蔽词" in log["error_message"]
     assert "习近平" in log["error_message"]
 
@@ -282,7 +284,8 @@ async def test_qq_skip_keywords_match_is_case_insensitive() -> None:
 
     await queue._process_message(message)
 
-    assert sender.calls == 0
+    assert sender.calls == 1
+    assert service.log_calls[-1]["forwarded_text"] == QQ_VIOLATION_NOTICE
 
 
 @pytest.mark.asyncio

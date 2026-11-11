@@ -16,6 +16,7 @@ from app.rules.templates import DEFAULT_MESSAGE_TEMPLATE
 # AI 翻译后端默认地址：OpenAI 兼容的 Chat Completions 端点，可换成任意兼容服务。
 DEFAULT_RSS_TRANSLATE_API_URL = "https://api.openai.com/v1/chat/completions"
 DEFAULT_RSS_TRANSLATE_MODEL = "gpt-4o-mini"
+RESTORED_SETTINGS_FILENAME = ".restored-settings.json"
 
 
 @dataclass(slots=True)
@@ -183,6 +184,9 @@ class Settings(BaseSettings):
     log_dir: Path = Path("data/logs")
     media_dir: Path = Path("data/media")
     database_url: str = "sqlite+aiosqlite:///./data/app.db"
+    backup_max_archive_mb: int = Field(default=1024, ge=1, le=16384)
+    backup_max_unpacked_mb: int = Field(default=4096, ge=1, le=65536)
+    backup_max_files: int = Field(default=100000, ge=10, le=1000000)
 
     telegram_api_id: int = 0
     telegram_api_hash: str = ""
@@ -247,8 +251,9 @@ class Settings(BaseSettings):
     rss_translate_api_key: str | None = Field(default=None, exclude=True, repr=False)
     # 使用的模型名，如 gpt-4o-mini、deepseek-chat、qwen-plus 等。
     rss_translate_model: str = DEFAULT_RSS_TRANSLATE_MODEL
-    rss_translate_timeout_seconds: float = Field(
-        default=30, gt=0, le=120, allow_inf_nan=False
+    rss_translate_timeout_seconds: float = Field(default=30, gt=0, le=120, allow_inf_nan=False)
+    rss_translate_detection_timeout_seconds: float = Field(
+        default=8, gt=0, le=30, allow_inf_nan=False
     )
     rss_translate_max_chars: int = Field(default=1200, ge=100, le=5000)
     # 同一进程内翻译请求的并发上限，所有 translator 实例（预览/发送/试发）共享；
@@ -379,8 +384,7 @@ class Settings(BaseSettings):
             except ValueError:
                 host = host.encode("idna").decode("ascii")
                 if any(c in host for c in "/:@*?# ") or not all(
-                    part and all(c.isalnum() or c == "-" for c in part)
-                    for part in host.split(".")
+                    part and all(c.isalnum() or c == "-" for c in part) for part in host.split(".")
                 ):
                     raise ValueError("RSS 白名单仅接受明确主机名，不接受 URL 或通配符") from None
             if host not in hosts:
@@ -400,9 +404,70 @@ class Settings(BaseSettings):
     qq_enable_guild_direct_message: bool = False
     qq_allow_send_without_cached_msg_id: bool = True
     qq_use_markdown: bool = True
-    # 被 QQ 审核拦截（「消息内容违规」）时，改发原文链接而不是整条失败。
-    # 只发链接、不改写正文：不会把被拦的内容换个样子再塞进去。
-    qq_audit_link_fallback: bool = True
+    # QQ 审核拒绝或本地审核命中后，只发送固定提醒，不再补发原文链接。
+    # AI 审核需显式开启；未单独配置的接口、凭据和模型复用 RSS 翻译配置。
+    qq_ai_moderation_enabled: bool = False
+    qq_ai_moderation_api_url: str | None = Field(default=None, exclude=True, repr=False)
+    qq_ai_moderation_api_key: str | None = Field(default=None, exclude=True, repr=False)
+    qq_ai_moderation_model: str | None = None
+    qq_ai_moderation_timeout_seconds: float = Field(default=60.0, gt=0, le=600, allow_inf_nan=False)
+    # 超限、超时或审核失败时回落到 QQ 屏蔽词检测。
+    qq_ai_moderation_max_chars: int = Field(default=20000, ge=100, le=100000)
+    qq_ai_moderation_max_media_mb: int = Field(default=20, ge=1, le=200)
+    qq_ai_moderation_image_max_side: int = Field(default=1280, ge=256, le=2048)
+    qq_ai_moderation_video_frame_interval_seconds: float = Field(
+        default=2.0, gt=0, le=60, allow_inf_nan=False
+    )
+    qq_ai_moderation_max_video_frames: int = Field(default=60, ge=1, le=300)
+    qq_ai_moderation_max_duration_seconds: float = Field(
+        default=600.0, gt=0, le=3600, allow_inf_nan=False
+    )
+    # 留空时从审核接口的基础地址推导 /audio/transcriptions，凭据同样可单独覆盖。
+    qq_ai_moderation_transcribe_api_url: str | None = Field(default=None, exclude=True, repr=False)
+    qq_ai_moderation_transcribe_api_key: str | None = Field(default=None, exclude=True, repr=False)
+    qq_ai_moderation_transcribe_model: str = "gpt-transcribe"
+
+    @field_validator(
+        "qq_ai_moderation_api_url",
+        "qq_ai_moderation_api_key",
+        "qq_ai_moderation_model",
+        "qq_ai_moderation_transcribe_api_url",
+        "qq_ai_moderation_transcribe_api_key",
+        mode="before",
+    )
+    @classmethod
+    def normalize_qq_ai_moderation_options(cls, value: object) -> object:
+        return value.strip() or None if isinstance(value, str) else value
+
+    @field_validator("qq_ai_moderation_api_url", "qq_ai_moderation_transcribe_api_url")
+    @classmethod
+    def validate_qq_ai_moderation_api_url(cls, value: str | None) -> str | None:
+        if value is not None:
+            cls.validate_rss_translate_api_url(value)
+        return value
+
+    @field_validator("qq_ai_moderation_api_key", "qq_ai_moderation_transcribe_api_key")
+    @classmethod
+    def validate_qq_ai_moderation_api_key(cls, value: str | None) -> str | None:
+        if value is not None and len(value) > 4096:
+            raise ValueError("QQ_AI_MODERATION_API_KEY must not exceed 4096 characters")
+        return value
+
+    @field_validator("qq_ai_moderation_model")
+    @classmethod
+    def validate_qq_ai_moderation_model(cls, value: str | None) -> str | None:
+        if value is not None and len(value) > 200:
+            raise ValueError("QQ_AI_MODERATION_MODEL must not exceed 200 characters")
+        return value
+
+    @field_validator("qq_ai_moderation_transcribe_model")
+    @classmethod
+    def validate_qq_ai_moderation_transcribe_model(cls, value: str) -> str:
+        value = value.strip()
+        if not value or len(value) > 200:
+            raise ValueError("QQ_AI_MODERATION_TRANSCRIBE_MODEL must contain 1 to 200 characters")
+        return value
+
     # Hard cap for one QQ outbound send (includes multi-media sequence + retries).
     qq_send_timeout_seconds: float = 120.0
     # QQ 入站附件（图片/视频/文件）下载开关与单文件大小上限；QQ CDN 链接有时效，
@@ -489,9 +554,7 @@ class Settings(BaseSettings):
     def validate_weixin_account_id(cls, value: str) -> str:
         text = (value or "").strip()
         if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", text) is None:
-            raise ValueError(
-                "WEIXIN_ACCOUNT_ID must match [A-Za-z0-9][A-Za-z0-9_-]{0,63}"
-            )
+            raise ValueError("WEIXIN_ACCOUNT_ID must match [A-Za-z0-9][A-Za-z0-9_-]{0,63}")
         return text
 
     @field_validator("weixin_base_url", "weixin_cdn_base_url", mode="before")
@@ -575,5 +638,20 @@ class Settings(BaseSettings):
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     settings = Settings()
+    data_dir = settings.data_dir.resolve()
+    restored = data_dir / RESTORED_SETTINGS_FILENAME
+    if restored.is_file():
+        try:
+            payload = json.loads(restored.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict) or set(payload) - set(Settings.model_fields):
+                raise ValueError("invalid restored settings")
+            payload["data_dir"] = str(data_dir)
+            settings = Settings(**payload)
+        except Exception:
+            raise RuntimeError("还原后的配置文件无效，请检查数据目录中的配置文件") from None
     settings.ensure_runtime_dirs()
     return settings
+
+
+def clear_settings_cache() -> None:
+    get_settings.cache_clear()

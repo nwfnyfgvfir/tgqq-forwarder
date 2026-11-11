@@ -10,6 +10,7 @@ import pytest
 from botpy.http import Route
 
 from app.config import Settings
+from app.qq_official.markdown_media import MarkdownMediaUnavailable
 from app.qq_official.models import QQOutboundMessage
 from app.qq_official.sender import QQOfficialSender
 from app.storage.models import QQTargetType
@@ -56,8 +57,8 @@ async def test_send_media_sequence_sends_text_first_then_captioned_media() -> No
     assert [call[0].media_path for call in media_calls] == [Path("one.jpg"), Path("two.jpg")]
 
 
-async def test_send_single_media_keeps_full_text_on_media() -> None:
-    sender = QQOfficialSender(Settings())
+async def test_send_single_media_in_plain_text_mode_keeps_full_text_on_media() -> None:
+    sender = QQOfficialSender(Settings(qq_use_markdown=False))
     calls = []
 
     async def fake_send_media(self, item, target_type, text):
@@ -84,6 +85,100 @@ async def test_send_single_media_keeps_full_text_on_media() -> None:
     assert result == [{"text": "完整正文"}]
     assert [text for _item, _target_type, text in calls] == ["完整正文"]
     assert calls[0][0].media_path == Path("one.jpg")
+
+
+@pytest.mark.parametrize("target_type", [QQTargetType.GROUP, QQTargetType.C2C])
+@pytest.mark.parametrize("media_caption", ["规则名称", None, " \n"])
+async def test_single_media_falls_back_to_separate_markdown(target_type, media_caption) -> None:
+    sender = QQOfficialSender(Settings(qq_use_markdown=True))
+    payloads = []
+    body = (
+        "# PK个人频道\n\n**账号：`xuer`**\n\n"
+        "🎁 **会员活动**\n[活动入口](https://example.com/plans?code=123#subscribe)"
+    )
+
+    async def fake_upload(self, *args, **kwargs):
+        return "MEDIA"
+
+    async def unavailable_material(path):
+        raise MarkdownMediaUnavailable("unavailable")
+
+    async def fake_post_group(*, group_openid, **payload):
+        assert group_openid == "target"
+        payloads.append(payload)
+        return {"id": f"sent-{len(payloads)}"}
+
+    async def fake_request(route, *, json):
+        payloads.append(json)
+        return {"id": f"sent-{len(payloads)}"}
+
+    sender._upload_group_or_c2c_media = MethodType(fake_upload, sender)
+    sender.markdown_images.upload = unavailable_material
+    sender.client.api.post_group_message = fake_post_group
+    sender._http_request = fake_request
+    outbound = QQOutboundMessage(
+        target_type=target_type,
+        target_id="target",
+        text=body,
+        media_path=Path("photo.jpg"),
+        media_type="photo",
+        media_caption=media_caption,
+    )
+
+    result = await sender.send(outbound)
+
+    assert len(result) == 2
+    assert [payload["msg_type"] for payload in payloads] == [7, 2]
+    assert payloads[0]["content"] == ("规则名称" if media_caption == "规则名称" else "媒体")
+    assert payloads[0]["media"] == "MEDIA"
+    assert "markdown" not in payloads[0]
+    assert payloads[1]["markdown"]["content"] == body
+    assert "content" not in payloads[1]
+
+
+async def test_single_media_without_body_does_not_send_empty_markdown() -> None:
+    sender = QQOfficialSender(Settings(qq_use_markdown=True))
+    calls = []
+
+    async def fake_send_media(self, item, target_type, text):
+        calls.append(text)
+        return {"text": text}
+
+    sender._send_media = MethodType(fake_send_media, sender)
+
+    result = await sender.send(
+        QQOutboundMessage(
+            target_type="group", target_id="target", text=" \n", media_path=Path("photo.jpg")
+        )
+    )
+
+    assert result == [{"text": "媒体"}]
+    assert calls == ["媒体"]
+
+
+async def test_album_without_caption_does_not_repeat_markdown_body_on_media() -> None:
+    sender = QQOfficialSender(Settings(qq_use_markdown=True))
+    calls = []
+
+    async def fake_send_text(self, item, target_type, text):
+        calls.append(("text", text))
+
+    async def fake_send_media(self, item, target_type, text):
+        calls.append(("media", text))
+
+    sender._send_text = MethodType(fake_send_text, sender)
+    sender._send_media = MethodType(fake_send_media, sender)
+
+    await sender.send(
+        QQOutboundMessage(
+            target_type="group",
+            target_id="target",
+            text="# 标题\n\n**正文**",
+            media_paths=[Path("one.jpg"), Path("two.jpg")],
+        )
+    )
+
+    assert calls == [("text", "# 标题\n\n**正文**"), ("media", "媒体"), ("media", "媒体")]
 
 
 async def test_group_proactive_payload_omits_msg_id_even_when_cached() -> None:
@@ -374,7 +469,7 @@ async def test_group_audit_error_is_not_retried_and_reports_reason() -> None:
     sender = QQOfficialSender(Settings())
     calls = []
 
-    async def fake_once(self, group_openid, payload):
+    async def fake_once(self, group_openid, payload, **kwargs):
         calls.append(group_openid)
         raise botpy.errors.ServerError("消息内容违规")
 
@@ -393,3 +488,32 @@ async def test_group_audit_error_is_not_retried_and_reports_reason() -> None:
         await sender.send(outbound)
     message = str(send_error.value)
     assert "审核未通过" in message and "停止重试" in message
+
+
+@pytest.mark.parametrize("target_type", [QQTargetType.GROUP, QQTargetType.C2C])
+async def test_media_audit_error_stops_without_falling_back_to_source_text(target_type) -> None:
+    sender = QQOfficialSender(Settings())
+    text_calls = []
+    uploads = []
+
+    async def fake_upload(self, *args, **kwargs):
+        uploads.append(args)
+        raise botpy.errors.ServerError("消息内容违规")
+
+    async def fake_text(self, *args):
+        text_calls.append(args)
+
+    sender._upload_group_or_c2c_media = MethodType(fake_upload, sender)
+    sender._send_text = MethodType(fake_text, sender)
+    outbound = QQOutboundMessage(
+        target_type=target_type,
+        target_id="target",
+        text="source with link https://example.com/private",
+        media_path=Path("a.jpg"),
+    )
+
+    with pytest.raises(botpy.errors.ServerError):
+        await sender.send(outbound)
+
+    assert len(uploads) == 1
+    assert text_calls == []

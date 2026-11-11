@@ -331,7 +331,7 @@ class RuleBase(BaseModel):
     text_include_regex: str | None = None
     text_exclude_regex: str | None = None
     media_types: list[str] | None = None
-    # 命中这些词的转发只跳过 QQ 目标（其余平台目标照发），用来避开 QQ 审核必拦的内容。
+    # 命中后 QQ 仅发送违规提醒（其余平台目标照发），不发送原文、链接或附件。
     qq_skip_keywords: list[str] = Field(default_factory=list)
     target_platform: str = Platform.QQ.value
     qq_target_type: str = QQTargetType.GROUP.value

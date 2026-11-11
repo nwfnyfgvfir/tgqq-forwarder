@@ -1,15 +1,26 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
-import re
+import time
 import weakref
-from dataclasses import dataclass
+from collections import OrderedDict
+from dataclasses import dataclass, replace
 from urllib.parse import urlsplit
 
 import httpx
 
 from app.rss.formatting import is_essentially_same
+from app.rss.translation_detection import (
+    TranslationDecision,
+    build_detection_prompt,
+    detect_is_chinese,  # noqa: F401 - retained for callers of the original helper
+    has_language_content,
+    local_translation_decision,
+    parse_detection_response,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -64,26 +75,17 @@ def _error_kind(error: Exception) -> str:
     """把异常归一成不含 URL/请求体/响应体的安全分类，便于排障。"""
     if isinstance(error, httpx.HTTPStatusError):
         return f"HTTP {error.response.status_code}"
-    if isinstance(error, httpx.TimeoutException):
+    if isinstance(error, (httpx.TimeoutException, TimeoutError)):
         return "超时"
     if isinstance(error, httpx.TransportError):
         return "网络错误"
     return "响应格式异常"
 
 
-# 仅统计汉字区间判定中文；日文假名（U+3040–U+30FF）不属于中文，按非中文处理。
-_HAN_RANGES = (
-    (0x3400, 0x4DBF),  # CJK 扩展 A
-    (0x4E00, 0x9FFF),  # CJK 基本区
-    (0xF900, 0xFAFF),  # CJK 兼容汉字
-    (0x20000, 0x2A6DF),  # CJK 扩展 B
-)
-_CHINESE_RATIO = 0.5
-
-# 判定语言前先剔除链接与 @提及/#话题，避免长 URL、版本号稀释正文的汉字比例。
-_URL_RE = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
-# 只删 ASCII 的 @user / #tag：`#中文标题` 这种前缀要保留给汉字计数。
-_MENTION_RE = re.compile(r"[@#][A-Za-z0-9_-]+")
+DETECTION_FALLBACK_WARNING = "AI 翻译判断暂不可用，已回退本地规则"
+_DETECTION_BATCH_SIZE = 10
+_DETECTION_CACHE_SIZE = 512
+_DETECTION_CACHE_TTL = 1800.0
 
 # 常见语言标签到提示词中可读名称的映射；未命中时直接把标签交给模型。
 _TARGET_LANGUAGE_NAMES = {
@@ -114,37 +116,8 @@ class TranslationOutcome:
     text: str | None = None
     skipped: bool = False
     error: str | None = None
-
-
-def _is_han(code: int) -> bool:
-    return any(low <= code <= high for low, high in _HAN_RANGES)
-
-
-def _is_kana_or_hangul(code: int) -> bool:
-    return 0x3040 <= code <= 0x30FF or 0xAC00 <= code <= 0xD7AF
-
-
-def detect_is_chinese(text: str) -> bool:
-    """本地离线判定：汉字占「字母类字符」的比例 >= 0.5 视为中文。
-
-    只看汉字 / 假名 / 谚文 / 拉丁等字母字符，先剔除 URL 与 @提及：
-    中文正文里夹一条长链接时，旧算法按「非空白字符」算分母，链接、数字、
-    标点和 emoji 会把比例压到 0.5 以下，导致中文被送去翻译。假名不计入汉字，
-    所以日文仍按非中文处理。
-    """
-    cleaned = _MENTION_RE.sub(" ", _URL_RE.sub(" ", text))
-    han = 0
-    letters = 0
-    for char in cleaned:
-        code = ord(char)
-        if _is_han(code):
-            han += 1
-            letters += 1
-        elif _is_kana_or_hangul(code) or char.isalpha():
-            letters += 1
-    if letters == 0:
-        return False
-    return han / letters >= _CHINESE_RATIO
+    decision: TranslationDecision | None = None
+    warning: str | None = None
 
 
 def build_system_prompt(target: str) -> str:
@@ -182,6 +155,9 @@ class AITranslator:
         self._transport = transport
         self._client = client
         self._endpoint: str | None = None
+        self._detection_cache: OrderedDict[tuple[str, str], tuple[float, TranslationDecision]] = (
+            OrderedDict()
+        )
 
     def _get_client(self) -> httpx.AsyncClient:
         # 惰性创建；trust_env 保持默认 True，使容器 HTTP(S)_PROXY 生效。
@@ -200,6 +176,99 @@ class AITranslator:
     async def close(self) -> None:
         if self._client is not None and not self._client.is_closed:
             await self._client.aclose()
+        self._detection_cache.clear()
+
+    def _cached_decision(self, key: tuple[str, str]) -> TranslationDecision | None:
+        cached = self._detection_cache.get(key)
+        if cached is None:
+            return None
+        if cached[0] <= time.monotonic():
+            del self._detection_cache[key]
+            return None
+        self._detection_cache.move_to_end(key)
+        return cached[1]
+
+    async def _detect_batch(
+        self, batch: list[tuple[int, str]], target: str
+    ) -> dict[int, TranslationDecision]:
+        timeout = self.settings.rss_translate_detection_timeout_seconds
+        # One bounded attempt, including time waiting for the shared API gate.
+        async with asyncio.timeout(timeout):
+            async with _translation_gate(self.settings.rss_translate_max_concurrency):
+                response = await self._get_client().post(
+                    self._endpoint_url(),
+                    headers=self._headers(),
+                    timeout=timeout,
+                    json={
+                        "model": self.settings.rss_translate_model,
+                        "messages": [
+                            {
+                                "role": "system",
+                                "content": build_detection_prompt(
+                                    _TARGET_LANGUAGE_NAMES.get(target.lower(), target)
+                                ),
+                            },
+                            {
+                                "role": "user",
+                                "content": json.dumps(
+                                    {
+                                        "texts": [
+                                            {"id": index, "text": text[:4000]}
+                                            for index, text in batch
+                                        ]
+                                    },
+                                    ensure_ascii=False,
+                                ),
+                            },
+                        ],
+                        "temperature": 0,
+                        "stream": False,
+                        "response_format": {"type": "json_object"},
+                    },
+                )
+                response.raise_for_status()
+                return parse_detection_response(self._parse(response.json()), {i for i, _ in batch})
+
+    async def _decisions(
+        self, texts: list[str], target: str, detection_mode: str
+    ) -> list[TranslationDecision]:
+        decisions = [local_translation_decision(text, target) for text in texts]
+        if detection_mode == "local":
+            return decisions
+        if detection_mode != "ai":
+            raise ValueError("invalid translation detection mode")
+        pending = []
+        keys = {}
+        for index, text in enumerate(texts):
+            if not has_language_content(text):
+                continue
+            key = (target.lower(), hashlib.sha256(text.strip().encode("utf-8")).hexdigest())
+            cached = self._cached_decision(key)
+            if cached is not None:
+                decisions[index] = cached
+            else:
+                pending.append((index, text))
+                keys[index] = key
+        for start in range(0, len(pending), _DETECTION_BATCH_SIZE):
+            batch = pending[start : start + _DETECTION_BATCH_SIZE]
+            try:
+                detected = await self._detect_batch(batch, target)
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                logger.warning("RSS AI 翻译判断失败（%s），已回退本地规则", _error_kind(error))
+                for index, text in batch:
+                    decisions[index] = local_translation_decision(text, target, fallback=True)
+                continue
+            for index, decision in detected.items():
+                decisions[index] = decision
+                self._detection_cache[keys[index]] = (
+                    time.monotonic() + _DETECTION_CACHE_TTL, decision
+                )
+                self._detection_cache.move_to_end(keys[index])
+                while len(self._detection_cache) > _DETECTION_CACHE_SIZE:
+                    self._detection_cache.popitem(last=False)
+        return decisions
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -277,20 +346,25 @@ class AITranslator:
         raise ValueError("unexpected chat completions payload")
 
     async def translate(
-        self, texts: list[str], *, target: str = "ZH"
+        self, texts: list[str], *, target: str = "ZH", detection_mode: str = "local"
     ) -> list[TranslationOutcome]:
         limit = self.settings.rss_translate_max_chars
         results: list[TranslationOutcome] = [TranslationOutcome() for _ in texts]
         pending: list[tuple[int, str]] = []
+        decisions = await self._decisions([text or "" for text in texts], target, detection_mode)
         truncated = False
         for index, raw in enumerate(texts):
             text = raw or ""
+            decision = decisions[index]
+            results[index].decision = decision
+            if decision.source == "fallback":
+                results[index].warning = DETECTION_FALLBACK_WARNING
             if not text.strip():
                 results[index] = TranslationOutcome(skipped=True)
                 continue
-            # 中文源本地判定直接跳过，不消耗翻译额度。
-            if detect_is_chinese(text):
-                results[index] = TranslationOutcome(language="zh", skipped=True)
+            if not decision.needs_translation:
+                results[index].language = decision.language
+                results[index].skipped = True
                 continue
             if len(text) > limit:
                 text = text[:limit]
@@ -300,6 +374,7 @@ class AITranslator:
             logger.warning("RSS 翻译文本超长，已按上限截断后翻译")
         # 逐条顺序请求（并发上限由共享闸门统一控制）；任何单条失败只影响该条，不抛给调用方。
         for index, text in pending:
+            decision = decisions[index]
             try:
                 translated = await self._request_one_with_retry(text, target)
             except asyncio.CancelledError:
@@ -307,12 +382,21 @@ class AITranslator:
             except Exception as error:
                 # 只记录安全分类（状态码/超时/网络/格式），不含 URL、key 或请求/响应体。
                 logger.warning("RSS 翻译失败（%s），按原文处理", _error_kind(error))
-                results[index] = TranslationOutcome(error=SAFE_ERROR)
+                results[index].error = SAFE_ERROR
                 continue
             if is_essentially_same(translated, text):
                 # 译文与原文实质相同（模型原样返回，或只改了标点/词序）视为无需翻译。
-                results[index] = TranslationOutcome(language="auto", skipped=True)
+                results[index].language = (
+                    decision.language if decision.source == "ai" else None
+                ) or "auto"
+                results[index].skipped = True
+                results[index].decision = replace(
+                    decision, needs_translation=False, reason="译文与原文基本相同，未重复附加译文"
+                )
             else:
                 # 服务端不保证回传检测到的源语言，统一标记为 auto。
-                results[index] = TranslationOutcome(language="auto", text=translated)
+                results[index].language = (
+                    decision.language if decision.source == "ai" else None
+                ) or "auto"
+                results[index].text = translated
         return results

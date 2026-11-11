@@ -129,7 +129,7 @@ export function renderRuleStudio(state) {
           <label>Include 正则<textarea name="text_include_regex" rows="2" placeholder="高级模式使用">${escapeHtml(editRule?.match_mode === 'regex' ? editRule?.text_include_regex || '' : '')}</textarea></label>
           <label>Exclude 正则<textarea name="text_exclude_regex" rows="2" placeholder="命中后排除">${escapeHtml(editRule?.text_exclude_regex || '')}</textarea></label>
           <label>媒体类型<input name="media_types" value="${escapeHtml((editRule?.media_types || []).join(', '))}" placeholder="photo, video；留空不限" /></label>
-          <label>QQ 屏蔽词<input name="qq_skip_keywords" value="${escapeHtml((editRule?.qq_skip_keywords || []).join(', '))}" placeholder="命中这些词的转发只跳过 QQ，其他目标照发；支持空格、逗号、分号" /></label>
+          <label>QQ 屏蔽词<input name="qq_skip_keywords" value="${escapeHtml((editRule?.qq_skip_keywords || []).join(', '))}" placeholder="命中后 QQ 仅发违规提醒，其他目标照发；支持空格、逗号、分号" /></label>
         </div>
         <div class="step-block">
           <div class="step-index">04</div>

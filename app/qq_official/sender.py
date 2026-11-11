@@ -11,6 +11,7 @@ from typing import Any
 import aiofiles
 import botpy
 import botpy.errors
+import httpx
 from botpy.http import Route
 from botpy.types import message as qq_message
 from botpy.types.message import MarkdownPayload, Media
@@ -22,6 +23,12 @@ from app.qq_official.client import (
     MessageCallback,
     QQTargetInfo,
     ensure_group_message_create_parser,
+)
+from app.qq_official.markdown_media import (
+    IMAGE_SUFFIXES,
+    MarkdownImageUploader,
+    MarkdownMediaUnavailable,
+    QQMarkdownRoute,
 )
 from app.qq_official.media import QQAttachmentDownloader
 from app.qq_official.models import QQOutboundMessage
@@ -119,6 +126,10 @@ class QQOfficialSender:
         self._http = self.client.api._http
         self._http_request = self._http.request
         self._http.request = self._request_with_token_retry  # type: ignore[method-assign]
+        self.markdown_images = MarkdownImageUploader(
+            self._http.request, timeout=settings.qq_media_timeout_seconds
+        )
+        self._markdown_media_lock = asyncio.Lock()
 
     async def _request_with_token_retry(self, route, *args: Any, **kwargs: Any) -> Any:
         await self._refresh_token_if_expiring()
@@ -200,6 +211,7 @@ class QQOfficialSender:
                     pass
             logger.info("QQ Official Bot WebSocket client stopped")
         await self.media.aclose()
+        await self.markdown_images.aclose()
 
     async def send(self, outbound: QQOutboundMessage) -> Any:
         target_type = QQTargetType(str(outbound.target_type))
@@ -207,6 +219,19 @@ class QQOfficialSender:
         media_paths = outbound.media_paths or ([outbound.media_path] if outbound.media_path else [])
         try:
             if media_paths:
+                if (
+                    self.settings.qq_use_markdown
+                    and target_type in {QQTargetType.GROUP, QQTargetType.C2C}
+                    and outbound.text.strip()
+                    and all(path.suffix.lower() in IMAGE_SUFFIXES for path in media_paths)
+                ):
+                    # Keep upload/send/release together if QQ deduplicates identical images.
+                    async with self._markdown_media_lock:
+                        combined = await self._send_markdown_images(
+                            outbound, target_type, text, media_paths
+                        )
+                    if combined is not None:
+                        return combined
                 return await self._send_media_sequence(outbound, target_type, text, media_paths)
             return await self._send_text(outbound, target_type, text)
         except botpy.errors.ServerError as error:
@@ -218,6 +243,45 @@ class QQOfficialSender:
                 ) from error
             raise
 
+    async def _send_markdown_images(
+        self,
+        outbound: QQOutboundMessage,
+        target_type: QQTargetType,
+        text: str,
+        media_paths: list[Path],
+    ) -> list[Any] | None:
+        images = []
+        try:
+            for path in media_paths:
+                images.append(await self.markdown_images.upload(path))
+            combined = "\n\n".join([*(image.markdown() for image in images), text])
+            if len(combined) > 3900:
+                raise MarkdownMediaUnavailable("combined Markdown exceeds message length limit")
+            payload = self._group_proactive_payload(combined)
+            if target_type == QQTargetType.GROUP:
+                result = await self._post_group_message(
+                    outbound.target_id, payload, allow_plain_text_fallback=False
+                )
+            else:
+                result = await self._post_c2c_message(
+                    outbound.target_id, **payload, allow_plain_text_fallback=False
+                )
+            return [result]
+        except botpy.errors.ServerError as error:
+            if is_qq_audit_error(error):
+                raise
+            logger.warning(
+                "QQ Markdown image sending unavailable; sending media and text separately"
+            )
+        except (MarkdownMediaUnavailable, httpx.HTTPError, OSError, ValueError):
+            logger.warning(
+                "QQ Markdown image upload unavailable; sending media and text separately"
+            )
+        finally:
+            for image in images:
+                await self.markdown_images.release(image.image_id)
+        return None
+
     async def _send_media_sequence(
         self,
         outbound: QQOutboundMessage,
@@ -227,9 +291,19 @@ class QQOfficialSender:
     ) -> list[Any]:
         results: list[Any] = []
         total = len(media_paths)
+        separate_markdown = self.settings.qq_use_markdown and target_type in {
+            QQTargetType.GROUP,
+            QQTargetType.C2C,
+        }
         if total > 1 and outbound.text.strip():
             results.append(await self._send_text(outbound, target_type, text))
-        media_text = self._truncate_text(outbound.media_caption or text) if total > 1 else text
+        # Group/C2C rich media uses msg_type=7: its content is plain text, not Markdown.
+        # Keep the formatted body in its own msg_type=2 message, including for one image.
+        media_text = (
+            self._truncate_text((outbound.media_caption or "").strip() or "媒体")
+            if total > 1 or separate_markdown
+            else text
+        )
         for index, media_path in enumerate(media_paths, start=1):
             media_type = None
             if index <= len(outbound.media_types):
@@ -247,6 +321,9 @@ class QQOfficialSender:
                 channel_id=outbound.channel_id,
             )
             results.append(await self._send_media(item, target_type, media_text))
+        if total == 1 and separate_markdown and outbound.text.strip():
+            # A media audit failure must stop the sequence before sending the source body.
+            results.append(await self._send_text(outbound, target_type, text))
         return results
 
     async def _send_text(
@@ -294,7 +371,9 @@ class QQOfficialSender:
                     group_openid=outbound.target_id,
                     file_name=outbound.media_filename_at(0),
                 )
-            except botpy.errors.ServerError:
+            except botpy.errors.ServerError as error:
+                if is_qq_audit_error(error):
+                    raise
                 # QQ 的文件类型（file_type=4）在部分场景不开放；退化成带文件名的文本。
                 logger.warning(
                     "QQ group media upload rejected; fall back to text path=%s", media_path
@@ -317,7 +396,9 @@ class QQOfficialSender:
                     openid=outbound.target_id,
                     file_name=outbound.media_filename_at(0),
                 )
-            except botpy.errors.ServerError:
+            except botpy.errors.ServerError as error:
+                if is_qq_audit_error(error):
+                    raise
                 logger.warning(
                     "QQ c2c media upload rejected; fall back to text path=%s", media_path
                 )
@@ -389,9 +470,17 @@ class QQOfficialSender:
         return payload
 
     @_qq_retry
-    async def _post_group_message(self, group_openid: str, payload: dict[str, Any]) -> Any:
+    async def _post_group_message(
+        self,
+        group_openid: str,
+        payload: dict[str, Any],
+        *,
+        allow_plain_text_fallback: bool = True,
+    ) -> Any:
         try:
-            return await self._post_group_message_once(group_openid, payload)
+            return await self._post_group_message_once(
+                group_openid, payload, allow_plain_text_fallback=allow_plain_text_fallback
+            )
         except botpy.errors.ServerError as err:
             if payload.get("msg_id") and self._should_retry_group_without_msg_id(err):
                 fallback = payload.copy()
@@ -400,15 +489,33 @@ class QQOfficialSender:
                     "QQ group send failed with cached msg_id (%s); retrying proactive send",
                     err,
                 )
-                return await self._post_group_message_once(group_openid, fallback)
+                return await self._post_group_message_once(
+                    group_openid, fallback, allow_plain_text_fallback=allow_plain_text_fallback
+                )
             raise
 
-    async def _post_group_message_once(self, group_openid: str, payload: dict[str, Any]) -> Any:
+    async def _post_group_message_once(
+        self,
+        group_openid: str,
+        payload: dict[str, Any],
+        *,
+        allow_plain_text_fallback: bool = True,
+    ) -> Any:
         try:
+            if not allow_plain_text_fallback:
+                # BotPy uses a legacy host; material references use the current official API.
+                return await self._http.request(
+                    QQMarkdownRoute(
+                        "POST", "/v2/groups/{group_openid}/messages", group_openid=group_openid
+                    ),
+                    json=payload,
+                )
             return await self.client.api.post_group_message(group_openid=group_openid, **payload)
         except botpy.errors.ServerError as err:
             if not self._is_markdown_not_allowed(err, payload):
                 raise
+            if not allow_plain_text_fallback:
+                raise MarkdownMediaUnavailable("QQ native Markdown is unavailable") from err
             return await self.client.api.post_group_message(
                 group_openid=group_openid,
                 **self._plain_text_fallback_payload(payload),
@@ -451,7 +558,12 @@ class QQOfficialSender:
     def _plain_text_fallback_payload(payload: dict[str, Any]) -> dict[str, Any]:
         fallback = payload.copy()
         markdown = fallback.pop("markdown", None)
-        fallback["content"] = getattr(markdown, "content", None) or fallback.get("content", "")
+        content = (
+            markdown.get("content")
+            if isinstance(markdown, dict)
+            else getattr(markdown, "content", None)
+        )
+        fallback["content"] = content or fallback.get("content", "")
         if "msg_type" in fallback:
             fallback["msg_type"] = 0
         return fallback
@@ -466,6 +578,8 @@ class QQOfficialSender:
         msg_id: str | None = None,
         msg_seq: int | None = 1,
         markdown: qq_message.MarkdownPayload | None = None,
+        *,
+        allow_plain_text_fallback: bool = True,
         **kwargs: Any,
     ) -> qq_message.Message | dict[str, Any] | None:
         payload = {
@@ -478,12 +592,15 @@ class QQOfficialSender:
             **kwargs,
         }
         payload = {key: value for key, value in payload.items() if value is not None}
-        route = Route("POST", "/v2/users/{openid}/messages", openid=openid)
+        route_class = Route if allow_plain_text_fallback else QQMarkdownRoute
+        route = route_class("POST", "/v2/users/{openid}/messages", openid=openid)
         try:
             result = await self.client.api._http.request(route, json=payload)
         except botpy.errors.ServerError as err:
             if not self._is_markdown_not_allowed(err, payload):
                 raise
+            if not allow_plain_text_fallback:
+                raise MarkdownMediaUnavailable("QQ native Markdown is unavailable") from err
             result = await self.client.api._http.request(
                 route,
                 json=self._plain_text_fallback_payload(payload),

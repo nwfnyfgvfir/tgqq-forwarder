@@ -328,6 +328,15 @@ async def test_runtime_constructs_real_rss_and_wires_server_app(runtime_context,
             assert TOKEN not in response.text and RSS_TOKEN not in response.text
 
 
+async def test_restore_restart_request_wakes_runtime_on_its_event_loop(runtime_context):
+    runtime = runtime_context.runtime
+    await runtime.start()
+    await runtime.request_restart()
+    assert runtime.restart_requested is True
+    assert runtime.stop_event.is_set()
+    await asyncio.wait_for(runtime.run_until_stopped(), timeout=1)
+
+
 async def test_runtime_start_stop_order_and_dynamic_can_publish(runtime_context):
     context = runtime_context
     runtime = context.runtime

@@ -104,6 +104,7 @@ class SubscriptionInput(BaseModel):
     message_template: str = Field(default=DEFAULT_MESSAGE_TEMPLATE, min_length=1, max_length=8000)
     max_summary_length: int = Field(default=600, ge=100, le=2000)
     translate: bool = True
+    translation_detection: Literal["local", "ai"] = "local"
 
     @field_validator("feed_url", mode="before")
     @classmethod

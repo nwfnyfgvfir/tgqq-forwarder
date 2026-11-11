@@ -18,6 +18,7 @@ from app.rss.formatting import build_translation_block, render_entry
 from app.rss.publisher import PublishResult
 from app.rss.schemas import DEFAULT_MESSAGE_TEMPLATE, TEMPLATE_FIELDS, SubscriptionInput
 from app.rss.service import RssService
+from app.rss.translation_detection import TranslationDecision
 from app.rss.translator import (
     AITranslator,
     TranslationOutcome,
@@ -510,12 +511,14 @@ class FakePublisher:
 class FakeTranslator:
     def __init__(self) -> None:
         self.calls: list = []
+        self.detection_modes: list[str] = []
         self.error: Exception | None = None
         self.skip_language: str | None = None
         self.closed = False
 
-    async def translate(self, texts, *, target: str = "ZH"):
+    async def translate(self, texts, *, target: str = "ZH", detection_mode: str = "local"):
         self.calls.append((list(texts), target))
+        self.detection_modes.append(detection_mode)
         if self.error is not None:
             raise self.error
         if self.skip_language is not None:
@@ -578,6 +581,89 @@ async def make_due(db, subscription_id: int) -> None:
         ).scalars()
         for row in rows:
             row.next_retry_at = utc_now() - timedelta(seconds=1)
+
+
+@pytest.mark.parametrize("path", ["preview", "worker", "test-send"])
+async def test_ai_detection_mode_reaches_all_translation_paths(rss_context, path):
+    _, _, _, _, translator, service, worker = rss_context
+    config = payload(initial_policy="latest", translation_detection="ai")
+    if path == "preview":
+        await service.preview(config)
+    else:
+        sub = await service.create_subscription(config)
+        assert (await service.get_subscription(sub["id"]))["translation_detection"] == "ai"
+        if path == "worker":
+            await worker.process_subscription(sub["id"])
+        else:
+            await worker.test_send_latest(sub["id"])
+    assert translator.detection_modes == ["ai"]
+
+
+async def test_preview_exposes_decision_and_fallback_without_sending(rss_context):
+    _, _, _, publisher, translator, service, _ = rss_context
+
+    async def detect(texts, **kwargs):
+        return [TranslationOutcome(
+            language="en", skipped=True,
+            decision=TranslationDecision(False, "en", "ai", "无需翻译"),
+            warning="安全的回退提示",
+        ) for text in texts]
+
+    translator.translate = detect
+    result = await service.preview(payload(translation_detection="ai"))
+    assert publisher.calls == []
+    assert result["warnings"].count("安全的回退提示") == 1
+    assert result["entries"][0]["translation_decisions"] == [
+        {"field": field, "needs_translation": False, "language": "en",
+         "source": "ai", "reason": "无需翻译"} for field in ("title", "summary")
+    ]
+
+
+async def test_changing_detection_mode_clears_only_unpublished_cached_translations(rss_context):
+    db, _, _, _, _, service, _ = rss_context
+    sub = await service.create_subscription(payload())
+    async with db.session() as session:
+        for status in ("pending", "failed", "sent"):
+            session.add(RssEntry(
+                subscription_id=sub["id"], entry_key=status, title="Title", summary="Summary",
+                link="https://example.com", status=status, detected_language="zh",
+                translated_title="cached title", translated_summary="cached summary",
+            ))
+    await service.update_subscription(sub["id"], payload(translation_detection="ai"))
+    rows = {row["status"]: row for row in await service.list_entries(sub["id"])}
+    for status in ("pending", "failed"):
+        assert rows[status]["detected_language"] is None
+        assert rows[status]["translated_title"] is None
+    assert rows["sent"]["translated_title"] == "cached title"
+
+
+async def test_policy_change_discards_inflight_old_detection_result(rss_context):
+    db, _, _, _, translator, service, worker = rss_context
+    sub = await service.create_subscription(payload())
+    async with db.session() as session:
+        entry = RssEntry(subscription_id=sub["id"], entry_key="pending", title="Title",
+                         summary="Summary", link="https://example.com")
+        session.add(entry)
+        await session.flush()
+        entry_id = entry.id
+    started, finish = asyncio.Event(), asyncio.Event()
+
+    async def slow_translate(texts, **kwargs):
+        started.set()
+        await finish.wait()
+        return [TranslationOutcome(language="zh", skipped=True) for text in texts]
+
+    translator.translate = slow_translate
+    task = asyncio.create_task(worker._translate_pending(sub["id"], entry_id))
+    try:
+        await asyncio.wait_for(started.wait(), 3)
+        await service.update_subscription(sub["id"], payload(translation_detection="ai"))
+    finally:
+        finish.set()
+        await task
+    async with db.session() as session:
+        stored = await session.get(RssEntry, entry_id)
+        assert stored.detected_language is None
 
 
 async def test_worker_publishes_original_above_translation(rss_context) -> None:

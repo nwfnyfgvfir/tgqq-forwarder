@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import pytest
 
 from app.channels.router import DeliveryError, DeliveryRouter
 from app.config import Settings
+from app.qq_official.moderation import (
+    QQ_VIOLATION_NOTICE,
+    ModerationDecision,
+)
 from app.rules.models import TelegramForwardMessage
 from app.storage.models import ForwardRule
 
@@ -176,7 +181,7 @@ class AuditFailingQQSender(FakeQQSender):
         return {"ok": True}
 
 
-async def test_qq_audit_error_falls_back_to_source_link() -> None:
+async def test_qq_audit_error_sends_notice_instead_of_source_link() -> None:
     import botpy.errors
 
     qq = AuditFailingQQSender(botpy.errors.ServerError("消息内容违规"))
@@ -186,16 +191,16 @@ async def test_qq_audit_error_falls_back_to_source_link() -> None:
 
     result = await router.deliver(make_rule(), message, "含敏感词的正文")
 
-    # 第一次发原文被拦，第二次只发链接；正文不会再出现。
     assert [call.text for call in qq.calls] == [
         "含敏感词的正文",
-        "https://x.com/NFT_Chen/status/2116054898093764785",
+        QQ_VIOLATION_NOTICE,
     ]
-    assert result.sent_text == "https://x.com/NFT_Chen/status/2116054898093764785"
-    assert result.note and "降级" in result.note
+    assert result.sent_text == QQ_VIOLATION_NOTICE
+    assert result.blocked
+    assert result.note and "QQ 平台审核" in result.note
 
 
-async def test_qq_audit_fallback_uses_first_body_link_without_webpage() -> None:
+async def test_qq_audit_notice_contains_no_body_link_or_media() -> None:
     import botpy.errors
 
     from app.rules.models import TelegramLink
@@ -204,33 +209,231 @@ async def test_qq_audit_fallback_uses_first_body_link_without_webpage() -> None:
     router = DeliveryRouter(make_settings(), qq, FakeWeixinService())  # type: ignore[arg-type]
     message = make_message()
     message.links = [TelegramLink(text="原文", url="https://example.com/a")]
+    message.media_paths = [Path("a.jpg"), Path("b.jpg")]
+    message.media_types = ["photo", "photo"]
+    message.media_filenames = ["private-a.jpg", "private-b.jpg"]
 
     result = await router.deliver(make_rule(), message, "正文")
 
-    assert result.sent_text == "https://example.com/a"
+    assert result.sent_text == QQ_VIOLATION_NOTICE
+    notice = qq.calls[-1]
+    assert notice.media_path is None
+    assert notice.media_paths == []
+    assert notice.media_types == []
+    assert notice.media_filenames == []
+    assert notice.media_caption is None
 
 
-async def test_qq_audit_fallback_can_be_disabled() -> None:
+@pytest.mark.parametrize("old_flag", [True, False])
+async def test_old_link_fallback_option_never_restores_link_forwarding(old_flag) -> None:
     import botpy.errors
 
     qq = AuditFailingQQSender(botpy.errors.ServerError("消息内容违规"))
-    router = DeliveryRouter(
-        make_settings(qq_audit_link_fallback=False), qq, FakeWeixinService()
-    )  # type: ignore[arg-type]
+    router = DeliveryRouter(make_settings(qq_audit_link_fallback=old_flag), qq, FakeWeixinService())  # type: ignore[arg-type]
     message = make_message()
     message.webpage_url = "https://example.com/a"
 
-    with pytest.raises(botpy.errors.ServerError):
-        await router.deliver(make_rule(), message, "正文")
-    assert len(qq.calls) == 1
+    result = await router.deliver(make_rule(), message, "正文")
+    assert result.blocked
+    assert [item.text for item in qq.calls] == ["正文", QQ_VIOLATION_NOTICE]
 
 
-async def test_qq_audit_error_without_any_link_still_fails() -> None:
+async def test_qq_audit_error_without_any_link_still_notifies() -> None:
     import botpy.errors
 
     qq = AuditFailingQQSender(botpy.errors.ServerError("消息内容违规"))
     router = DeliveryRouter(make_settings(), qq, FakeWeixinService())  # type: ignore[arg-type]
 
+    result = await router.deliver(make_rule(), make_message(), "正文")
+    assert result.sent_text == QQ_VIOLATION_NOTICE
+    assert len(qq.calls) == 2
+
+
+async def test_audit_notice_failure_does_not_retry_source_or_recurse() -> None:
+    import botpy.errors
+
+    qq = AuditFailingQQSender(botpy.errors.ServerError("消息内容违规"), fail_times=10)
+    router = DeliveryRouter(make_settings(), qq)
+
+    with pytest.raises(DeliveryError, match="原文已拦截，但 QQ 提醒发送失败"):
+        await router.deliver(make_rule(), make_message(), "original")
+
+    assert [item.text for item in qq.calls] == ["original", QQ_VIOLATION_NOTICE]
+
+
+async def test_non_audit_error_does_not_send_violation_notice() -> None:
+    import botpy.errors
+
+    qq = AuditFailingQQSender(botpy.errors.ServerError("服务繁忙"))
+    router = DeliveryRouter(make_settings(), qq)
     with pytest.raises(botpy.errors.ServerError):
-        await router.deliver(make_rule(), make_message(), "正文")
+        await router.deliver(make_rule(), make_message(), "original")
+    assert [item.text for item in qq.calls] == ["original"]
+
+
+class FakeModerator:
+    def __init__(self, decision: ModerationDecision, qq: FakeQQSender) -> None:
+        self.decision = decision
+        self.qq = qq
+        self.calls: list[str] = []
+
+    async def check(self, text: str, **kwargs) -> ModerationDecision:
+        assert self.qq.calls == [], "moderation must finish before the first QQ send"
+        self.calls.append(text)
+        return self.decision
+
+
+@pytest.mark.parametrize("field", ["source", "outgoing", "preview", "link", "filename", "caption"])
+async def test_qq_keywords_block_before_ai_or_media_send(field) -> None:
+    from app.rules.models import TelegramLink
+
+    qq = FakeQQSender()
+    router = DeliveryRouter(make_settings(), qq)
+    moderator = FakeModerator(ModerationDecision(), qq)
+    router.qq_moderator = moderator  # type: ignore[assignment]
+    message = make_message()
+    message.media_paths = [Path("image.jpg")]
+    message.media_types = ["photo"]
+    text = "public template without source text"
+    rule = make_rule(qq_skip_keywords=["sEnSiTiVe"])
+    if field == "source":
+        message.text = "Sensitive source omitted by template"
+    elif field == "outgoing":
+        text = "Sensitive template"
+    elif field == "preview":
+        message.webpage_description = "Sensitive preview"
+    elif field == "link":
+        message.links = [TelegramLink(text="Sensitive", url="https://example.com/private")]
+    elif field == "filename":
+        message.media_filenames = ["Sensitive.jpg"]
+    else:
+        rule.name = "Sensitive media caption"
+
+    result = await router.deliver(rule, message, text)
+
+    assert moderator.calls == []
+    assert [item.text for item in qq.calls] == [QQ_VIOLATION_NOTICE]
+    assert qq.calls[0].media_paths == []
+    assert result.blocked
+    assert result.note and "命中 QQ 屏蔽词" in result.note
+
+
+@pytest.mark.parametrize(
+    ("decision", "notice"),
+    [
+        (ModerationDecision(True, "AI 检测到色情内容"), QQ_VIOLATION_NOTICE),
+        (ModerationDecision(True, "AI 检测到政治敏感内容"), QQ_VIOLATION_NOTICE),
+    ],
+)
+async def test_ai_block_sends_only_notice_before_any_source_or_media(decision, notice) -> None:
+    qq = FakeQQSender()
+    router = DeliveryRouter(make_settings(), qq)
+    moderator = FakeModerator(decision, qq)
+    router.qq_moderator = moderator  # type: ignore[assignment]
+    message = make_message()
+    message.text = "source must never be sent"
+    message.webpage_url = "https://example.com/private"
+    message.media_paths = [Path("a.jpg"), Path("b.jpg")]
+
+    result = await router.deliver(make_rule(), message, "rendered source")
+
+    assert len(moderator.calls) == 1
+    assert message.text in moderator.calls[0]
+    assert [item.text for item in qq.calls] == [notice]
+    assert qq.calls[0].media_paths == []
+    assert result.blocked
+    assert result.sent_text == notice
+
+
+async def test_ai_safe_verdict_preserves_text_and_attachments() -> None:
+    qq = FakeQQSender()
+    router = DeliveryRouter(make_settings(), qq)
+    router.qq_moderator = FakeModerator(ModerationDecision(), qq)  # type: ignore[assignment]
+    message = make_message()
+    message.media_paths = [Path("a.jpg"), Path("b.jpg")]
+
+    result = await router.deliver(make_rule(), message, "safe text")
+
+    assert not result.blocked
+    assert [item.text for item in qq.calls] == ["safe text"]
+    assert qq.calls[0].media_paths == message.media_paths
+
+
+async def test_ai_failure_falls_back_to_keywords_and_forwards_when_no_keyword_matches() -> None:
+    qq = FakeQQSender()
+    router = DeliveryRouter(make_settings(), qq)
+    router.qq_moderator = FakeModerator(
+        ModerationDecision(False, "AI 审核异常，已回落 QQ 屏蔽词检测", True), qq
+    )  # type: ignore[assignment]
+    message = make_message()
+    message.media_paths = [Path("image.jpg")]
+
+    result = await router.deliver(make_rule(qq_skip_keywords=["blocked"]), message, "normal text")
+
+    assert [item.text for item in qq.calls] == ["normal text"]
+    assert qq.calls[0].media_paths == message.media_paths
+    assert not result.blocked
+    assert "回落 QQ 屏蔽词检测" in result.note
+
+
+@pytest.mark.parametrize("unavailable", [False, True])
+async def test_transcribed_audio_is_checked_against_qq_keywords_even_if_ai_fails(
+    unavailable,
+) -> None:
+    qq = FakeQQSender()
+    router = DeliveryRouter(make_settings(), qq)
+    router.qq_moderator = FakeModerator(
+        ModerationDecision(
+            False,
+            "AI fallback" if unavailable else None,
+            unavailable,
+            extracted_text="restricted phrase spoken in audio",
+        ),
+        qq,
+    )  # type: ignore[assignment]
+    message = make_message()
+    message.media_paths = [Path("voice.ogg")]
+
+    result = await router.deliver(
+        make_rule(qq_skip_keywords=["restricted phrase"]), message, "caption"
+    )
+
+    assert [item.text for item in qq.calls] == [QQ_VIOLATION_NOTICE]
+    assert qq.calls[0].media_paths == []
+    assert result.blocked
+
+
+async def test_weixin_target_does_not_run_qq_moderation() -> None:
+    qq = FakeQQSender()
+    weixin = FakeWeixinService()
+    router = DeliveryRouter(make_settings(), qq, weixin)
+    moderator = FakeModerator(ModerationDecision(True, "blocked"), qq)
+    router.qq_moderator = moderator  # type: ignore[assignment]
+    rule = make_rule(target_platform="weixin", qq_target_type="friend", qq_skip_keywords=["hello"])
+
+    await router.deliver(rule, make_message(), "hello")
+
+    assert moderator.calls == []
+    assert qq.calls == []
+    assert [item.text for item in weixin.calls] == ["hello"]
+
+
+@pytest.mark.parametrize("target_type", ["group", "c2c", "channel", "dms"])
+async def test_violation_notice_preserves_qq_target_routing(target_type) -> None:
+    qq = FakeQQSender()
+    router = DeliveryRouter(make_settings(), qq)
+    rule = make_rule(
+        qq_target_type=target_type,
+        qq_guild_id="guild-id",
+        qq_channel_id="channel-id" if target_type == "channel" else None,
+        qq_skip_keywords=["hello"],
+    )
+
+    await router.deliver(rule, make_message(), "hello")
+
     assert len(qq.calls) == 1
+    notice = qq.calls[0]
+    assert notice.target_type == target_type
+    assert notice.target_id == ("channel-id" if target_type == "channel" else "group-openid")
+    assert notice.guild_id == "guild-id"
+    assert notice.text == QQ_VIOLATION_NOTICE

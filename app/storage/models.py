@@ -84,7 +84,7 @@ class ForwardRule(SQLModel, table=True):
     text_include_regex: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
     text_exclude_regex: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
     media_types: list[str] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
-    # 命中这些词的转发只跳过 QQ 目标（其余平台目标照发），用来避开 QQ 审核必拦的内容。
+    # 命中后 QQ 仅发送违规提醒（其余平台目标照发），不发送原文、链接或附件。
     qq_skip_keywords: list[str] = Field(
         default_factory=list,
         # server_default 让不走 ORM 的 INSERT（老库/裸 SQL）也能落默认空列表。
@@ -234,6 +234,7 @@ class RssSubscription(SQLModel, table=True):
     message_template: str = Field(sa_column=Column(Text, nullable=False))
     max_summary_length: int = 600
     translate: bool = True
+    translation_detection: str = Field(default="local", max_length=16)
     initialized: bool = False
     feed_title: str = ""
     feed_version: int = 0

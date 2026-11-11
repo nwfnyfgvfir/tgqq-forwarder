@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from dataclasses import dataclass
 
 import botpy.errors
@@ -11,14 +10,18 @@ import botpy.errors
 from app.config import Settings
 from app.platforms import Platform
 from app.qq_official.models import QQOutboundMessage
+from app.qq_official.moderation import (
+    QQ_VIOLATION_NOTICE,
+    AIContentModerator,
+    moderation_text,
+    qq_keyword_reason,
+)
 from app.qq_official.sender import QQOfficialSender, is_qq_audit_error
 from app.rules.models import TelegramForwardMessage
 from app.storage.models import ForwardRule, ForwardTarget, legacy_target
 from app.telegram_outbound.delivery import TelegramDelivery, TelegramDeliveryError
 from app.weixin.models import WeixinError, WeixinOutboundMessage, WeixinPending
 from app.weixin.service import WeixinService
-
-logger = logging.getLogger(__name__)
 
 
 class DeliveryError(Exception):
@@ -31,10 +34,11 @@ class DeliveryPending(Exception):
 
 @dataclass(slots=True)
 class DeliveryResult:
-    """一次投递的结果。降级发送时 sent_text 是实际发出去的内容。"""
+    """一次投递的结果；拦截后 sent_text 仅记录实际发送的提醒。"""
 
     sent_text: str | None = None
     note: str | None = None
+    blocked: bool = False
 
 
 class DeliveryRouter:
@@ -49,6 +53,10 @@ class DeliveryRouter:
         self.qq_sender = qq_sender
         self.weixin_service = weixin_service
         self.telegram_delivery = telegram_delivery
+        self.qq_moderator = AIContentModerator(settings)
+
+    async def close(self) -> None:
+        await self.qq_moderator.close()
 
     @property
     def target_platforms(self) -> list[str]:
@@ -86,6 +94,29 @@ class DeliveryRouter:
         message: TelegramForwardMessage,
         text: str,
     ) -> DeliveryResult:
+        media_caption = (getattr(rule, "name", "") or "").strip() or "媒体"
+        review_text = moderation_text(
+            message, text, media_caption=media_caption if message.media_paths else ""
+        )
+        keyword_reason = qq_keyword_reason(
+            getattr(rule, "qq_skip_keywords", None) or [], review_text
+        )
+        if keyword_reason:
+            return await self._notify_qq_blocked(target, keyword_reason)
+        media_paths = message.media_paths or ([message.media_path] if message.media_path else [])
+        decision = await self.qq_moderator.check(
+            review_text, media_paths=media_paths, media_expected=bool(message.media_type)
+        )
+        keyword_reason = qq_keyword_reason(
+            getattr(rule, "qq_skip_keywords", None) or [], decision.extracted_text
+        )
+        if keyword_reason:
+            return await self._notify_qq_blocked(target, keyword_reason)
+        if decision.blocked and not decision.unavailable:
+            return await self._notify_qq_blocked(
+                target,
+                decision.reason or "AI 检测到违规信息",
+            )
         outbound = QQOutboundMessage(
             target_type=target.target_type,
             target_id=getattr(target, "channel_id", None) or target.target_id,
@@ -95,7 +126,7 @@ class DeliveryRouter:
             media_paths=message.media_paths,
             media_types=message.media_types,
             media_filenames=list(message.media_filenames),
-            media_caption=(getattr(rule, "name", "") or "").strip() or "媒体",
+            media_caption=media_caption,
             guild_id=target.guild_id,
             channel_id=target.channel_id,
         )
@@ -103,44 +134,30 @@ class DeliveryRouter:
             await self._call(
                 self.qq_sender.send(outbound), self.settings.qq_send_timeout_seconds, "QQ"
             )
-            return DeliveryResult()
+            return DeliveryResult(note=decision.reason if decision.unavailable else None)
         except botpy.errors.ServerError as error:
-            if not is_qq_audit_error(error) or not self.settings.qq_audit_link_fallback:
+            if not is_qq_audit_error(error):
                 raise
-            link = self._fallback_link(message)
-            if not link:
-                raise
-            # 只改发原文链接，不改写正文：被拦的内容不会再以另一种形式塞进 QQ。
-            logger.warning(
-                "QQ 审核拦截原文 rule=%s target=%s，降级为只发原文链接 %s",
-                getattr(rule, "id", None),
-                target.label,
-                link,
-            )
-            fallback = QQOutboundMessage(
-                target_type=target.target_type,
-                target_id=getattr(target, "channel_id", None) or target.target_id,
-                text=link,
-                guild_id=target.guild_id,
-                channel_id=target.channel_id,
-            )
-            await self._call(
-                self.qq_sender.send(fallback), self.settings.qq_send_timeout_seconds, "QQ"
-            )
-            return DeliveryResult(
-                sent_text=link,
-                note="原文被 QQ 审核拦截，已降级为只发原文链接",
-            )
+            return await self._notify_qq_blocked(target, "QQ 平台审核检测到违规信息")
 
-    @staticmethod
-    def _fallback_link(message: TelegramForwardMessage) -> str:
-        """优先用网页预览链接，其次正文里的第一个链接。"""
-        candidates = [message.webpage_url, *(link.url for link in message.links)]
-        for value in candidates:
-            url = (value or "").strip()
-            if url.startswith(("http://", "https://")):
-                return url
-        return ""
+    async def _notify_qq_blocked(
+        self, target: ForwardTarget, reason: str, *, notice: str = QQ_VIOLATION_NOTICE
+    ) -> DeliveryResult:
+        # Construct a new text-only message so source links, names and media cannot leak.
+        notification = QQOutboundMessage(
+            target_type=target.target_type,
+            target_id=getattr(target, "channel_id", None) or target.target_id,
+            text=notice,
+            guild_id=target.guild_id,
+            channel_id=target.channel_id,
+        )
+        try:
+            await self._call(
+                self.qq_sender.send(notification), self.settings.qq_send_timeout_seconds, "QQ"
+            )
+        except Exception as error:
+            raise DeliveryError(f"{reason}；原文已拦截，但 QQ 提醒发送失败") from error
+        return DeliveryResult(sent_text=notice, note=f"{reason}；仅发送提醒", blocked=True)
 
     async def _deliver_weixin(
         self,

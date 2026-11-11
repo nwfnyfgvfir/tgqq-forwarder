@@ -57,6 +57,10 @@ def _ensure_schema_compat(sync_conn) -> None:
     _ensure_column(sync_conn, "forwardlog", "target_platform", "VARCHAR(32)", default="'qq'")
     _ensure_column(sync_conn, "forward_target", "account_id", "VARCHAR(64)")
     _ensure_column(sync_conn, "rss_subscription", "translate", "INTEGER NOT NULL", default="1")
+    _ensure_column(
+        sync_conn, "rss_subscription", "translation_detection", "VARCHAR(16) NOT NULL",
+        default="'local'",
+    )
     _ensure_column(sync_conn, "rss_entry", "detected_language", "VARCHAR(16)")
     _ensure_column(sync_conn, "rss_entry", "translated_title", "TEXT")
     _ensure_column(sync_conn, "rss_entry", "translated_summary", "TEXT")

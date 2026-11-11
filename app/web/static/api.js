@@ -11,18 +11,21 @@ export class ApiError extends Error {
 }
 
 export async function request(path, options = {}) {
+  const { responseType, ...fetchOptions } = options;
   const headers = new Headers(options.headers || {});
-  if (!(options.body instanceof FormData)) {
+  const isBinary = options.body instanceof Blob || options.body instanceof ArrayBuffer;
+  if (!headers.has('Content-Type') && !(options.body instanceof FormData) && !isBinary) {
     headers.set('Content-Type', 'application/json');
   }
   if (tg?.initData) {
     headers.set('X-Telegram-Init-Data', tg.initData);
   }
   const response = await fetch(path, {
-    ...options,
+    ...fetchOptions,
     headers,
-    body: options.body && !(options.body instanceof FormData) ? JSON.stringify(options.body) : options.body,
+    body: options.body && !(options.body instanceof FormData) && !isBinary ? JSON.stringify(options.body) : options.body,
   });
+  if (response.ok && responseType === 'blob') return { blob: await response.blob() };
   const contentType = response.headers.get('content-type') || '';
   const payload = contentType.includes('application/json') ? await response.json() : await response.text();
   if (!response.ok) {
@@ -35,6 +38,11 @@ export async function request(path, options = {}) {
 }
 
 export const api = {
+  backupStatus: () => request('/api/system/backups'),
+  downloadBackup: () => request('/api/system/backups/download', { method: 'POST', responseType: 'blob' }),
+  inspectBackup: (file) => request('/api/system/backups/inspect', { method: 'POST', body: file, headers: { 'Content-Type': 'application/zip' } }),
+  restoreBackup: (id) => request('/api/system/backups/restore', { method: 'POST', body: { id, confirm: true } }),
+  downloadRollback: (id) => request(`/api/system/backups/rollback/${encodeURIComponent(id)}`, { responseType: 'blob' }),
   me: () => request('/api/me'),
   status: () => request('/api/status'),
   pause: (paused) => request('/api/settings/paused', { method: 'PATCH', body: { paused } }),

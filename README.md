@@ -305,7 +305,7 @@ QQ_ENABLE_GROUP_C2C=true
 QQ_ENABLE_GUILD_DIRECT_MESSAGE=false
 QQ_ALLOW_SEND_WITHOUT_CACHED_MSG_ID=true
 QQ_USE_MARKDOWN=true
-QQ_AUDIT_LINK_FALLBACK=true
+QQ_AI_MODERATION_ENABLED=false
 
 MINI_APP_ENABLED=true
 MINI_APP_HOST=0.0.0.0
@@ -459,7 +459,50 @@ docker compose run --rm tgqq-forwarder python -m app.weixin.login
 - 规则工坊：选择来源平台/会话、维护多目标投递列表（QQ / 微信 / Telegram 可混排），编辑关键词、正则、媒体类型、模板并实时预览。
 - 规则库：编辑、复制、启用/禁用、删除规则，卡片上直接显示该规则的多个目标；关键词规则会自动解码显示。
 - 日志页：查看最近转发结果和错误（每个目标一条，含来源/目标平台与目标 ID）。
-- 系统页：查看 Mini App 部署状态、个人微信扫码登录与排查提示。
+- 系统页：下载完整备份、校验并还原全部应用数据，查看部署状态、个人微信扫码登录与排查提示。
+
+### 完整备份与还原
+
+在管理台「系统与部署 → 完整备份与还原」操作：
+
+1. 点击「下载完整备份」，保存生成的 ZIP。
+2. 还原时选择 ZIP，等待上传与校验，核对备份时间、文件数量和数据大小。
+3. 勾选覆盖确认，点击「确认还原并重启」。程序先关闭发送器、数据库和登录会话，启动前自动保留一份当前完整备份，再应用还原数据。
+4. 服务重新启动后重新打开管理台，查看「最近还原」结果。「还原前保留的备份」可下载，用于再次还原、回退。
+
+备份覆盖全部已持久化的应用数据：数据库中的规则、全部目标、QQ 屏蔽词、RSS 订阅与条目历史、转发日志和暂停状态；全部有效配置（含 AI 接口、机器人凭据与管理员名单）；Telegram 会话文件、微信登录凭据、已下载媒体与日志文件。`DATA_DIR` 外单独配置的数据库、会话、微信、媒体和日志路径也会收集。
+
+数据库和 SQLite 会话使用在线备份 API，包含已提交的 WAL 内容；其他文件保存读取时已落盘的内容。进程内尚未落盘的队列、程序源码、Conda 环境和 Docker 镜像不在数据备份内。暂存文件和历史备份不会递归打包；符号链接/目录联接会被拒绝，避免误包含其他目录。
+
+**ZIP 包未加密，包含密钥和登录会话。仅管理员可下载或上传，请妥善保管并仅还原可信备份。** 校验预览不会显示凭据。还原会覆盖当前数据，并恢复备份里的管理 Bot 和管理员名单；如与当前不同，需要从恢复后的管理 Bot 重新进入管理台。
+
+还原时所有路径会迁移到当前 `DATA_DIR` 下，自定义外部目录也会收纳到其中；不会按备份里的绝对路径向系统任意位置写入。外部目录原文件保留，应用改用还原后的副本。有效配置保存在 `DATA_DIR/.restored-settings.json`，优先于 `.env` 与容器环境变量；之后调整配置需编辑此文件，或删除它以重新使用 `.env`。原 `.env` 若存在，会一并保存为 `DATA_DIR/.restored.env` 供参考。
+
+还原包会核对格式、文件清单、大小、SHA-256 与数据库完整性，并拒绝路径穿越、重复路径、链接和解压超限。覆盖期间记录恢复日志；写入失败会回退，意外退出后会在下次启动、打开数据库前恢复。还原前备份保留在 `DATA_DIR/.backup/rollback-*.zip`，可在系统页下载。完整备份目前支持项目默认的文件型 SQLite；建议用同版本程序还原。
+
+默认限制可以在配置中调整；反向代理也需要允许相应上传大小及处理时间：
+
+```env
+BACKUP_MAX_ARCHIVE_MB=1024
+BACKUP_MAX_UNPACKED_MB=4096
+BACKUP_MAX_FILES=100000
+```
+
+```nginx
+client_max_body_size 1024m;
+proxy_read_timeout 600s;
+proxy_send_timeout 600s;
+```
+
+没有 Mini App 时可使用 CLI（路径按自己的备份位置替换）：
+
+```powershell
+conda run -n tgqq-forwarder python -m app.backup create ./tgqq-backup.zip
+conda run -n tgqq-forwarder python -m app.backup inspect ./tgqq-backup.zip
+conda run -n tgqq-forwarder python -m app.backup restore ./tgqq-backup.zip --confirm
+```
+
+CLI 还原先校验并安排任务；随后启动或重启服务才会执行覆盖。重启前可保留当前服务运行，覆盖阶段的数据目录锁会阻止其他实例同时使用数据。还原前备份会自动产生，命令不会直接覆盖运行中的数据库。
 
 ### Mini App 配置
 
@@ -544,12 +587,16 @@ TELEGRAM_ALBUM_BUFFER_SECONDS=2.0
 
 含义：同一相册组等待 2 秒聚合。网络较慢或仍偶发拆分时，可调大到 `3.0` 或 `5.0`。设置为 `0` 可禁用聚合。
 
-QQ 官方机器人当前使用的 botpy/v2 富媒体接口通常不能在一条消息里发送多张图片；群/C2C 富媒体使用 `msg_type=7` 且只携带单个 `media`，Markdown 文本使用 `msg_type=2`。程序聚合后仍会按顺序发送多张图：
+群聊和 C2C 私聊启用 `QQ_USE_MARKDOWN=true` 时，程序会优先把图片与正文合成**一条 Markdown 图文消息**，支持单张图片及纯图片相册。图片先上传到 QQ 官方素材接口，再通过 `qqbot-media://` 引用嵌入正文，因此不需要自建图床，标题、加粗和文字超链接也能保留。发送结束后会释放本次上传的素材配额，QQ 已发送消息中的图片副本不受影响。依据：[QQ 官方文档：Markdown 图片](https://bot.q.qq.com/wiki/develop/api-v2/server-inter/message/type/markdown.html#图片)、[素材管理](https://bot.q.qq.com/wiki/develop/api-v2/server-inter/message/material-management.html)（同一官方来源）。
+
+QQ 素材接口支持 PNG、JPEG、GIF、WebP，单张不超过 10MB。素材上传不可用、图文超过消息长度限制，或相册包含视频、语音和其他文件时，会使用媒体与正文分开发送的方式，避免 Markdown 标记被当作媒体附带的普通文本显示：
 
 - 如果聚合后的文本非空，会先发送一条完整文本消息，内容由规则的消息模板渲染。
 - 然后按 Telegram 原始顺序逐个发送媒体文件。
 - 多媒体场景下，每个媒体消息随附的文字使用规则名；规则名为空时使用 `媒体`。这样可以避免每张图都重复发送完整正文。
 - 模板不会暴露本地媒体缓存路径，也不会默认生成 `媒体：photo`、`媒体：photo、video` 这类媒体类型说明。
+
+单媒体回退时先发送媒体（附带规则名，规则名为空时使用 `媒体`），再发送完整 Markdown 正文；媒体审核失败时停止后续正文发送。正文为空时只发媒体。关闭 Markdown 后，单媒体消息仍将正文随媒体一起发送。QQ 平台返回内容违规时停止发送原内容，按违规通知流程处理。
 
 ### 消息模板变量
 
@@ -645,25 +692,73 @@ QQ_USE_MARKDOWN=true
 
 程序会优先使用 QQ 原生 markdown 消息。默认模板会把 Telegram 来源作为标题、发送者加粗展示，并在末尾追加隐藏链接、按钮链接和 `检测到关键词：...`。当前不会追加媒体类型摘要。若 QQ 官方接口返回“不允许发送原生 markdown”之类的错误，会自动使用纯文本重发。是否能真正显示 markdown 取决于 QQ 官方机器人权限和目标场景。
 
-### QQ 审核拦截降级
+### QQ 违规拦截与提醒
 
-默认配置：
+命中规则里的「QQ 屏蔽词」、AI 判定违规或被 QQ 平台审核拒绝后，该 QQ 目标仅收到固定提醒：
 
-```env
-QQ_AUDIT_LINK_FALLBACK=true
+```text
+检测到违规信息，已停止转发该条消息。
 ```
 
-QQ 审核不通过时返回的是「消息内容违规」，不会说明命中了哪个词，重发原文不可能成功。开启后，程序会改为只发送这条消息的原文链接（优先网页预览链接，其次正文里的第一个链接），日志状态记为成功并附带说明「原文被 QQ 审核拦截，已降级为只发原文链接」。
+不会补发原文、原文链接或附件，提醒也不携带来源名称、命中词或模型原始回复。原文没有链接时同样可以发送提醒。旧 `QQ_AUDIT_LINK_FALLBACK` 已停用，可从现有 `.env` 中删除。
 
-降级只发链接、不改写正文——被拦截的内容不会以删改后的形式再发一次。原文没有可用链接时仍按失败处理。设为 `false` 可关闭降级，恢复为直接记失败。
+屏蔽词和 AI 审核都在发送正文或上传附件前执行。QQ 平台审核是最后一道检查；如果 QQ 在多图发送中途才拒绝，程序停止发送剩余内容并提醒，已经成功发出的内容无法由此撤回。
 
-### QQ 屏蔽词（只跳过 QQ 目标）
+拦截成功发送提醒后，转发日志标记为「已跳过」，记录实际提醒和拦截原因；若提醒也发送失败，则记为失败，不尝试补发原文。同一规则的 Telegram / 微信目标仍照常发送。这里只停止**该条消息**发往 QQ，后续正常消息继续处理。
 
-规则编辑器里的「QQ 屏蔽词」命中后，这条转发**只跳过 QQ 目标**，同一条规则的其他目标（Telegram / 微信）照常发送；规则只配了 QQ 目标时，效果等同于整条不转发。
+### QQ 屏蔽词
 
-- 匹配对象是渲染后的消息正文，不区分大小写、子串匹配；
-- 命中会在转发日志里记一条「已跳过 · 命中 QQ 屏蔽词：xxx」，不消耗发送次数；
-- 与「审核拦截降级」配合使用：先按屏蔽词主动跳过，漏网的再靠审核失败降级发链接。
+规则编辑器里的「QQ 屏蔽词」使用不区分大小写的子串匹配。检查范围包括原始正文、渲染后的正文、链接预览、隐藏链接与文件名；即使模板省略原始正文，也不会绕过检查。命中后先发送固定违规提醒，不再调用 AI。
+
+### QQ AI 内容审核
+
+默认关闭。需要时在 `.env` 中启用，重启服务后生效：
+
+```env
+QQ_AI_MODERATION_ENABLED=true
+QQ_AI_MODERATION_TIMEOUT_SECONDS=60
+QQ_AI_MODERATION_MAX_CHARS=20000
+```
+
+接口地址、API Key 和模型默认分别复用 `RSS_TRANSLATE_API_URL`、`RSS_TRANSLATE_API_KEY`、`RSS_TRANSLATE_MODEL`，不依赖 RSS 或翻译开关。也可为审核单独指定：
+
+```env
+QQ_AI_MODERATION_API_URL=https://your-ai-gateway.example/v1/chat/completions
+QQ_AI_MODERATION_API_KEY=your-api-key
+QQ_AI_MODERATION_MODEL=your-model
+```
+
+接口须支持 Chat Completions 的 `response_format={"type":"json_object"}`，**图片和视频画面审核还要求所选模型支持 `image_url` 图片输入**。审核色情、性交易招揽、政治敏感等内容，普通技术和日常内容按正常消息处理。
+
+- 文本：检查原始及渲染后的正文、链接预览、链接文字与 URL、文件名和媒体说明。
+- 图片：读取真实像素，处理方向并缩放后交给视觉模型，检查画面及画面内文字；动图在整个帧序列上均匀采样。
+- 视频：默认每 2 秒抽取一帧，超过 60 帧时增大间隔、覆盖全片时间范围；画面分批审核，同时提取全部音轨并完整分段转录、审核语音内容。静音视频仅检查画面，极短视频至少抽取一帧。
+- 音频/语音：转为单声道 MP3，每 60 秒一段，将全部分段上传语音转录接口，再审核转录内容；转录文字也会额外匹配 QQ 屏蔽词。
+
+整个审核发生在任何 QQ 正文、附件发送之前，任一部分被判定违规就只发送固定违规提醒。视频/动图采用抽样，不能保证发现短暂出现的画面；音频主要通过语音转录识别，非语言声音、低清画面或模型误判仍可能漏检。不读取普通文档内部内容或抓取链接目标网页。
+
+**AI 超时或任何异常均回落 QQ 屏蔽词检测，未命中就继续正常转发。** 包括网络/鉴权失败、模型不支持视觉输入、转录不可用、响应格式不合法、未下载媒体、媒体超限或解码失败。已有转录文字会一起参与回落检测；本地屏蔽词本身始终优先执行。转发日志附带回落说明，不将审核失败记为 AI 安全结论，也不发送「检测到违规」提醒；QQ 平台随后真正拒绝内容时仍仅发送违规提醒。
+
+多媒体配置示例：
+
+```env
+QQ_AI_MODERATION_MAX_MEDIA_MB=20
+QQ_AI_MODERATION_IMAGE_MAX_SIDE=1280
+QQ_AI_MODERATION_VIDEO_FRAME_INTERVAL_SECONDS=2
+QQ_AI_MODERATION_MAX_VIDEO_FRAMES=60
+QQ_AI_MODERATION_MAX_DURATION_SECONDS=600
+QQ_AI_MODERATION_TRANSCRIBE_API_URL=
+QQ_AI_MODERATION_TRANSCRIBE_API_KEY=
+QQ_AI_MODERATION_TRANSCRIBE_MODEL=gpt-transcribe
+```
+
+转录接口为空时，从审核接口基础地址推导 `/audio/transcriptions`，凭据沿用审核 API Key；也可单独指定兼容的语音转录服务和模型。自定义网关路径或不提供语音能力的网关需要单独配置。媒体大小限制针对单个源文件，时长限制针对单个音频/视频；超限执行回落策略。完整处理的总超时由 `QQ_AI_MODERATION_TIMEOUT_SECONDS` 控制。
+
+本地环境需要 FFmpeg（含 `ffprobe`）和 Pillow。可用 `conda env create -f environment.yml` 建立环境，已有环境用 `conda install -n tgqq-forwarder ffmpeg -y` 和 `conda run -n tgqq-forwarder python -m pip install -e '.[dev]'` 更新。Docker 镜像已加入 FFmpeg，需要重新构建/更新镜像。来源媒体须先下载落盘，下载关闭或失败时会记录审核回落。
+
+同一进程缓存完整审核结果 5 分钟，最多 256 条；缓存键包含真实媒体内容摘要，相同文字配上不同图片/视频不会复用错误结论。失败结果不缓存。临时帧和音轨在处理完成或取消后清理，审核日志不记录 API 凭据、端点或原始请求与响应。
+
+接口格式参考：[OpenAI 官方图片输入文档](https://developers.openai.com/api/docs/guides/images-vision?api-mode=chat)、[OpenAI 官方语音转录文档](https://developers.openai.com/api/docs/guides/speech-to-text)、[FFmpeg 官方文档](https://ffmpeg.org/ffmpeg-all.html)。
 
 ### media 目录清理
 
@@ -710,10 +805,11 @@ MEDIA_RETENTION_SECONDS=86400
   标题用 `#` 是为了 **QQ 侧**：订阅消息发到 Telegram 频道时是纯文本（`parse_mode=None`，Telegram Bot API 也没有标题语法），`#` 会原样显示；再由规则转发到 QQ 时走 QQ 原生 markdown，`#` 会被渲染成**一号标题**（`##` 为二号）。如果只在 Telegram 里看，可以把 `# ` 去掉。
   `{published_at}` 渲染为**本地时间**（如 `2026-10-13 08:30`，按容器 `TZ` 换算）。其他可用变量：`feed_title`。原文链接总会附加在末尾，不会重复。
 - **空字段自动收行**：模板里某一行引用的占位符**全部为空**时，这一行连同 `🕒`、`🔗` 等图标一起省略；某个空行分隔的**整段**占位符全空时，整段省略（`┈┈` 细线与 `🌐 译文` 标签会跟着译文一起消失）。所以可以放心给可选字段加装饰前缀，源里没时间、没有译文时不会留下孤零零的图标或空行。行内只有部分占位符为空时（如 `{title} · {published_at}`）整行保留，空值位置留空。
-- **翻译成中文**：默认勾选。源语言自动检测，**仅当原文不是中文**时才翻译，消息里**原文在上、译文在下**。译文**只覆盖模板里出现的原文字段**：模板没写 `{title}` 就不翻译标题，`{translation}` 里也不会出现译文标题；没写 `{summary}` 同理。模板只写 `{translation}`（原文字段全由译文承担）时，标题与摘要都会翻译。译文会缓存到条目上，重试不会重复请求。
+- **翻译成中文**：默认勾选。按目标语言判断是否需要翻译，消息里**原文在上、译文在下**。译文**只覆盖模板里出现的原文字段**：模板没写 `{title}` 就不翻译标题，`{translation}` 里也不会出现译文标题；没写 `{summary}` 同理。模板只写 `{translation}`（原文字段全由译文承担）时，标题与摘要都会翻译。译文会缓存到条目上，重试不会重复请求。
+- **翻译判断**：默认使用本地规则；中英混排、技术内容可选择 **AI 语义判断**。本地规则先排除链接、邮箱、代码、数字和符号，避免把汉字较多的日文或中文里的完整外语段落直接当作中文跳过。AI 模式逐字段判断正文是否真正需要翻译，产品名、缩写、版本号通常不需要翻译；真正的外语句子即使夹在中文里也会送去翻译。AI 判断使用已有翻译接口、凭据和模型，会增加判断请求；每批最多 10 个字段，成功判断按文本和目标语言缓存 30 分钟。判断超时、接口异常或返回格式错误时立即回退本地规则，不阻塞原有发布流程。预览显示每个字段的判断来源、结果和原因。更换判断方式会清理尚未发布条目的旧翻译缓存，已发布内容不重发。
 - 保存前可点「预览」真实抓取该源并渲染消息效果，**不保存、不建基线、不发送**；预览同样会展示译文。
 
-> 翻译使用 **OpenAI 兼容的 `/v1/chat/completions` 接口**，可对接 OpenAI、DeepSeek、通义千问或任意自建网关：只需填接口地址、API Key 与模型名。接口地址可填完整端点（如 `https://api.openai.com/v1/chat/completions`），也可填基础地址（如 `https://api.deepseek.com/v1`），会**自动补全 `/chat/completions` 路径**。**API Key 与接口地址均视为凭据，不要外泄**；中文源由本地判定直接跳过，不消耗额度；**翻译失败会自动回退原文**，不影响抓取与发布。可在 `.env` 关闭或调整：
+> 翻译使用 **OpenAI 兼容的 `/v1/chat/completions` 接口**，可对接 OpenAI、DeepSeek、通义千问或任意自建网关：只需填接口地址、API Key 与模型名。接口地址可填完整端点（如 `https://api.openai.com/v1/chat/completions`），也可填基础地址（如 `https://api.deepseek.com/v1`），会**自动补全 `/chat/completions` 路径**。**API Key 与接口地址均视为凭据，不要外泄**；本地规则模式不额外请求 AI 判断；**翻译失败会自动回退原文**，不影响抓取与发布。AI 判断采用 JSON 模式并在本地严格校验字段，接口不支持 JSON 模式时按判断失败回退。协议依据：[OpenAI Docs：JSON mode](https://developers.openai.com/api/docs/guides/structured-outputs#json-mode)（单一官方来源）。可在 `.env` 关闭或调整：
 >
 > ```env
 > RSS_TRANSLATE_ENABLED=true
@@ -722,6 +818,7 @@ MEDIA_RETENTION_SECONDS=86400
 > RSS_TRANSLATE_API_KEY=sk-...
 > RSS_TRANSLATE_MODEL=gpt-4o-mini
 > RSS_TRANSLATE_TIMEOUT_SECONDS=30
+> RSS_TRANSLATE_DETECTION_TIMEOUT_SECONDS=8
 > RSS_TRANSLATE_MAX_CHARS=1200
 > ```
 >

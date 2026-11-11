@@ -125,9 +125,26 @@ function formDefaults(subscription = {}) {
     message_template: subscription.message_template ?? DEFAULT_TEMPLATE,
     max_summary_length: String(subscription.max_summary_length ?? 600),
     translate: subscription.translate ?? true,
+    translation_detection: subscription.translation_detection ?? 'local',
     listener_account: '',
     dialog_query: '',
   };
+}
+
+function previewEntryHtml(entry) {
+  const decisions = (entry.translation_decisions || []).map((decision) => {
+    const field = decision.field === 'title' ? '标题' : '摘要';
+    const source = { ai: 'AI 判断', local: '本地判断', fallback: '回退本地' }[decision.source] || '翻译判断';
+    return `<p class="muted">${field} · ${source}：${decision.needs_translation ? '需要翻译' : '无需翻译'}${decision.reason ? ` · ${escapeHtml(decision.reason)}` : ''}</p>`;
+  }).join('');
+  return `<article class="rss-preview-entry">
+    <div class="rss-entry-heading"><strong>${escapeHtml(entry.title || '无标题')}</strong>${statusPill(entry.matches ? '匹配' : '不匹配', entry.matches ? 'good' : 'muted')}</div>
+    <p>${safeLink(entry.link)} · ${escapeHtml(formatDate(entry.published_at))}</p>
+    ${entry.summary ? `<p class="rss-summary">${escapeHtml(entry.summary)}</p>` : ''}
+    ${decisions}
+    ${entry.translated_title || entry.translated_summary ? `<div class="rss-translation"><p class="muted">译文</p>${entry.translated_title ? `<p><strong>${escapeHtml(entry.translated_title)}</strong></p>` : ''}${entry.translated_summary ? `<p class="rss-summary">${escapeHtml(entry.translated_summary)}</p>` : ''}</div>` : ''}
+    <pre>${escapeHtml(entry.rendered_text || '')}</pre>
+  </article>`;
 }
 
 function previewHtml() {
@@ -135,7 +152,7 @@ function previewHtml() {
   return `<p class="muted">${ui.previewStale ? '配置已变化，请重新预览。以下为上一次结果。' : '仅预览：没有保存或发送。'}</p>
     <h3>${escapeHtml(ui.preview.feed_title || '未命名订阅源')}</h3>
     ${(ui.preview.warnings || []).length ? `<ul class="rss-warnings">${ui.preview.warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join('')}</ul>` : ''}
-    ${(ui.preview.entries || []).length ? ui.preview.entries.map((entry) => `<article class="rss-preview-entry"><div class="rss-entry-heading"><strong>${escapeHtml(entry.title || '无标题')}</strong>${statusPill(entry.matches ? '匹配' : '不匹配', entry.matches ? 'good' : 'muted')}</div><p>${safeLink(entry.link)} · ${escapeHtml(formatDate(entry.published_at))}</p>${entry.summary ? `<p class="rss-summary">${escapeHtml(entry.summary)}</p>` : ''}${entry.translated_title || entry.translated_summary ? `<div class="rss-translation"><p class="muted">译文</p>${entry.translated_title ? `<p><strong>${escapeHtml(entry.translated_title)}</strong></p>` : ''}${entry.translated_summary ? `<p class="rss-summary">${escapeHtml(entry.translated_summary)}</p>` : ''}</div>` : ''}<pre>${escapeHtml(entry.rendered_text || '')}</pre></article>`).join('') : '<p class="muted">该订阅源当前没有条目。</p>'}`;
+    ${(ui.preview.entries || []).length ? ui.preview.entries.map(previewEntryHtml).join('') : '<p class="muted">该订阅源当前没有条目。</p>'}`;
 }
 
 function editor(current) {
@@ -168,7 +185,9 @@ function editor(current) {
           <div class="grid-2"><label for="rss-include">包含关键词<textarea id="rss-include" name="include_keywords" rows="2">${escapeHtml(draft.include_keywords)}</textarea></label><label for="rss-exclude">排除关键词<textarea id="rss-exclude" name="exclude_keywords" rows="2">${escapeHtml(draft.exclude_keywords)}</textarea></label></div>
           <p class="muted">关键词用逗号、中文逗号、分号或换行分隔；包含列表留空则不过滤包含关键词。</p>
           <label for="rss-summary-length">摘要最大长度（字符）<input id="rss-summary-length" name="max_summary_length" type="number" required min="100" max="2000" step="1" value="${escapeHtml(draft.max_summary_length)}" /></label>
-          <label class="switch-line" for="rss-translate"><input id="rss-translate" name="translate" type="checkbox" ${draft.translate ? 'checked' : ''} /> 翻译成中文（源语言自动检测，非中文才翻译；译文显示在原文下方）</label>
+          <label class="switch-line" for="rss-translate"><input id="rss-translate" name="translate" type="checkbox" ${draft.translate ? 'checked' : ''} /> 翻译成中文（仅翻译有需要的内容；译文显示在原文下方）</label>
+          <label for="rss-translation-detection">翻译判断<select id="rss-translation-detection" name="translation_detection" aria-describedby="rss-translation-detection-help">${option('local', '本地规则（不额外请求 AI）', draft.translation_detection)}${option('ai', 'AI 语义判断（推荐中英混排、技术内容）', draft.translation_detection)}</select></label>
+          <p id="rss-translation-detection-help" class="muted">AI 会区分外语正文与产品名、代码、链接，按字段判断是否需要翻译；复用已有翻译接口和模型，可能增加少量调用。超时或异常自动回退本地规则。预览会显示判断结果和原因。</p>
           <label for="rss-template">消息模板<textarea id="rss-template" name="message_template" required rows="10">${escapeHtml(draft.message_template)}</textarea></label>
           <p id="rss-keywords-hint" class="muted"></p>
           <p class="muted">默认变量：<code>{subscription_name}</code>、<code>{title}</code>、<code>{published_at}</code>、<code>{summary}</code>、<code>{translation}</code>、<code>{keywords}</code>、<code>{link}</code>。<code>{keywords}</code> 是本条命中的包含关键词（顿号分隔）；模板里不写它时，也会自动补一行 <code>🔑 关键词：…</code> 到链接上方。<code>{published_at}</code> 渲染为本地时间（如 2026-10-13 08:30）。某一行引用的占位符全为空时整行省略，空行分隔的整段全为空时整段省略——所以可以放心给可选字段加 <code>🕒</code> 这类前缀，源里没时间、没译文时不会留下孤立图标。<code># {title}</code> 里的 <code>#</code> 在转发到 QQ 时会渲染成一号标题（<code>##</code> 为二号），在 Telegram 里按原样显示。<code>{translation}</code> 为译文，只包含模板里写到的原文字段（没写 <code>{title}</code> 就不翻译标题），会排在原文下方。QQ 转发规则使用 <code>{text}</code> 保留发布内容。</p>
@@ -273,6 +292,7 @@ function updateFormHints(form) {
   const latest = ui.draft.initial_policy === 'latest';
   form.querySelector('#rss-initial-count-label').hidden = !latest;
   form.elements.initial_count.disabled = !latest || Boolean(ui.formBusy);
+  form.elements.translation_detection.disabled = !ui.draft.translate || Boolean(ui.formBusy);
   form.querySelector('#rss-initial-help').textContent = latest ? '首次建立基线时，将最近 N 条加入发送队列；后续只处理新条目。' : '首次只建立去重基线，不发送已有文章；之后检查发现的新条目才进入发送队列。';
   form.querySelector('#rss-feed-change').hidden = !ui.original || ui.draft.feed_url.trim() === ui.original.feed_url;
   form.querySelector('#rss-target-change').hidden = !ui.original || ui.draft.tg_chat_id.trim() === String(ui.original.tg_chat_id);
@@ -315,6 +335,7 @@ function formPayload(form) {
     include_keywords: keywords(draft.include_keywords), exclude_keywords: keywords(draft.exclude_keywords),
     message_template: draft.message_template, max_summary_length: Number(draft.max_summary_length),
     translate: Boolean(draft.translate),
+    translation_detection: draft.translation_detection,
   };
 }
 

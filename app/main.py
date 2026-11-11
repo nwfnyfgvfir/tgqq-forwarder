@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import signal
+import sys
 from contextlib import suppress
 
+from app.backup import DataDirectoryLock, FullBackupService
 from app.channels.router import DeliveryRouter
-from app.config import get_settings
+from app.config import Settings, clear_settings_cache, get_settings
 from app.logging_config import configure_logging
 from app.qq_official.sender import QQOfficialSender
 from app.rss.service import RssService
@@ -30,6 +33,7 @@ class ApplicationRuntime:
         self.settings = get_settings()
         configure_logging(self.settings.log_dir, self.settings.log_level)
         self.db = Database(self.settings.database_url)
+        self.data_lock = DataDirectoryLock(self.settings.data_dir)
         self.rule_service = ForwardRuleService(self.db)
         # 自己发出的 TG 消息登记在这里，监听侧据此跳过，避免 TG → TG 回环。
         self.telegram_registry = SentMessageRegistry()
@@ -40,23 +44,26 @@ class ApplicationRuntime:
         )
         self.qq_sender = QQOfficialSender(self.settings, self._enqueue_forward)
         self.weixin_service = WeixinService(self.settings, self._enqueue_forward)
+        self.delivery_router = DeliveryRouter(
+            self.settings,
+            self.qq_sender,
+            self.weixin_service,
+            self.telegram_delivery,
+        )
         self.forward_queue = ForwardQueue(
             self.settings,
             self.rule_service,
             self.qq_sender,
             self.weixin_service,
-            router=DeliveryRouter(
-                self.settings,
-                self.qq_sender,
-                self.weixin_service,
-                self.telegram_delivery,
-            ),
+            router=self.delivery_router,
         )
         self.media_cleanup = MediaCleanupWorker(self.settings)
         self.account_manager: TelegramAccountManager | None = None
         self.rss_service = RssService(self.db, self.settings)
         self.rss_worker = RssWorker(
-            self.settings, self.rss_service, can_publish=self._can_publish_rss,
+            self.settings,
+            self.rss_service,
+            can_publish=self._can_publish_rss,
         )
         self.admin_bot = TelegramAdminBot(
             self.settings,
@@ -76,8 +83,14 @@ class ApplicationRuntime:
             rss_service=self.rss_service,
             rss_worker=self.rss_worker,
             weixin_service=self.weixin_service,
+            restart_callback=self.request_restart,
         )
         self.stop_event = asyncio.Event()
+        self.restart_requested = False
+
+    async def request_restart(self) -> None:
+        self.restart_requested = True
+        self.stop_event.set()
 
     async def _enqueue_forward(self, message) -> None:
         await self.forward_queue.enqueue(message)
@@ -92,6 +105,7 @@ class ApplicationRuntime:
 
     async def start(self) -> None:
         self.settings.validate_runtime_requirements()
+        self.data_lock.acquire()
         await self.db.init()
         if self.settings.qq_enabled:
             await self.qq_sender.start()
@@ -148,18 +162,26 @@ class ApplicationRuntime:
             await self.account_manager.stop()
         await self.media_cleanup.stop()
         await self.forward_queue.stop()
+        await self.delivery_router.close()
         if self.settings.qq_enabled:
             await self.qq_sender.stop()
         await self.db.dispose()
+        self.data_lock.release()
 
 
 async def amain() -> None:
+    await asyncio.to_thread(FullBackupService(Settings()).recover_interrupted)
+    # No open database/session connections exist until the pending restore has completed.
+    if await asyncio.to_thread(FullBackupService(get_settings()).apply_pending):
+        clear_settings_cache()
     runtime = ApplicationRuntime()
     try:
         await runtime.start()
         await runtime.run_until_stopped()
     finally:
         await runtime.stop()
+    if runtime.restart_requested:
+        os.execv(sys.executable, [sys.executable, "-m", "app.main"])
 
 
 def cli() -> None:

@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
+from app.backup import FullBackupService
 from app.config import Settings
 from app.platforms import SOURCE_PLATFORMS, TARGET_PLATFORMS, TELEGRAM_TARGET_TYPES, Platform
 from app.qq_official.client import QQTargetInfo
@@ -22,6 +23,7 @@ from app.rules.service import ForwardRuleService
 from app.storage.models import ForwardStatus, QQTargetType
 from app.telegram_user.accounts import TelegramAccountManager
 from app.web.auth import MiniAppAuthError, MiniAppSession, validate_init_data
+from app.web.backup_routes import create_backup_router
 from app.web.errors import api_error, auth_http_exception
 from app.web.rss_routes import create_rss_router, rss_error_response
 from app.web.schemas import (
@@ -105,6 +107,7 @@ def create_mini_app(
     rss_service: RssService | None = None,
     rss_worker: RssWorker | None = None,
     weixin_service: WeixinService | None = None,
+    restart_callback: Callable | None = None,
 ) -> FastAPI:
     app = FastAPI(title="TGQQ Forwarder Mini App", docs_url=None, redoc_url=None)
     if settings.mini_app_allowed_origins:
@@ -124,6 +127,13 @@ def create_mini_app(
             raise auth_http_exception(exc) from exc
 
     rss_service = rss_service or RssService(service.db, settings)
+    app.include_router(
+        create_backup_router(
+            FullBackupService(settings),
+            require_admin_session,
+            restart_callback,
+        )
+    )
     app.add_exception_handler(RssError, rss_error_response)
     app.include_router(
         create_rss_router(
