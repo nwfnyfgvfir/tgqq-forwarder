@@ -14,7 +14,11 @@ from app.rules.models import TelegramForwardMessage, TelegramLink
 
 
 def make_settings(**overrides) -> Settings:
-    values = {"_env_file": None, "qq_ai_moderation_enabled": True}
+    # These protocol tests exercise one classification pass; confirmation has separate coverage.
+    values = {
+        "_env_file": None, "qq_ai_moderation_enabled": True,
+        "qq_ai_moderation_confirm_blocked": False,
+    }
     values.update(overrides)
     return Settings(**values)
 

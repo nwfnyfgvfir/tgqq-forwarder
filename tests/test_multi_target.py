@@ -538,12 +538,13 @@ async def test_blocked_qq_targets_notify_while_other_platforms_and_later_message
             ForwardStatus.SUCCESS,
             ForwardStatus.SUCCESS,
         ]
-        assert len(review_calls) == (1 if block_mode == "ai" else 0)
+        # One initial review and one confirmation, shared across both QQ targets.
+        assert len(review_calls) == (2 if block_mode == "ai" else 0)
 
         await queue._process_message(make_message(message_id=2, text="safe follow-up"))
         assert [item.text for item in qq.calls[-2:]] == ["safe follow-up", "safe follow-up"]
         assert all(call["status"] == ForwardStatus.SUCCESS for call in service.log_calls[-4:])
-        assert len(review_calls) == (2 if block_mode == "ai" else 0)
+        assert len(review_calls) == (3 if block_mode == "ai" else 0)
     finally:
         await router.close()
 

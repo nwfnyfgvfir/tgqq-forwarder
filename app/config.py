@@ -407,6 +407,7 @@ class Settings(BaseSettings):
     # QQ 审核拒绝或本地审核命中后，只发送固定提醒，不再补发原文链接。
     # AI 审核需显式开启；未单独配置的接口、凭据和模型复用 RSS 翻译配置。
     qq_ai_moderation_enabled: bool = False
+    qq_ai_moderation_confirm_blocked: bool = True
     qq_ai_moderation_api_url: str | None = Field(default=None, exclude=True, repr=False)
     qq_ai_moderation_api_key: str | None = Field(default=None, exclude=True, repr=False)
     qq_ai_moderation_model: str | None = None

@@ -134,7 +134,7 @@ class DeliveryRouter:
             await self._call(
                 self.qq_sender.send(outbound), self.settings.qq_send_timeout_seconds, "QQ"
             )
-            return DeliveryResult(note=decision.reason if decision.unavailable else None)
+            return DeliveryResult(note=decision.reason)
         except botpy.errors.ServerError as error:
             if not is_qq_audit_error(error):
                 raise

@@ -26,6 +26,8 @@ def settings(**overrides) -> Settings:
     values = {
         "_env_file": None,
         "qq_ai_moderation_enabled": True,
+        # Keep decoder/pipeline assertions independent of confirmation request counts.
+        "qq_ai_moderation_confirm_blocked": False,
         "qq_ai_moderation_image_max_side": 256,
         "qq_ai_moderation_api_url": "https://ai.example/v1/chat/completions",
     }
